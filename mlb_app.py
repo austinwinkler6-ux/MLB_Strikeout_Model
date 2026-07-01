@@ -7,7 +7,7 @@ from supabase import create_client, Client
 
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
 
-ODDS_API_KEY = "63370880145b421161f7b81b6064772f"
+ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
 ADMIN_EMAIL = "austinwinkler6@icloud.com"
 
 # ---- SUPABASE CONNECTION ----
