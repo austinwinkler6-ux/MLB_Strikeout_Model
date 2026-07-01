@@ -550,9 +550,11 @@ with st.sidebar:
 
     st.markdown("---")
 
+    admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
+
     nav = st.radio(
         "Navigation",
-        ["🏠 Home", "⚾ MLB Strikeouts", "🏈 NFL Pass Attempts", "🏀 NBA Models", "📒 Bet Tracker", "⚙️ Settings"] + (["🔬 Model Lab", "🧪 Backtest"] if is_admin else []),
+        ["🏠 Home", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker"] + admin_nav + ["⚙️ Settings"],
         label_visibility="collapsed"
     )
 
@@ -583,12 +585,8 @@ if nav == "🏠 Home":
     5. **Track your edge** — the bigger your edge tier win rate, the sharper your model
     """)
 
-    st.markdown("---")
-    st.subheader("🔥 Today's Top Model")
-    st.info("⚾ MLB Strikeout Model is live — head to MLB Strikeouts to run today's projections!")
-
 # ---- MLB PAGE ----
-elif nav == "⚾ MLB Strikeouts":
+elif nav == "⚾ MLB Models":
     st.title("⚾ MLB Strikeout Model")
 
     col_load, col_run_all = st.columns(2)
@@ -797,7 +795,7 @@ elif nav == "⚾ MLB Strikeouts":
             st.divider()
 
 # ---- NFL PAGE ----
-elif nav == "🏈 NFL Pass Attempts":
+elif nav == "🏈 NFL Models":
     st.title("🏈 NFL Pass Attempts Model")
     st.markdown("---")
     st.markdown("""
@@ -964,26 +962,6 @@ elif nav == "📒 Bet Tracker":
                     delete_bet(bet['id'])
                 st.rerun()
 
-# ---- SETTINGS PAGE ----
-elif nav == "⚙️ Settings":
-    st.title("⚙️ Settings")
-    st.markdown("---")
-
-    st.subheader("Account Information")
-    st.write(f"**Email:** {user.email}")
-    st.write(f"**Account Type:** {'Admin' if is_admin else 'Standard'}")
-    st.write(f"**Member Since:** {user.created_at[:10] if user.created_at else 'N/A'}")
-
-    st.markdown("---")
-    st.subheader("Subscription")
-    st.info("💳 Subscription management coming soon — stay tuned!")
-
-    st.markdown("---")
-    st.subheader("Danger Zone")
-    if st.button("🚪 Logout", use_container_width=True):
-        sign_out()
-        st.rerun()
-
 # ---- MODEL LAB (ADMIN ONLY) ----
 elif nav == "🔬 Model Lab" and is_admin:
     st.title("🔬 Model Lab")
@@ -1148,3 +1126,22 @@ elif nav == "🧪 Backtest" and is_admin:
             ).reset_index()
             tier_summary['MAE'] = tier_summary['MAE'].round(2)
             st.dataframe(tier_summary, use_container_width=True)
+
+# ---- SETTINGS PAGE ----
+elif nav == "⚙️ Settings":
+    st.title("⚙️ Settings")
+    st.markdown("---")
+
+    st.subheader("Account Information")
+    st.write(f"**Email:** {user.email}")
+    st.write(f"**Account Type:** {'Admin' if is_admin else 'Standard'}")
+
+    st.markdown("---")
+    st.subheader("Subscription")
+    st.info("💳 Subscription management coming soon — stay tuned!")
+
+    st.markdown("---")
+    st.subheader("Danger Zone")
+    if st.button("🚪 Logout", use_container_width=True):
+        sign_out()
+        st.rerun()
