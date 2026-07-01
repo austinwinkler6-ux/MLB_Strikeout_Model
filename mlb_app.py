@@ -149,18 +149,6 @@ def calc_profit(bet_amount, odds, result):
         return -bet_amount
     return 0.0
 
-# ---- TEAMS ----
-mlb_teams = sorted([
-    'Arizona Diamondbacks', 'Atlanta Braves', 'Baltimore Orioles', 'Boston Red Sox',
-    'Chicago Cubs', 'Chicago White Sox', 'Cincinnati Reds', 'Cleveland Guardians',
-    'Colorado Rockies', 'Detroit Tigers', 'Houston Astros', 'Kansas City Royals',
-    'Los Angeles Angels', 'Los Angeles Dodgers', 'Miami Marlins', 'Milwaukee Brewers',
-    'Minnesota Twins', 'New York Mets', 'New York Yankees', 'Athletics',
-    'Philadelphia Phillies', 'Pittsburgh Pirates', 'San Diego Padres', 'San Francisco Giants',
-    'Seattle Mariners', 'St. Louis Cardinals', 'Tampa Bay Rays', 'Texas Rangers',
-    'Toronto Blue Jays', 'Washington Nationals'
-])
-
 # ---- PARK FACTORS ----
 park_factors = {
     'Los Angeles Angels': 0.97, 'Baltimore Orioles': 1.02, 'Boston Red Sox': 0.95,
@@ -264,7 +252,7 @@ def get_actual_strikeouts(game_pk, pitcher_name):
         pass
     return None
 
-# ---- PROJECTION ENGINE ----
+# ---- MLB PROJECTION ENGINE ----
 def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1.0, before_date=None,
                    use_umpire=True, use_park=True, use_lineup=True, use_pitch_count=True, use_total=True):
     try:
@@ -552,32 +540,56 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
 
 pitchers_list = get_all_pitchers()
 
-# ---- HEADER ----
-st.markdown("""
-    <div style='display: flex; align-items: center; gap: 20px; padding-bottom: 10px;'>
-        <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='150'/>
-        <h1 style='margin: 0; padding: 0;'>Model Metrics</h1>
-    </div>
-""", unsafe_allow_html=True)
+# ---- SIDEBAR ----
+with st.sidebar:
+    st.markdown("""
+        <div style='text-align: center; padding: 20px 0 10px 0;'>
+            <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='140'/>
+        </div>
+    """, unsafe_allow_html=True)
 
-col_user, col_logout = st.columns([6, 1])
-with col_user:
+    st.markdown("---")
+
+    nav = st.radio(
+        "Navigation",
+        ["🏠 Home", "⚾ MLB Strikeouts", "🏈 NFL Pass Attempts", "🏀 NBA Models", "📒 Bet Tracker", "⚙️ Settings"] + (["🔬 Model Lab", "🧪 Backtest"] if is_admin else []),
+        label_visibility="collapsed"
+    )
+
+    st.markdown("---")
     st.caption(f"Logged in as {user.email}")
-with col_logout:
-    if st.button("Logout"):
+    if st.button("Logout", use_container_width=True):
         sign_out()
         st.rerun()
 
-# ---- TABS ----
-if is_admin:
-    tab1, tab2, tab3, tab4 = st.tabs(["🔥 Today's Edges", "📒 Bet Tracker", "🔬 Model Lab", "🧪 Backtest"])
-else:
-    tab1, tab2 = st.tabs(["🔥 Today's Edges", "📒 Bet Tracker"])
-    tab3, tab4 = None, None
+# ---- HOME PAGE ----
+if nav == "🏠 Home":
+    st.title("🏠 Welcome to Model Metrics")
+    st.markdown("### Sharp Data. Sharp Bets.")
+    st.markdown("---")
 
-# ---- TAB 1: TODAY'S EDGES ----
-with tab1:
-    st.header("🔥 Today's Edges")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("⚾ MLB Strikeouts", "Live", "Model Active")
+    col2.metric("🏈 NFL Pass Attempts", "Coming Soon", "Season Starting")
+    col3.metric("🏀 NBA Models", "Coming Soon", "Season Starting")
+
+    st.markdown("---")
+    st.subheader("📌 How to Use Model Metrics")
+    st.markdown("""
+    1. **Pick your sport** from the sidebar
+    2. **Load today's props** to see live lines from FanDuel and DraftKings
+    3. **Run projections** to see where our model disagrees with the book
+    4. **Log your bets** in the Bet Tracker to monitor your ROI
+    5. **Track your edge** — the bigger your edge tier win rate, the sharper your model
+    """)
+
+    st.markdown("---")
+    st.subheader("🔥 Today's Top Model")
+    st.info("⚾ MLB Strikeout Model is live — head to MLB Strikeouts to run today's projections!")
+
+# ---- MLB PAGE ----
+elif nav == "⚾ MLB Strikeouts":
+    st.title("⚾ MLB Strikeout Model")
 
     col_load, col_run_all = st.columns(2)
 
@@ -784,9 +796,34 @@ with tab1:
 
             st.divider()
 
-# ---- TAB 2: BET TRACKER ----
-with tab2:
-    st.header("📒 Bet Tracker")
+# ---- NFL PAGE ----
+elif nav == "🏈 NFL Pass Attempts":
+    st.title("🏈 NFL Pass Attempts Model")
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align: center; padding: 80px 0;'>
+            <h2>🚧 Coming Soon</h2>
+            <p style='color: #64748B; font-size: 18px;'>The NFL Pass Attempts model is currently in development.<br>Check back when the season starts!</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+# ---- NBA PAGE ----
+elif nav == "🏀 NBA Models":
+    st.title("🏀 NBA Models")
+    st.markdown("---")
+
+    nba_model = st.selectbox("Select Model", ["NBA Points", "NBA Assists"])
+
+    st.markdown("""
+        <div style='text-align: center; padding: 80px 0;'>
+            <h2>🚧 Coming Soon</h2>
+            <p style='color: #64748B; font-size: 18px;'>NBA models are currently in development.<br>Check back when the season starts!</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+# ---- BET TRACKER PAGE ----
+elif nav == "📒 Bet Tracker":
+    st.title("📒 Bet Tracker")
 
     st.subheader("Log a New Bet")
     col1, col2, col3 = st.columns(3)
@@ -927,171 +964,187 @@ with tab2:
                     delete_bet(bet['id'])
                 st.rerun()
 
-# ---- TAB 3: MODEL LAB (ADMIN ONLY) ----
-if tab3:
-    with tab3:
-        st.header("🔬 Model Lab")
+# ---- SETTINGS PAGE ----
+elif nav == "⚙️ Settings":
+    st.title("⚙️ Settings")
+    st.markdown("---")
 
-        preds = load_predictions()
-        preds_with_actual = [p for p in preds if p.get('actual') is not None]
+    st.subheader("Account Information")
+    st.write(f"**Email:** {user.email}")
+    st.write(f"**Account Type:** {'Admin' if is_admin else 'Standard'}")
+    st.write(f"**Member Since:** {user.created_at[:10] if user.created_at else 'N/A'}")
 
-        st.subheader("📥 Update Actual Results")
+    st.markdown("---")
+    st.subheader("Subscription")
+    st.info("💳 Subscription management coming soon — stay tuned!")
 
-        today_str = date.today().strftime('%Y-%m-%d')
-        preds_today = [p for p in preds if p.get('date') == today_str and p.get('actual') is None]
+    st.markdown("---")
+    st.subheader("Danger Zone")
+    if st.button("🚪 Logout", use_container_width=True):
+        sign_out()
+        st.rerun()
 
-        if preds_today:
-            for i, pred in enumerate(preds_today):
-                col1, col2, col3 = st.columns([2, 1, 1])
-                with col1:
-                    st.write(f"**{pred['pitcher']}** — Proj: {pred['projection']}")
-                with col2:
-                    actual = st.number_input(f"Actual K", value=0, key=f"actual_{i}", min_value=0)
-                with col3:
-                    if st.button("Save", key=f"save_actual_{i}"):
-                        update_prediction(pred['id'], {'actual': actual})
-                        st.rerun()
-        else:
-            st.info("No pending predictions for today!")
+# ---- MODEL LAB (ADMIN ONLY) ----
+elif nav == "🔬 Model Lab" and is_admin:
+    st.title("🔬 Model Lab")
+
+    preds = load_predictions()
+    preds_with_actual = [p for p in preds if p.get('actual') is not None]
+
+    st.subheader("📥 Update Actual Results")
+
+    today_str = date.today().strftime('%Y-%m-%d')
+    preds_today = [p for p in preds if p.get('date') == today_str and p.get('actual') is None]
+
+    if preds_today:
+        for i, pred in enumerate(preds_today):
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                st.write(f"**{pred['pitcher']}** — Proj: {pred['projection']}")
+            with col2:
+                actual = st.number_input(f"Actual K", value=0, key=f"actual_{i}", min_value=0)
+            with col3:
+                if st.button("Save", key=f"save_actual_{i}"):
+                    update_prediction(pred['id'], {'actual': actual})
+                    st.rerun()
+    else:
+        st.info("No pending predictions for today!")
+
+    st.markdown("---")
+
+    if len(preds_with_actual) < 5:
+        st.warning(f"Need at least 5 completed predictions. You have {len(preds_with_actual)} so far.")
+    else:
+        st.subheader("🏆 Model Version Comparison")
+
+        model_versions = {
+            'A — Base Only': {'use_park': False, 'use_umpire': False, 'use_pitch_count': False, 'use_total': False, 'desc': 'Pitcher skill × BF only'},
+            'B — + Opponent K%': {'use_park': False, 'use_umpire': False, 'use_pitch_count': False, 'use_total': False, 'desc': 'Base + opponent K%'},
+            'C — + Park': {'use_park': True, 'use_umpire': False, 'use_pitch_count': False, 'use_total': False, 'desc': 'Base + opp K% + park'},
+            'D — + Umpire': {'use_park': True, 'use_umpire': True, 'use_pitch_count': False, 'use_total': False, 'desc': 'Base + opp K% + park + umpire'},
+            'E — + Pitch Count': {'use_park': True, 'use_umpire': True, 'use_pitch_count': True, 'use_total': False, 'desc': 'All except total'},
+            'F — Full Model': {'use_park': True, 'use_umpire': True, 'use_pitch_count': True, 'use_total': True, 'desc': 'Everything'},
+        }
+
+        version_results = []
+        for version_name, config in model_versions.items():
+            errors = []
+            for pred in preds_with_actual:
+                actual = pred['actual']
+                base = pred['base']
+                opp_f = pred['opp_factor']
+                park_f = pred['park_factor'] if config['use_park'] else 1.0
+                ump_f = pred['umpire_factor'] if config['use_umpire'] else 1.0
+                velo_f = pred['velo_factor']
+                total_f = pred['total_factor'] if config['use_total'] else 1.0
+                combined = max(0.90, min(1.10, opp_f * park_f * ump_f * velo_f * total_f))
+                proj = round(base * combined, 1)
+                errors.append(abs(proj - actual))
+
+            mae = round(sum(errors) / len(errors), 2)
+            version_results.append({'Version': version_name, 'Description': config['desc'], 'MAE': mae, 'Predictions': len(errors)})
+
+        version_df = pd.DataFrame(version_results).sort_values('MAE')
+        best_mae = version_df['MAE'].min()
+        version_df['vs Best'] = version_df['MAE'].apply(lambda x: f"+{round(x - best_mae, 2)}" if x > best_mae else "✅ Best")
+        st.dataframe(version_df, use_container_width=True)
+        st.bar_chart(version_df.set_index('Version')['MAE'])
+
+        preds_with_tier = [p for p in preds_with_actual if p.get('confidence_tier')]
+        if preds_with_tier:
+            st.markdown("---")
+            st.subheader("🎯 MAE by Confidence Tier")
+            tier_df = pd.DataFrame(preds_with_tier)
+            tier_df['error'] = (tier_df['projection'] - tier_df['actual']).abs()
+            tier_summary = tier_df.groupby('confidence_tier').agg(
+                Predictions=('error', 'count'),
+                MAE=('error', 'mean')
+            ).reset_index()
+            tier_summary['MAE'] = tier_summary['MAE'].round(2)
+            st.dataframe(tier_summary, use_container_width=True)
 
         st.markdown("---")
+        st.subheader("📋 All Predictions")
+        full_df = pd.DataFrame(preds_with_actual)
+        full_df['error'] = (full_df['projection'] - full_df['actual']).abs().round(2)
+        display_cols = ['date', 'pitcher', 'projection', 'actual', 'error', 'book_line', 'edge']
+        if 'confidence_tier' in full_df.columns:
+            display_cols.append('confidence_tier')
+        st.dataframe(full_df[display_cols].sort_values('date', ascending=False), use_container_width=True)
 
-        if len(preds_with_actual) < 5:
-            st.warning(f"Need at least 5 completed predictions to run model analysis. You have {len(preds_with_actual)} so far.")
-        else:
-            st.subheader("🏆 Model Version Comparison")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Overall MAE", f"{round(full_df['error'].mean(), 2)} K")
+        col2.metric("Total Predictions", len(full_df))
+        col3.metric("Best Prediction", f"{full_df['error'].min()} K error")
 
-            model_versions = {
-                'A — Base Only': {'use_park': False, 'use_umpire': False, 'use_pitch_count': False, 'use_total': False, 'desc': 'Pitcher skill × BF only'},
-                'B — + Opponent K%': {'use_park': False, 'use_umpire': False, 'use_pitch_count': False, 'use_total': False, 'desc': 'Base + opponent K%'},
-                'C — + Park': {'use_park': True, 'use_umpire': False, 'use_pitch_count': False, 'use_total': False, 'desc': 'Base + opp K% + park'},
-                'D — + Umpire': {'use_park': True, 'use_umpire': True, 'use_pitch_count': False, 'use_total': False, 'desc': 'Base + opp K% + park + umpire'},
-                'E — + Pitch Count': {'use_park': True, 'use_umpire': True, 'use_pitch_count': True, 'use_total': False, 'desc': 'All except total'},
-                'F — Full Model': {'use_park': True, 'use_umpire': True, 'use_pitch_count': True, 'use_total': True, 'desc': 'Everything'},
-            }
+# ---- BACKTEST (ADMIN ONLY) ----
+elif nav == "🧪 Backtest" and is_admin:
+    st.title("🧪 Backtest")
 
-            version_results = []
-            for version_name, config in model_versions.items():
-                errors = []
-                for pred in preds_with_actual:
-                    actual = pred['actual']
-                    base = pred['base']
-                    opp_f = pred['opp_factor']
-                    park_f = pred['park_factor'] if config['use_park'] else 1.0
-                    ump_f = pred['umpire_factor'] if config['use_umpire'] else 1.0
-                    velo_f = pred['velo_factor']
-                    total_f = pred['total_factor'] if config['use_total'] else 1.0
-                    combined = max(0.90, min(1.10, opp_f * park_f * ump_f * velo_f * total_f))
-                    proj = round(base * combined, 1)
-                    errors.append(abs(proj - actual))
+    backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
+    backtest_season = st.selectbox("Season", ["2026", "2025", "2024"], key="backtest_season")
 
-                mae = round(sum(errors) / len(errors), 2)
-                version_results.append({'Version': version_name, 'Description': config['desc'], 'MAE': mae, 'Predictions': len(errors)})
+    if st.button("🔍 Load Games & Run Projections", use_container_width=True):
+        with st.spinner(f"Pulling starters for {backtest_date}..."):
+            date_str = backtest_date.strftime('%Y-%m-%d')
+            starters = get_starters_for_date(date_str)
 
-            version_df = pd.DataFrame(version_results).sort_values('MAE')
-            best_mae = version_df['MAE'].min()
-            version_df['vs Best'] = version_df['MAE'].apply(lambda x: f"+{round(x - best_mae, 2)}" if x > best_mae else "✅ Best")
-            st.dataframe(version_df, use_container_width=True)
+            if not starters:
+                st.error("No games found for that date")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results = []
 
+                for i, starter in enumerate(starters):
+                    status_text.text(f"Running projection for {starter['pitcher']} ({i+1} of {len(starters)})")
+                    progress_bar.progress((i+1) / len(starters))
+
+                    result = run_projection(
+                        starter['pitcher'],
+                        starter['opponent'],
+                        starter['home_team'],
+                        backtest_season,
+                        before_date=date_str
+                    )
+
+                    actual_k = get_actual_strikeouts(starter['game_pk'], starter['pitcher'])
+
+                    if result and actual_k is not None:
+                        error = round(abs(result['projection'] - actual_k), 1)
+                        results.append({
+                            'Pitcher': starter['pitcher'],
+                            'Matchup': f"{starter['team']} @ {starter['home_team']}" if starter['team'] != starter['home_team'] else f"{starter['opponent']} @ {starter['home_team']}",
+                            'Projection': result['projection'],
+                            'Actual K': actual_k,
+                            'Error': error,
+                            'Tier': result['confidence_tier']
+                        })
+
+                st.session_state['backtest_results'] = results
+                st.session_state['backtest_date'] = date_str
+                status_text.text(f"✅ Done! {len(results)} pitchers projected.")
+                progress_bar.progress(1.0)
+
+    if 'backtest_results' in st.session_state and st.session_state['backtest_results']:
+        st.markdown("---")
+        st.subheader(f"📋 Results for {st.session_state.get('backtest_date', '')}")
+
+        results_df = pd.DataFrame(st.session_state['backtest_results'])
+        st.dataframe(results_df.sort_values('Error'), use_container_width=True)
+
+        st.markdown("---")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Avg Error (MAE)", f"{round(results_df['Error'].mean(), 2)} K")
+        col2.metric("Best Projection", f"{results_df['Error'].min()} K error")
+        col3.metric("Worst Projection", f"{results_df['Error'].max()} K error")
+
+        if 'Tier' in results_df.columns:
             st.markdown("---")
-            st.bar_chart(version_df.set_index('Version')['MAE'])
-
-            preds_with_tier = [p for p in preds_with_actual if p.get('confidence_tier')]
-            if preds_with_tier:
-                st.markdown("---")
-                st.subheader("🎯 MAE by Confidence Tier")
-                tier_df = pd.DataFrame(preds_with_tier)
-                tier_df['error'] = (tier_df['projection'] - tier_df['actual']).abs()
-                tier_summary = tier_df.groupby('confidence_tier').agg(
-                    Predictions=('error', 'count'),
-                    MAE=('error', 'mean')
-                ).reset_index()
-                tier_summary['MAE'] = tier_summary['MAE'].round(2)
-                st.dataframe(tier_summary, use_container_width=True)
-
-            st.markdown("---")
-            st.subheader("📋 All Predictions")
-            full_df = pd.DataFrame(preds_with_actual)
-            full_df['error'] = (full_df['projection'] - full_df['actual']).abs().round(2)
-            display_cols = ['date', 'pitcher', 'projection', 'actual', 'error', 'book_line', 'edge']
-            if 'confidence_tier' in full_df.columns:
-                display_cols.append('confidence_tier')
-            st.dataframe(full_df[display_cols].sort_values('date', ascending=False), use_container_width=True)
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Overall MAE", f"{round(full_df['error'].mean(), 2)} K")
-            col2.metric("Total Predictions", len(full_df))
-            col3.metric("Best Prediction", f"{full_df['error'].min()} K error")
-
-# ---- TAB 4: BACKTEST (ADMIN ONLY) ----
-if tab4:
-    with tab4:
-        st.header("🧪 Backtest")
-
-        backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
-        backtest_season = st.selectbox("Season", ["2026", "2025", "2024"], key="backtest_season")
-
-        if st.button("🔍 Load Games & Run Projections", use_container_width=True):
-            with st.spinner(f"Pulling starters for {backtest_date}..."):
-                date_str = backtest_date.strftime('%Y-%m-%d')
-                starters = get_starters_for_date(date_str)
-
-                if not starters:
-                    st.error("No games found for that date")
-                else:
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    results = []
-
-                    for i, starter in enumerate(starters):
-                        status_text.text(f"Running projection for {starter['pitcher']} ({i+1} of {len(starters)})")
-                        progress_bar.progress((i+1) / len(starters))
-
-                        result = run_projection(
-                            starter['pitcher'],
-                            starter['opponent'],
-                            starter['home_team'],
-                            backtest_season,
-                            before_date=date_str
-                        )
-
-                        actual_k = get_actual_strikeouts(starter['game_pk'], starter['pitcher'])
-
-                        if result and actual_k is not None:
-                            error = round(abs(result['projection'] - actual_k), 1)
-                            results.append({
-                                'Pitcher': starter['pitcher'],
-                                'Matchup': f"{starter['team']} @ {starter['home_team']}" if starter['team'] != starter['home_team'] else f"{starter['opponent']} @ {starter['home_team']}",
-                                'Projection': result['projection'],
-                                'Actual K': actual_k,
-                                'Error': error,
-                                'Tier': result['confidence_tier']
-                            })
-
-                    st.session_state['backtest_results'] = results
-                    st.session_state['backtest_date'] = date_str
-                    status_text.text(f"✅ Done! {len(results)} pitchers projected.")
-                    progress_bar.progress(1.0)
-
-        if 'backtest_results' in st.session_state and st.session_state['backtest_results']:
-            st.markdown("---")
-            st.subheader(f"📋 Results for {st.session_state.get('backtest_date', '')}")
-
-            results_df = pd.DataFrame(st.session_state['backtest_results'])
-            st.dataframe(results_df.sort_values('Error'), use_container_width=True)
-
-            st.markdown("---")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Avg Error (MAE)", f"{round(results_df['Error'].mean(), 2)} K")
-            col2.metric("Best Projection", f"{results_df['Error'].min()} K error")
-            col3.metric("Worst Projection", f"{results_df['Error'].max()} K error")
-
-            if 'Tier' in results_df.columns:
-                st.markdown("---")
-                st.subheader("🎯 MAE by Confidence Tier")
-                tier_summary = results_df.groupby('Tier').agg(
-                    Predictions=('Error', 'count'),
-                    MAE=('Error', 'mean')
-                ).reset_index()
-                tier_summary['MAE'] = tier_summary['MAE'].round(2)
-                st.dataframe(tier_summary, use_container_width=True)
+            st.subheader("🎯 MAE by Confidence Tier")
+            tier_summary = results_df.groupby('Tier').agg(
+                Predictions=('Error', 'count'),
+                MAE=('Error', 'mean')
+            ).reset_index()
+            tier_summary['MAE'] = tier_summary['MAE'].round(2)
+            st.dataframe(tier_summary, use_container_width=True)
