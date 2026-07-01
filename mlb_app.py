@@ -43,17 +43,17 @@ def sign_out():
 # ---- AUTH WALL ----
 if 'user' not in st.session_state:
     st.markdown("""
-    <div style='display: flex; align-items: center; gap: 20px; padding-bottom: 10px;'>
-        <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='150'/>
-        <h1 style='margin: 0; padding: 0;'>Model Metrics</h1>
-    </div>
-""", unsafe_allow_html=True)
-    st.markdown("---")
+        <div style='display: flex; flex-direction: column; align-items: center; padding-top: 60px;'>
+            <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='180'/>
+            <h2 style='margin-top: 20px; margin-bottom: 0; text-align: center;'>Welcome to Model Metrics</h2>
+            <p style='color: #64748B; text-align: center; margin-top: 8px;'>Sharp Data. Sharp Bets.</p>
+        </div>
+    """, unsafe_allow_html=True)
+    st.markdown("<div style='max-width: 420px; margin: 0 auto;'>", unsafe_allow_html=True)
 
     auth_tab1, auth_tab2 = st.tabs(["Login", "Sign Up"])
 
     with auth_tab1:
-        st.subheader("Login")
         login_email = st.text_input("Email", key="login_email")
         login_password = st.text_input("Password", type="password", key="login_password")
         if st.button("Login", use_container_width=True):
@@ -66,7 +66,6 @@ if 'user' not in st.session_state:
                 st.rerun()
 
     with auth_tab2:
-        st.subheader("Create Account")
         signup_email = st.text_input("Email", key="signup_email")
         signup_password = st.text_input("Password", type="password", key="signup_password")
         signup_password2 = st.text_input("Confirm Password", type="password", key="signup_password2")
@@ -85,6 +84,8 @@ if 'user' not in st.session_state:
                         st.session_state['user'] = user2
                         st.session_state['session'] = session
                         st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 # ---- LOGGED IN ----
