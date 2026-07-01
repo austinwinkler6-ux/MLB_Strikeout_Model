@@ -796,12 +796,15 @@ elif nav == "⚾ MLB Models":
 
 # ---- NFL PAGE ----
 elif nav == "🏈 NFL Models":
-    st.title("🏈 NFL Pass Attempts Model")
+    st.title("🏈 NFL Models")
     st.markdown("---")
+
+    nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Receptions", "NFL Completions"])
+
     st.markdown("""
         <div style='text-align: center; padding: 80px 0;'>
             <h2>🚧 Coming Soon</h2>
-            <p style='color: #64748B; font-size: 18px;'>The NFL Pass Attempts model is currently in development.<br>Check back when the season starts!</p>
+            <p style='color: #64748B; font-size: 18px;'>NFL models are currently in development.<br>Check back when the season starts!</p>
         </div>
     """, unsafe_allow_html=True)
 
