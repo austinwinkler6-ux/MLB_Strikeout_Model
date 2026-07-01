@@ -42,6 +42,7 @@ def sign_out():
 
 # ---- AUTH WALL ----
 if 'user' not in st.session_state:
+    st.image("https://raw.githubusercontent.com/austinwinkler6-ux/mlb-strikeout-model/main/ModelMetricsLogo.png", width=200)
     st.title("MLB Strikeout Model")
     st.markdown("---")
 
