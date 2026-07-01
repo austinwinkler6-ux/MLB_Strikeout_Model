@@ -42,11 +42,11 @@ def sign_out():
 
 # ---- AUTH WALL ----
 if 'user' not in st.session_state:
-    col_logo, col_title = st.columns([1, 4])
-with col_logo:
-    st.image("https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png", width=120)
+    col_title, col_logo = st.columns([4, 1])
 with col_title:
     st.markdown("<h1 style='padding-top: 25px;'>Model Metrics</h1>", unsafe_allow_html=True)
+with col_logo:
+    st.image("https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png", width=120)
     st.markdown("---")
 
     auth_tab1, auth_tab2 = st.tabs(["Login", "Sign Up"])
