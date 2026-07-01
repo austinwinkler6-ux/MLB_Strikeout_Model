@@ -1,15 +1,11 @@
 import streamlit as st
 import requests
 import pandas as pd
-import json
-import os
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 from io import StringIO
 from supabase import create_client, Client
 
 st.set_page_config(page_title="MLB Strikeout Model", page_icon="⚾", layout="wide")
-
-st.title("MLB Strikeout Model")
 
 ODDS_API_KEY = "63370880145b421161f7b81b6064772f"
 
@@ -22,48 +18,121 @@ def get_supabase():
 
 supabase = get_supabase()
 
+# ---- AUTH FUNCTIONS ----
+def sign_up(email, password):
+    try:
+        res = supabase.auth.sign_up({"email": email, "password": password})
+        return res.user, None
+    except Exception as e:
+        return None, str(e)
+
+def sign_in(email, password):
+    try:
+        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        return res.user, res.session, None
+    except Exception as e:
+        return None, None, str(e)
+
+def sign_out():
+    try:
+        supabase.auth.sign_out()
+    except:
+        pass
+    st.session_state.clear()
+
+# ---- AUTH WALL ----
+if 'user' not in st.session_state:
+    st.title("MLB Strikeout Model")
+    st.markdown("---")
+
+    auth_tab1, auth_tab2 = st.tabs(["Login", "Sign Up"])
+
+    with auth_tab1:
+        st.subheader("Login")
+        login_email = st.text_input("Email", key="login_email")
+        login_password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Login", use_container_width=True):
+            user, session, error = sign_in(login_email, login_password)
+            if error:
+                st.error(f"Login failed: {error}")
+            else:
+                st.session_state['user'] = user
+                st.session_state['session'] = session
+                st.rerun()
+
+    with auth_tab2:
+        st.subheader("Create Account")
+        signup_email = st.text_input("Email", key="signup_email")
+        signup_password = st.text_input("Password", type="password", key="signup_password")
+        signup_password2 = st.text_input("Confirm Password", type="password", key="signup_password2")
+        if st.button("Create Account", use_container_width=True):
+            if signup_password != signup_password2:
+                st.error("Passwords don't match!")
+            elif len(signup_password) < 6:
+                st.error("Password must be at least 6 characters!")
+            else:
+                user, error = sign_up(signup_email, signup_password)
+                if error:
+                    st.error(f"Sign up failed: {error}")
+                else:
+                    user2, session, error2 = sign_in(signup_email, signup_password)
+                    if not error2:
+                        st.session_state['user'] = user2
+                        st.session_state['session'] = session
+                        st.rerun()
+    st.stop()
+
+# ---- LOGGED IN ----
+user = st.session_state['user']
+user_id = user.id
+
+# Set auth header for RLS
+supabase.postgrest.auth(st.session_state['session'].access_token)
+
 # ---- DATABASE FUNCTIONS ----
 def load_bets():
     try:
-        response = supabase.table("bets").select("*").order("created_at", desc=True).execute()
+        response = supabase.table("bets").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
         return response.data or []
     except:
         return []
 
 def save_bet(bet):
     try:
+        bet['user_id'] = user_id
         supabase.table("bets").insert(bet).execute()
     except Exception as e:
         st.error(f"Error saving bet: {e}")
 
 def update_bet(bet_id, updates):
     try:
-        supabase.table("bets").update(updates).eq("id", bet_id).execute()
+        supabase.table("bets").update(updates).eq("id", bet_id).eq("user_id", user_id).execute()
     except Exception as e:
         st.error(f"Error updating bet: {e}")
 
 def delete_bet(bet_id):
     try:
-        supabase.table("bets").delete().eq("id", bet_id).execute()
+        supabase.table("bets").delete().eq("id", bet_id).eq("user_id", user_id).execute()
     except Exception as e:
         st.error(f"Error deleting bet: {e}")
 
 def load_predictions():
     try:
-        response = supabase.table("predictions").select("*").order("created_at", desc=True).execute()
+        response = supabase.table("predictions").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
         return response.data or []
     except:
         return []
 
 def save_prediction(pred):
     try:
+        pred['user_id'] = user_id
         supabase.table("predictions").insert(pred).execute()
     except Exception as e:
         st.error(f"Error saving prediction: {e}")
 
 def update_prediction(pred_id, updates):
     try:
-        supabase.table("predictions").update(updates).eq("id", pred_id).execute()
+        supabase.table("predictions").update(updates).eq("id", pred_id).eq("user_id", user_id).execute()
     except Exception as e:
         st.error(f"Error updating prediction: {e}")
 
@@ -76,6 +145,16 @@ def calc_profit(bet_amount, odds, result):
     elif result == 'Loss':
         return -bet_amount
     return 0.0
+
+# ---- HEADER ----
+st.title("MLB Strikeout Model")
+col_user, col_logout = st.columns([6, 1])
+with col_user:
+    st.caption(f"Logged in as {user.email}")
+with col_logout:
+    if st.button("Logout"):
+        sign_out()
+        st.rerun()
 
 # ---- TEAMS ----
 mlb_teams = sorted([
@@ -255,7 +334,6 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         last10_k_pct = round(df['strikeouts'].head(10).sum() / df['batters_faced'].head(10).sum(), 3)
         recent_strike_pct = round(df['strike_pct'].head(5).mean(), 3)
 
-        # ---- VOLATILITY / CONFIDENCE TIER ----
         last10_strikeouts = df['strikeouts'].head(10)
         last10_k_avg = round(last10_strikeouts.mean(), 2)
         last10_k_std = round(last10_strikeouts.std(), 2) if len(last10_strikeouts) > 1 else 0.0
@@ -715,7 +793,6 @@ with tab2:
         odds_val = bt_odds or -110
         bet_val = bt_bet or 0
         profit = calc_profit(bet_val, odds_val, bt_result)
-
         save_bet({
             'date': str(bt_date),
             'pitcher': bt_pitcher,
@@ -763,7 +840,6 @@ with tab2:
         if not settled_with_data.empty:
             st.markdown("---")
             st.subheader("📊 Edge Tier Win Rate")
-
             settled_with_data['edge'] = (settled_with_data['projection'] - settled_with_data['opening_line']).abs().round(1)
             settled_with_data['win'] = settled_with_data['result'] == 'Win'
 
@@ -795,7 +871,7 @@ with tab2:
         st.markdown("---")
         st.subheader("📝 All Bets")
 
-        display_df = bets_df.drop(columns=['id', 'created_at'], errors='ignore')
+        display_df = bets_df.drop(columns=['id', 'created_at', 'user_id'], errors='ignore')
 
         edited_df = st.data_editor(
             display_df,
