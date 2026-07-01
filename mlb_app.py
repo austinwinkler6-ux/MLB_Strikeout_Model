@@ -799,7 +799,7 @@ elif nav == "🏈 NFL Models":
     st.title("🏈 NFL Models")
     st.markdown("---")
 
-    nfl_model = st.selectbox("Select Model", ["NFL Pass Completions", "NFL Receptions", "NFL Pass Attempts"])
+    nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
 
     st.markdown("""
         <div style='text-align: center; padding: 80px 0;'>
