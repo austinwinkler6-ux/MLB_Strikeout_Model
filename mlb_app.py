@@ -44,7 +44,7 @@ def sign_out():
 if 'user' not in st.session_state:
     st.markdown("""
     <div style='display: flex; align-items: center; gap: 20px; padding-bottom: 10px;'>
-        <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='80'/>
+        <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='150'/>
         <h1 style='margin: 0; padding: 0;'>Model Metrics</h1>
     </div>
 """, unsafe_allow_html=True)
