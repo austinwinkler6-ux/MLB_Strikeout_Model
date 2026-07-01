@@ -578,11 +578,11 @@ if nav == "🏠 Home":
     st.markdown("---")
     st.subheader("📌 How to Use Model Metrics")
     st.markdown("""
-    1. **Pick your sport** from the sidebar
-    2. **Load today's props** to see live lines from FanDuel and DraftKings
-    3. **Run projections** to see where our model disagrees with the book
-    4. **Log your bets** in the Bet Tracker to monitor your ROI
-    5. **Track your edge** — the bigger your edge tier win rate, the sharper your model
+    1. **Select your sport** from the sidebar to access the available models.
+    2. **Load today's props** to view live player prop lines from FanDuel and DraftKings.
+    3. **Run projections** to compare our model's projections against the sportsbooks and identify potential value opportunities.
+    4. **Track your bets** using the built-in Bet Tracker to monitor your performance, profit, and ROI over time.
+    5. **Follow our edge tiers** — historically, larger model edges tend to produce stronger long-term results, helping you make more disciplined betting decisions.
     """)
 
 # ---- MLB PAGE ----
