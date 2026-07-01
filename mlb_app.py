@@ -5,6 +5,7 @@ import json
 import os
 from datetime import datetime, date, timedelta
 from io import StringIO
+from supabase import create_client, Client
 
 st.set_page_config(page_title="MLB Strikeout Model", page_icon="⚾", layout="wide")
 
@@ -12,40 +13,59 @@ st.title("MLB Strikeout Model")
 
 ODDS_API_KEY = "63370880145b421161f7b81b6064772f"
 
-# ---- FILE STORAGE ----
-TRACKER_FILE = "mlb_bet_tracker.json"
-BACKTEST_FILE = "mlb_backtest.json"
-PREDICTIONS_FILE = "mlb_predictions.json"
+# ---- SUPABASE CONNECTION ----
+@st.cache_resource
+def get_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
+supabase = get_supabase()
+
+# ---- DATABASE FUNCTIONS ----
 def load_bets():
-    if os.path.exists(TRACKER_FILE):
-        with open(TRACKER_FILE, 'r') as f:
-            return json.load(f)
-    return []
+    try:
+        response = supabase.table("bets").select("*").order("created_at", desc=True).execute()
+        return response.data or []
+    except:
+        return []
 
-def save_bets(bets):
-    with open(TRACKER_FILE, 'w') as f:
-        json.dump(bets, f)
+def save_bet(bet):
+    try:
+        supabase.table("bets").insert(bet).execute()
+    except Exception as e:
+        st.error(f"Error saving bet: {e}")
+
+def update_bet(bet_id, updates):
+    try:
+        supabase.table("bets").update(updates).eq("id", bet_id).execute()
+    except Exception as e:
+        st.error(f"Error updating bet: {e}")
+
+def delete_bet(bet_id):
+    try:
+        supabase.table("bets").delete().eq("id", bet_id).execute()
+    except Exception as e:
+        st.error(f"Error deleting bet: {e}")
 
 def load_predictions():
-    if os.path.exists(PREDICTIONS_FILE):
-        with open(PREDICTIONS_FILE, 'r') as f:
-            return json.load(f)
-    return []
+    try:
+        response = supabase.table("predictions").select("*").order("created_at", desc=True).execute()
+        return response.data or []
+    except:
+        return []
 
-def save_predictions(preds):
-    with open(PREDICTIONS_FILE, 'w') as f:
-        json.dump(preds, f)
+def save_prediction(pred):
+    try:
+        supabase.table("predictions").insert(pred).execute()
+    except Exception as e:
+        st.error(f"Error saving prediction: {e}")
 
-def load_backtest():
-    if os.path.exists(BACKTEST_FILE):
-        with open(BACKTEST_FILE, 'r') as f:
-            return json.load(f)
-    return []
-
-def save_backtest(data):
-    with open(BACKTEST_FILE, 'w') as f:
-        json.dump(data, f)
+def update_prediction(pred_id, updates):
+    try:
+        supabase.table("predictions").update(updates).eq("id", pred_id).execute()
+    except Exception as e:
+        st.error(f"Error updating prediction: {e}")
 
 def calc_profit(bet_amount, odds, result):
     if result == 'Win':
@@ -567,8 +587,7 @@ with tab1:
                             st.session_state['all_pitchers'][pitcher]['Play'] = play
                             st.session_state['all_pitchers'][pitcher]['Tier'] = result['confidence_tier']
 
-                            preds = load_predictions()
-                            preds.append({
+                            save_prediction({
                                 'date': date.today().strftime('%Y-%m-%d'),
                                 'pitcher': pitcher,
                                 'opponent': opp,
@@ -588,7 +607,6 @@ with tab1:
                                 'confidence_tier': result['confidence_tier'],
                                 'actual': None
                             })
-                            save_predictions(preds)
 
                 status_text.text(f"✅ Done! All {total} projections complete.")
                 progress_bar.progress(1.0)
@@ -650,8 +668,7 @@ with tab1:
                                 st.session_state['last_projection'] = proj
                                 st.session_state['last_pitcher'] = pitcher
 
-                                preds = load_predictions()
-                                preds.append({
+                                save_prediction({
                                     'date': date.today().strftime('%Y-%m-%d'),
                                     'pitcher': pitcher,
                                     'opponent': opp,
@@ -671,7 +688,6 @@ with tab1:
                                     'confidence_tier': result['confidence_tier'],
                                     'actual': None
                                 })
-                                save_predictions(preds)
                                 st.rerun()
 
             st.divider()
@@ -679,7 +695,6 @@ with tab1:
 # ---- TAB 2: BET TRACKER ----
 with tab2:
     st.header("📒 Bet Tracker")
-    bets = load_bets()
 
     st.subheader("Log a New Bet")
     col1, col2, col3 = st.columns(3)
@@ -701,7 +716,7 @@ with tab2:
         bet_val = bt_bet or 0
         profit = calc_profit(bet_val, odds_val, bt_result)
 
-        new_bet = {
+        save_bet({
             'date': str(bt_date),
             'pitcher': bt_pitcher,
             'projection': bt_projection or 0,
@@ -712,20 +727,15 @@ with tab2:
             'result': bt_result,
             'actual': bt_actual or 0,
             'profit': profit
-        }
-        bets.append(new_bet)
-        save_bets(bets)
+        })
         st.rerun()
+
+    bets = load_bets()
 
     if bets:
         st.markdown("---")
         st.subheader("📈 Performance Summary")
         bets_df = pd.DataFrame(bets)
-
-        if 'odds' not in bets_df.columns:
-            bets_df['odds'] = -110
-        if 'profit' not in bets_df.columns:
-            bets_df['profit'] = 0.0
 
         settled = bets_df[bets_df['result'] != 'Pending']
 
@@ -785,34 +795,29 @@ with tab2:
         st.markdown("---")
         st.subheader("📝 All Bets")
 
-        edited_df = st.data_editor(
-            bets_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
-                'actual': st.column_config.NumberColumn('Actual K', min_value=0),
-                'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
-                'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
-                'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0),
-                'odds': st.column_config.NumberColumn('Odds'),
-                'profit': st.column_config.NumberColumn('Profit ($)'),
-                'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
-            }
-        )
-
-        col_save, col_clear = st.columns(2)
-        with col_save:
-            if st.button("💾 Save Table Changes", use_container_width=True):
-                updated_bets = edited_df.to_dict('records')
-                for b in updated_bets:
-                    b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
-                save_bets(updated_bets)
-                st.rerun()
-        with col_clear:
-            if st.button("🗑️ Clear All Bets", use_container_width=True):
-                save_bets([])
-                st.rerun()
+        for bet in bets:
+            with st.expander(f"{bet['date']} — {bet['pitcher']} | {bet.get('over_under', '')} {bet.get('opening_line', '')} | {bet['result']}"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    new_actual = st.number_input("Actual K", value=float(bet.get('actual', 0)), key=f"actual_{bet['id']}")
+                    new_result = st.selectbox("Result", ["Pending", "Win", "Loss"], index=["Pending", "Win", "Loss"].index(bet['result']), key=f"result_{bet['id']}")
+                with col2:
+                    new_odds = st.number_input("Odds", value=float(bet.get('odds', -110)), key=f"odds_{bet['id']}")
+                    new_bet_amount = st.number_input("Bet ($)", value=float(bet.get('bet_amount', 0)), key=f"amount_{bet['id']}")
+                with col3:
+                    if st.button("💾 Save", key=f"save_{bet['id']}"):
+                        new_profit = calc_profit(new_bet_amount, new_odds, new_result)
+                        update_bet(bet['id'], {
+                            'actual': new_actual,
+                            'result': new_result,
+                            'odds': new_odds,
+                            'bet_amount': new_bet_amount,
+                            'profit': new_profit
+                        })
+                        st.rerun()
+                    if st.button("🗑️ Delete", key=f"delete_{bet['id']}"):
+                        delete_bet(bet['id'])
+                        st.rerun()
 
 # ---- TAB 3: MODEL LAB ----
 with tab3:
@@ -823,7 +828,8 @@ with tab3:
 
     st.subheader("📥 Update Actual Results")
 
-    preds_today = [p for p in preds if p.get('date') == date.today().strftime('%Y-%m-%d') and p.get('actual') is None]
+    today_str = date.today().strftime('%Y-%m-%d')
+    preds_today = [p for p in preds if p.get('date') == today_str and p.get('actual') is None]
 
     if preds_today:
         for i, pred in enumerate(preds_today):
@@ -834,11 +840,7 @@ with tab3:
                 actual = st.number_input(f"Actual K", value=0, key=f"actual_{i}", min_value=0)
             with col3:
                 if st.button("Save", key=f"save_actual_{i}"):
-                    for p in preds:
-                        if p['pitcher'] == pred['pitcher'] and p['date'] == pred['date'] and p['actual'] is None:
-                            p['actual'] = actual
-                            break
-                    save_predictions(preds)
+                    update_prediction(pred['id'], {'actual': actual})
                     st.rerun()
     else:
         st.info("No pending predictions for today!")
@@ -885,7 +887,6 @@ with tab3:
         st.markdown("---")
         st.bar_chart(version_df.set_index('Version')['MAE'])
 
-        # ---- MAE BY CONFIDENCE TIER ----
         preds_with_tier = [p for p in preds_with_actual if p.get('confidence_tier')]
         if preds_with_tier:
             st.markdown("---")
@@ -913,14 +914,9 @@ with tab3:
         col2.metric("Total Predictions", len(full_df))
         col3.metric("Best Prediction", f"{full_df['error'].min()} K error")
 
-        if st.button("🗑️ Clear All Predictions"):
-            save_predictions([])
-            st.rerun()
-
 # ---- TAB 4: BACKTEST ----
 with tab4:
     st.header("🧪 Backtest")
-    st.caption("Tests projection accuracy (MAE) against actual results. Historical book lines aren't available, so this measures how close your model gets to reality — not whether you'd have won the bet.")
 
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
     backtest_season = st.selectbox("Season", ["2026", "2025", "2024"], key="backtest_season")
