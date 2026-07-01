@@ -795,29 +795,47 @@ with tab2:
         st.markdown("---")
         st.subheader("📝 All Bets")
 
-        for bet in bets:
-            with st.expander(f"{bet['date']} — {bet['pitcher']} | {bet.get('over_under', '')} {bet.get('opening_line', '')} | {bet['result']}"):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    new_actual = st.number_input("Actual K", value=float(bet.get('actual', 0)), key=f"actual_{bet['id']}")
-                    new_result = st.selectbox("Result", ["Pending", "Win", "Loss"], index=["Pending", "Win", "Loss"].index(bet['result']), key=f"result_{bet['id']}")
-                with col2:
-                    new_odds = st.number_input("Odds", value=float(bet.get('odds', -110)), key=f"odds_{bet['id']}")
-                    new_bet_amount = st.number_input("Bet ($)", value=float(bet.get('bet_amount', 0)), key=f"amount_{bet['id']}")
-                with col3:
-                    if st.button("💾 Save", key=f"save_{bet['id']}"):
-                        new_profit = calc_profit(new_bet_amount, new_odds, new_result)
-                        update_bet(bet['id'], {
-                            'actual': new_actual,
-                            'result': new_result,
-                            'odds': new_odds,
-                            'bet_amount': new_bet_amount,
-                            'profit': new_profit
+        display_df = bets_df.drop(columns=['id', 'created_at'], errors='ignore')
+
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
+                'actual': st.column_config.NumberColumn('Actual K', min_value=0),
+                'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
+                'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
+                'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0),
+                'odds': st.column_config.NumberColumn('Odds'),
+                'profit': st.column_config.NumberColumn('Profit ($)'),
+                'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
+            }
+        )
+
+        col_save, col_clear = st.columns(2)
+        with col_save:
+            if st.button("💾 Save Table Changes", use_container_width=True):
+                updated_bets = edited_df.to_dict('records')
+                for i, b in enumerate(updated_bets):
+                    b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
+                    if i < len(bets) and bets[i].get('id'):
+                        update_bet(bets[i]['id'], {
+                            'actual': b.get('actual'),
+                            'result': b.get('result'),
+                            'odds': b.get('odds'),
+                            'bet_amount': b.get('bet_amount'),
+                            'opening_line': b.get('opening_line'),
+                            'projection': b.get('projection'),
+                            'over_under': b.get('over_under'),
+                            'profit': b['profit']
                         })
-                        st.rerun()
-                    if st.button("🗑️ Delete", key=f"delete_{bet['id']}"):
-                        delete_bet(bet['id'])
-                        st.rerun()
+                st.rerun()
+        with col_clear:
+            if st.button("🗑️ Clear All Bets", use_container_width=True):
+                for bet in bets:
+                    delete_bet(bet['id'])
+                st.rerun()
 
 # ---- TAB 3: MODEL LAB ----
 with tab3:
