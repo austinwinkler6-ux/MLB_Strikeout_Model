@@ -3,4 +3,4 @@ requests
 pandas
 numpy
 supabase
-extra-streamlit-components
+streamlit-cookies-controller
