@@ -4,7 +4,6 @@ import pandas as pd
 from datetime import date, timedelta
 from io import StringIO
 from supabase import create_client, Client
-from streamlit_cookies_controller import CookieController
 
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
 
@@ -42,21 +41,6 @@ def sign_out():
         pass
     st.session_state.clear()
 
-# ---- COOKIE CONTROLLER ----
-cookie_controller = CookieController()
-
-# ---- AUTO LOGIN FROM COOKIE ----
-if 'user' not in st.session_state:
-    saved_token = cookie_controller.get('mm_refresh_token')
-    if saved_token:
-        try:
-            refreshed = supabase.auth.refresh_session(saved_token)
-            st.session_state['user'] = refreshed.user
-            st.session_state['session'] = refreshed.session
-            st.rerun()
-        except:
-            cookie_controller.remove('mm_refresh_token')
-
 # ---- AUTH WALL ----
 if 'user' not in st.session_state:
     st.markdown("""
@@ -78,7 +62,6 @@ if 'user' not in st.session_state:
             else:
                 st.session_state['user'] = user
                 st.session_state['session'] = session
-                cookie_controller.set('mm_refresh_token', session.refresh_token)
                 st.rerun()
 
     with auth_tab2:
@@ -99,9 +82,9 @@ if 'user' not in st.session_state:
                     if not error2:
                         st.session_state['user'] = user2
                         st.session_state['session'] = session
-                        cookie_controller.set('mm_refresh_token', session.refresh_token)
                         st.rerun()
     st.stop()
+
 # ---- LOGGED IN ----
 user = st.session_state['user']
 user_id = user.id
@@ -578,7 +561,6 @@ with st.sidebar:
     st.markdown("---")
     st.caption(f"Logged in as {user.email}")
     if st.button("Logout", use_container_width=True):
-        cookie_controller.remove('mm_refresh_token')
         sign_out()
         st.rerun()
 
@@ -590,7 +572,7 @@ if nav == "🏠 Home":
 
     col1, col2, col3 = st.columns(3)
     col1.metric("⚾ MLB Strikeouts", "Live", "Model Active")
-    col2.metric("🏈 NFL Pass Attempts", "Coming Soon", "Season Starting")
+    col2.metric("🏈 NFL Models", "Coming Soon", "Season Starting")
     col3.metric("🏀 NBA Models", "Coming Soon", "Season Starting")
 
     st.markdown("---")
@@ -1164,6 +1146,5 @@ elif nav == "⚙️ Settings":
     st.markdown("---")
     st.subheader("Danger Zone")
     if st.button("🚪 Logout", use_container_width=True):
-        cookie_controller.remove('mm_refresh_token')
         sign_out()
         st.rerun()
