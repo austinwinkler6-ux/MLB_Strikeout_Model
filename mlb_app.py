@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import date, timedelta
 from io import StringIO
 from supabase import create_client, Client
+import extra_streamlit_components as stx
 
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
 
@@ -41,6 +42,22 @@ def sign_out():
         pass
     st.session_state.clear()
 
+# ---- COOKIE MANAGER ----
+cookie_manager = stx.CookieManager()
+cookies = cookie_manager.get_all()
+
+# ---- AUTO LOGIN FROM COOKIE ----
+if 'user' not in st.session_state:
+    saved_token = cookies.get('mm_refresh_token')
+    if saved_token:
+        try:
+            refreshed = supabase.auth.refresh_session(saved_token)
+            st.session_state['user'] = refreshed.user
+            st.session_state['session'] = refreshed.session
+            st.rerun()
+        except:
+            cookie_manager.delete('mm_refresh_token')
+
 # ---- AUTH WALL ----
 if 'user' not in st.session_state:
     st.markdown("""
@@ -62,6 +79,7 @@ if 'user' not in st.session_state:
             else:
                 st.session_state['user'] = user
                 st.session_state['session'] = session
+                cookie_manager.set('mm_refresh_token', session.refresh_token, expires_at=None)
                 st.rerun()
 
     with auth_tab2:
@@ -82,9 +100,9 @@ if 'user' not in st.session_state:
                     if not error2:
                         st.session_state['user'] = user2
                         st.session_state['session'] = session
+                        cookie_manager.set('mm_refresh_token', session.refresh_token, expires_at=None)
                         st.rerun()
     st.stop()
-
 # ---- LOGGED IN ----
 user = st.session_state['user']
 user_id = user.id
@@ -561,6 +579,7 @@ with st.sidebar:
     st.markdown("---")
     st.caption(f"Logged in as {user.email}")
     if st.button("Logout", use_container_width=True):
+        cookie_manager.delete('mm_refresh_token')
         sign_out()
         st.rerun()
 
@@ -1146,5 +1165,6 @@ elif nav == "⚙️ Settings":
     st.markdown("---")
     st.subheader("Danger Zone")
     if st.button("🚪 Logout", use_container_width=True):
+        cookie_manager.delete('mm_refresh_token')
         sign_out()
         st.rerun()
