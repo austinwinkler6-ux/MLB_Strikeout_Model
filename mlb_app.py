@@ -1576,8 +1576,8 @@ elif nav == "🧪 Backtest" and is_admin:
                     progress_bar.progress(1.0)
 
     else:
-        backtest_season_nba = st.selectbox("Season", ["2024-25", "2023-24"], key="backtest_season_nba")
-
+        backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
+        
         if st.button("🔍 Load NBA Games & Run Projections", use_container_width=True):
             with st.spinner(f"Pulling NBA games for {backtest_date}..."):
                 date_str = backtest_date.strftime('%m/%d/%Y')
