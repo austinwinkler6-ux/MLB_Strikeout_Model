@@ -811,7 +811,7 @@ if nav == "🏠 Home":
     col1, col2, col3 = st.columns(3)
     col1.metric("⚾ MLB Strikeouts", "Live", "Model Active")
     col2.metric("🏈 NFL Models", "Coming Soon", "Season Starting")
-    col3.metric("🏀 NBA Models", "Coming Soon", "Season Starting")
+    col3.metric("🏀 NBA Points", "Live", "Model Active")
 
     st.markdown("---")
     st.subheader("📌 How to Use Model Metrics")
