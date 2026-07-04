@@ -1902,7 +1902,7 @@ elif nav == "🧪 Backtest" and is_admin:
             st.dataframe(tier_summary, use_container_width=True)
 
 # ---- SETTINGS PAGE ----
-elif nav == "⚙️ Settings":
+if nav == "⚙️ Settings":
     st.title("⚙️ Settings")
     st.markdown("---")
 
