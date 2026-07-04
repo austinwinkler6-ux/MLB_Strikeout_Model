@@ -4,3 +4,4 @@ pandas
 numpy
 supabase
 nba_api
+scipy
