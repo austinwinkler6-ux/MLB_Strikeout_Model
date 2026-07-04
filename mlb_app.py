@@ -1971,10 +1971,10 @@ elif nav == "🔬 Model Lab" and is_admin:
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
-    backtest_sport = st.selectbox("Sport", ["MLB", "NBA Points", "NBA Assists"], key="backtest_sport")
+    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists"], key="backtest_sport")
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
-    if backtest_sport == "MLB":
+    if backtest_sport == "MLB Strikeouts":
         backtest_season = st.selectbox("Season", ["2026", "2025", "2024"], key="backtest_season")
 
         if st.button("🔍 Load Games & Run Projections", use_container_width=True):
