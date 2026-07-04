@@ -1136,7 +1136,7 @@ def show_edges_table(session_key, sport_key, sport_label):
         st.divider()
 
 # ---- MLB PAGE ----
-elif nav == "⚾ MLB Models":
+if nav == "⚾ MLB Models":
     st.title("⚾ MLB Strikeout Model")
 
     col_load, col_run_all = st.columns(2)
