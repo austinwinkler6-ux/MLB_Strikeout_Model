@@ -295,32 +295,12 @@ def get_nba_games_for_date(game_date_str):
             game = dict(zip(headers_list, row))
             games.append({
                 'game_id': game['GAME_ID'],
-                'home_team': game['HOME_TEAM_ID'],
-                'away_team': game['VISITOR_TEAM_ID'],
                 'home_team_abbrev': game.get('HOME_TEAM_ABBREVIATION', ''),
                 'away_team_abbrev': game.get('VISITOR_TEAM_ABBREVIATION', '')
             })
         return games
     except:
         return []
-
-# ---- GET ACTUAL NBA POINTS ----
-def get_actual_nba_points(game_id, player_name):
-    try:
-        url = f"https://stats.nba.com/stats/boxscoretraditionalv2?GameID={game_id}&StartPeriod=0&EndPeriod=10&StartRange=0&EndRange=28800&RangeType=0"
-        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.nba.com'}
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        player_stats = data['resultSets'][0]
-        headers_list = player_stats['headers']
-        rows = player_stats['rowSet']
-        for row in rows:
-            player = dict(zip(headers_list, row))
-            if player['PLAYER_NAME'].lower() == player_name.lower():
-                return player.get('PTS', None)
-    except:
-        pass
-    return None
 
 # ---- MLB PROJECTION ENGINE ----
 def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1.0, before_date=None,
@@ -776,6 +756,221 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
     except Exception as e:
         return None
 
+# ---- NBA ASSISTS PROJECTION ENGINE ----
+def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26'):
+    try:
+        player_list = nba_players.find_players_by_full_name(player_name)
+        if not player_list:
+            return None
+        player_id = player_list[0]['id']
+
+        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+        df = logs.get_data_frames()[0]
+        if df.empty or len(df) < 5:
+            return None
+
+        df = df[['GAME_DATE', 'MATCHUP', 'AST', 'TOV', 'MIN']]
+        df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
+        df['AST'] = pd.to_numeric(df['AST'], errors='coerce')
+        df['TOV'] = pd.to_numeric(df['TOV'], errors='coerce')
+        df = df.iloc[::-1].reset_index(drop=True)
+
+        season_apg = round(df['AST'].mean(), 1)
+        season_mpg = round(df['MIN'].mean(), 1)
+        season_tov = round(df['TOV'].mean(), 1)
+        last5_avg = round(df['AST'].tail(5).mean(), 1)
+        last10_avg = round(df['AST'].tail(10).mean(), 1)
+        last5_min = round(df['MIN'].tail(5).mean(), 1)
+        last10_min = round(df['MIN'].tail(10).mean(), 1)
+        last5_tov = round(df['TOV'].tail(5).mean(), 1)
+
+        last10_ast = df['AST'].tail(10)
+        last10_ast_avg = round(last10_ast.mean(), 2)
+        last10_ast_std = round(last10_ast.std(), 2) if len(last10_ast) > 1 else 0.0
+        cv = round(last10_ast_std / last10_ast_avg, 3) if last10_ast_avg > 0 else 1.0
+
+        if cv < 0.20:
+            confidence_tier = "🟢 Elite Stability"
+        elif cv < 0.35:
+            confidence_tier = "🟡 Normal"
+        elif cv < 0.50:
+            confidence_tier = "🟠 High Variance"
+        else:
+            confidence_tier = "🔴 Pass Candidate"
+
+        base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
+
+        tov_factor = round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0
+        tov_factor = max(0.95, min(1.05, tov_factor))
+
+        adv_stats = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed='PerGame',
+            measure_type_detailed_defense='Advanced'
+        )
+        adv_df = adv_stats.get_data_frames()[0]
+        player_adv = adv_df[adv_df['PLAYER_ID'] == player_id]
+        usage_rate = round(float(player_adv['USG_PCT'].iloc[0]), 3) if not player_adv.empty else 0.20
+        ast_pct = round(float(player_adv['AST_PCT'].iloc[0]), 3) if not player_adv.empty else 0.15
+
+        potential_assists = None
+        potential_ast_adj = 0
+        try:
+            from nba_api.stats.endpoints import leaguedashptstats
+            pt_stats = leaguedashptstats.LeagueDashPtStats(
+                season=season,
+                per_mode_simple='PerGame',
+                player_or_team='Player',
+                pt_measure_type='Passing'
+            )
+            pt_df = pt_stats.get_data_frames()[0]
+            player_pt = pt_df[pt_df['PLAYER_ID'] == player_id]
+            if not player_pt.empty and 'POTENTIAL_AST' in player_pt.columns:
+                potential_assists = round(float(player_pt['POTENTIAL_AST'].iloc[0]), 1)
+                if potential_assists and season_apg > 0:
+                    expected_ast_from_potential = potential_assists * 0.45
+                    potential_ast_adj = round((expected_ast_from_potential - season_apg) * 0.25, 2)
+                    potential_ast_adj = max(-0.75, min(0.75, potential_ast_adj))
+        except:
+            pass
+
+        team_stats = leaguedashteamstats.LeagueDashTeamStats(
+            season=season,
+            per_mode_detailed='PerGame',
+            measure_type_detailed_defense='Advanced'
+        )
+        teams_df = team_stats.get_data_frames()[0]
+        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
+        opp_team = teams_df[teams_df['TEAM_NAME'] == opp_full_name]
+        opp_pace = round(float(opp_team['PACE'].iloc[0]), 1) if not opp_team.empty else league_avg_pace
+
+        opp_ast_allowed = 25.0
+        try:
+            opp_basic = leaguedashteamstats.LeagueDashTeamStats(
+                season=season,
+                per_mode_detailed='PerGame',
+                measure_type_detailed_defense='Base'
+            )
+            opp_basic_df = opp_basic.get_data_frames()[0]
+            opp_basic_row = opp_basic_df[opp_basic_df['TEAM_NAME'] == opp_full_name]
+            if not opp_basic_row.empty and 'OPP_AST' in opp_basic_row.columns:
+                opp_ast_allowed = round(float(opp_basic_row['OPP_AST'].iloc[0]), 1)
+        except:
+            pass
+
+        league_avg_ast_allowed = 25.0
+        opp_ast_adj = round((opp_ast_allowed - league_avg_ast_allowed) * 0.05, 2)
+        opp_ast_adj = max(-0.5, min(0.5, opp_ast_adj))
+
+        home_games = df[df['MATCHUP'].str.contains('vs.')]
+        away_games = df[df['MATCHUP'].str.contains('@')]
+        home_apg = round(home_games['AST'].mean(), 1) if not home_games.empty else season_apg
+        away_apg = round(away_games['AST'].mean(), 1) if not away_games.empty else season_apg
+        raw_location_adj = round(home_apg - season_apg, 2) if home_or_away == 'home' else round(away_apg - season_apg, 2)
+        location_adj = max(-1.5, min(1.5, raw_location_adj))
+
+        expected_minutes = round(
+            (season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1
+        )
+
+        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+        most_recent_game = df['GAME_DATE'].iloc[-1]
+        days_rest = (datetime.today() - most_recent_game).days
+        if days_rest == 0:
+            rest_adj = -0.5
+        elif days_rest >= 3:
+            rest_adj = 0.3
+        else:
+            rest_adj = 0
+
+        game_total = None
+        spread = None
+        try:
+            odds_url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+            params = {'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'}
+            response = requests.get(odds_url, params=params)
+            games_data = response.json()
+            for game in games_data:
+                ht = game.get('home_team', '')
+                at = game.get('away_team', '')
+                if home_team in ht or home_team in at:
+                    for bookmaker in game.get('bookmakers', []):
+                        for market in bookmaker.get('markets', []):
+                            if market['key'] == 'totals':
+                                game_total = market['outcomes'][0]['point']
+                            if market['key'] == 'spreads':
+                                for outcome in market['outcomes']:
+                                    if home_team in outcome['name']:
+                                        spread = outcome['point']
+                        break
+                    break
+        except:
+            pass
+
+        if game_total:
+            total_adj = round((game_total - 225) * 0.015, 2)
+            total_adj = max(-0.5, min(0.5, total_adj))
+        else:
+            total_adj = 0
+
+        blowout_minutes_adj = 0
+        if spread and abs(spread) >= 12:
+            blowout_minutes_adj = -4
+        elif spread and abs(spread) >= 9:
+            blowout_minutes_adj = -2
+
+        pace_adj = round((opp_pace - league_avg_pace) * 0.12, 2)
+
+        final_expected_minutes = round(expected_minutes + blowout_minutes_adj, 1)
+        ast_per_minute = round(season_apg / season_mpg, 3) if season_mpg > 0 else 0
+        minutes_ast_adj = round((final_expected_minutes - season_mpg) * ast_per_minute, 2)
+
+        ast_pct_adj = round((ast_pct - 0.25) * 6, 2)
+        ast_pct_adj = max(-1.5, min(1.5, ast_pct_adj))
+
+        raw_adjustment = (
+            pace_adj + location_adj + rest_adj +
+            minutes_ast_adj + ast_pct_adj + opp_ast_adj +
+            total_adj + potential_ast_adj
+        )
+        raw_adjustment = max(-3.0, min(3.0, raw_adjustment))
+
+        final_projection = max(0, round(base + raw_adjustment, 1))
+
+        return {
+            'projection': final_projection,
+            'base': round(base, 2),
+            'season_apg': season_apg,
+            'last5_avg': last5_avg,
+            'last10_avg': last10_avg,
+            'season_mpg': season_mpg,
+            'expected_minutes': final_expected_minutes,
+            'blowout_minutes_adj': blowout_minutes_adj,
+            'usage_rate': usage_rate,
+            'ast_pct': ast_pct,
+            'ast_pct_adj': ast_pct_adj,
+            'tov_factor': tov_factor,
+            'potential_assists': potential_assists,
+            'potential_ast_adj': potential_ast_adj,
+            'opp_pace': opp_pace,
+            'location_adj': location_adj,
+            'rest_adj': rest_adj,
+            'minutes_ast_adj': minutes_ast_adj,
+            'pace_adj': pace_adj,
+            'opp_ast_adj': opp_ast_adj,
+            'opp_ast_allowed': opp_ast_allowed,
+            'total_adj': total_adj,
+            'raw_adjustment': round(raw_adjustment, 2),
+            'game_total': game_total,
+            'spread': spread,
+            'cv': cv,
+            'confidence_tier': confidence_tier,
+            'days_rest': days_rest
+        }
+
+    except Exception as e:
+        return None
+
 pitchers_list = get_all_pitchers()
 
 # ---- SIDEBAR ----
@@ -1207,7 +1402,7 @@ elif nav == "🏀 NBA Models":
                 with col7:
                     st.write(info.get('Tier') if info.get('Tier') else "—")
                 with col8:
-                    if st.button("▶️ Run", key=f"nba_run_{player}"):
+                    if st.button("▶️ Run", key=f"nba_pts_run_{player}"):
                         with st.spinner(f"Running {player}..."):
                             home_team = info['home']
                             away_team = info['away']
@@ -1266,25 +1461,243 @@ elif nav == "🏀 NBA Models":
                                     st.rerun()
                 st.divider()
 
-    else:
-        st.markdown("""
-            <div style='text-align: center; padding: 80px 0;'>
-                <h2>🚧 Coming Soon</h2>
-                <p style='color: #64748B; font-size: 18px;'>NBA Assists model is currently in development.</p>
-            </div>
-        """, unsafe_allow_html=True)
+    else:  # NBA Assists
+        col_load, col_run_all = st.columns(2)
+
+        with col_load:
+            if st.button("📋 Load Today's Assist Props", use_container_width=True):
+                with st.spinner("Pulling today's assist props..."):
+                    try:
+                        events_url = "https://api.the-odds-api.com/v4/sports/basketball_nba/events"
+                        events_params = {'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}
+                        events_data = requests.get(events_url, params=events_params).json()
+                        all_nba_assist_players = {}
+
+                        for event in events_data:
+                            home = event['home_team']
+                            away = event['away_team']
+                            event_id = event['id']
+
+                            props_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds"
+                            props_params = {'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_assists', 'oddsFormat': 'american'}
+                            props_data = requests.get(props_url, params=props_params).json()
+
+                            for bookmaker in props_data.get('bookmakers', []):
+                                if bookmaker['key'] in ['fanduel', 'draftkings']:
+                                    book_name = bookmaker['title']
+                                    for market in bookmaker.get('markets', []):
+                                        if market['key'] == 'player_assists':
+                                            for outcome in market['outcomes']:
+                                                player = outcome['description']
+                                                direction = outcome['name']
+                                                line = outcome['point']
+                                                odds = outcome['price']
+
+                                                if player not in all_nba_assist_players:
+                                                    all_nba_assist_players[player] = {
+                                                        'home': home, 'away': away,
+                                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                                        'Projection': None, 'Edge': None, 'Play': None, 'Tier': None
+                                                    }
+
+                                                if 'FanDuel' in book_name:
+                                                    all_nba_assist_players[player]['FanDuel Line'] = line
+                                                    if direction == 'Over':
+                                                        all_nba_assist_players[player]['FanDuel Over'] = odds
+                                                    else:
+                                                        all_nba_assist_players[player]['FanDuel Under'] = odds
+                                                elif 'DraftKings' in book_name:
+                                                    all_nba_assist_players[player]['DraftKings Line'] = line
+                                                    if direction == 'Over':
+                                                        all_nba_assist_players[player]['DraftKings Over'] = odds
+                                                    else:
+                                                        all_nba_assist_players[player]['DraftKings Under'] = odds
+
+                        st.session_state['all_nba_assist_players'] = all_nba_assist_players
+                        st.session_state['nba_season'] = '2025-26'
+                        st.success(f"Loaded {len(all_nba_assist_players)} players!")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        with col_run_all:
+            if st.button("🚀 Run All Assist Projections", use_container_width=True):
+                if 'all_nba_assist_players' not in st.session_state:
+                    st.warning("Load today's assist props first!")
+                else:
+                    all_nba_assist_players = st.session_state['all_nba_assist_players']
+                    season = st.session_state.get('nba_season', '2025-26')
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    total = len(all_nba_assist_players)
+
+                    for i, (player, info) in enumerate(all_nba_assist_players.items()):
+                        status_text.text(f"Running {i+1} of {total}: {player}")
+                        progress_bar.progress((i+1) / total)
+
+                        home_team = info['home']
+                        away_team = info['away']
+                        home_abbrev = nba_name_to_abbrev.get(home_team, '')
+                        away_abbrev = nba_name_to_abbrev.get(away_team, '')
+
+                        try:
+                            player_list = nba_players.find_players_by_full_name(player)
+                            if not player_list:
+                                continue
+                            player_id = player_list[0]['id']
+                            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+                            df_check = logs.get_data_frames()[0]
+                            if df_check.empty:
+                                continue
+                            matchup = df_check['MATCHUP'].iloc[0]
+                            home_or_away = 'home' if 'vs.' in matchup else 'away'
+                            opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
+                        except:
+                            home_or_away = 'home'
+                            opp_abbrev = away_abbrev
+
+                        result = run_nba_assists_projection(player, opp_abbrev, home_team, away_team, home_or_away, season)
+
+                        if result:
+                            proj = result['projection']
+                            fd_line = info['FanDuel Line']
+                            dk_line = info['DraftKings Line']
+                            best_line = fd_line or dk_line
+
+                            if best_line:
+                                edge = round(proj - best_line, 1)
+                                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
+                                st.session_state['all_nba_assist_players'][player]['Projection'] = proj
+                                st.session_state['all_nba_assist_players'][player]['Edge'] = edge
+                                st.session_state['all_nba_assist_players'][player]['Play'] = play
+                                st.session_state['all_nba_assist_players'][player]['Tier'] = result['confidence_tier']
+
+                                save_prediction({
+                                    'date': date.today().strftime('%Y-%m-%d'),
+                                    'pitcher': player,
+                                    'opponent': opp_abbrev,
+                                    'home_team': home_team,
+                                    'projection': proj,
+                                    'base': result['base'],
+                                    'book_line': best_line,
+                                    'edge': edge,
+                                    'opp_factor': result['opp_ast_adj'],
+                                    'park_factor': 1.0,
+                                    'umpire_factor': 1.0,
+                                    'velo_factor': result['ast_pct_adj'],
+                                    'total_factor': result['total_adj'],
+                                    'pitch_count_factor': result['expected_minutes'],
+                                    'lineup_factor': result['potential_ast_adj'],
+                                    'cv': result['cv'],
+                                    'confidence_tier': result['confidence_tier'],
+                                    'actual': None,
+                                    'sport': 'NBA_AST'
+                                })
+
+                    status_text.text(f"✅ Done! All {total} projections complete.")
+                    progress_bar.progress(1.0)
+                    st.rerun()
+
+        if 'all_nba_assist_players' in st.session_state:
+            all_nba_assist_players = st.session_state['all_nba_assist_players']
+            season = st.session_state.get('nba_season', '2025-26')
+
+            sorted_players = sorted(
+                all_nba_assist_players.items(),
+                key=lambda x: abs(x[1]['Edge']) if x[1]['Edge'] is not None else -1,
+                reverse=True
+            )
+
+            for player, info in sorted_players:
+                col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([2, 1, 1, 1, 1, 1, 1, 1])
+                with col1:
+                    st.write(f"**{player}**")
+                    st.caption(f"{info['away']} @ {info['home']}")
+                with col2:
+                    st.write(f"FD: {info['FanDuel Line']}")
+                    st.caption(f"O:{fmt_odds(info['FanDuel Over'])} U:{fmt_odds(info['FanDuel Under'])}")
+                with col3:
+                    st.write(f"DK: {info['DraftKings Line']}")
+                    st.caption(f"O:{fmt_odds(info['DraftKings Over'])} U:{fmt_odds(info['DraftKings Under'])}")
+                with col4:
+                    st.write(f"Proj: **{info['Projection']}**" if info['Projection'] else "Proj: —")
+                with col5:
+                    st.write(f"Edge: **{info['Edge']}**" if info['Edge'] is not None else "Edge: —")
+                with col6:
+                    st.write(info['Play'] if info['Play'] else "—")
+                with col7:
+                    st.write(info.get('Tier') if info.get('Tier') else "—")
+                with col8:
+                    if st.button("▶️ Run", key=f"nba_ast_run_{player}"):
+                        with st.spinner(f"Running {player}..."):
+                            home_team = info['home']
+                            away_team = info['away']
+                            home_abbrev = nba_name_to_abbrev.get(home_team, '')
+                            away_abbrev = nba_name_to_abbrev.get(away_team, '')
+                            try:
+                                player_list = nba_players.find_players_by_full_name(player)
+                                if player_list:
+                                    player_id = player_list[0]['id']
+                                    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+                                    df_check = logs.get_data_frames()[0]
+                                    matchup = df_check['MATCHUP'].iloc[0]
+                                    home_or_away = 'home' if 'vs.' in matchup else 'away'
+                                    opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
+                                else:
+                                    home_or_away = 'home'
+                                    opp_abbrev = away_abbrev
+                            except:
+                                home_or_away = 'home'
+                                opp_abbrev = away_abbrev
+
+                            result = run_nba_assists_projection(player, opp_abbrev, home_team, away_team, home_or_away, season)
+                            if result:
+                                proj = result['projection']
+                                fd_line = info['FanDuel Line']
+                                dk_line = info['DraftKings Line']
+                                best_line = fd_line or dk_line
+                                if best_line:
+                                    edge = round(proj - best_line, 1)
+                                    play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
+                                    st.session_state['all_nba_assist_players'][player]['Projection'] = proj
+                                    st.session_state['all_nba_assist_players'][player]['Edge'] = edge
+                                    st.session_state['all_nba_assist_players'][player]['Play'] = play
+                                    st.session_state['all_nba_assist_players'][player]['Tier'] = result['confidence_tier']
+                                    save_prediction({
+                                        'date': date.today().strftime('%Y-%m-%d'),
+                                        'pitcher': player,
+                                        'opponent': opp_abbrev,
+                                        'home_team': home_team,
+                                        'projection': proj,
+                                        'base': result['base'],
+                                        'book_line': best_line,
+                                        'edge': edge,
+                                        'opp_factor': result['opp_ast_adj'],
+                                        'park_factor': 1.0,
+                                        'umpire_factor': 1.0,
+                                        'velo_factor': result['ast_pct_adj'],
+                                        'total_factor': result['total_adj'],
+                                        'pitch_count_factor': result['expected_minutes'],
+                                        'lineup_factor': result['potential_ast_adj'],
+                                        'cv': result['cv'],
+                                        'confidence_tier': result['confidence_tier'],
+                                        'actual': None,
+                                        'sport': 'NBA_AST'
+                                    })
+                                    st.rerun()
+                st.divider()
 
 # ---- BET TRACKER PAGE ----
 elif nav == "📒 Bet Tracker":
     st.title("📒 Bet Tracker")
 
-    sport_filter = st.selectbox("Sport", ["All", "MLB", "NBA"], key="bet_sport_filter")
+    sport_filter = st.selectbox("Filter by Sport", ["All", "MLB", "NBA", "NBA_AST"], key="bet_sport_filter")
     sport_query = None if sport_filter == "All" else sport_filter
 
     st.markdown("---")
     st.subheader("Log a New Bet")
 
-    bet_sport = st.selectbox("Sport", ["MLB", "NBA"], key="new_bet_sport")
+    bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST"], key="new_bet_sport")
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -1401,7 +1814,7 @@ elif nav == "📒 Bet Tracker":
                 'odds': st.column_config.NumberColumn('Odds'),
                 'profit': st.column_config.NumberColumn('Profit ($)'),
                 'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
-                'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NFL']),
+                'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL']),
             }
         )
 
@@ -1434,9 +1847,10 @@ elif nav == "📒 Bet Tracker":
 elif nav == "🔬 Model Lab" and is_admin:
     st.title("🔬 Model Lab")
 
-    lab_sport = st.selectbox("Sport", ["MLB", "NBA"], key="lab_sport")
+    lab_sport = st.selectbox("Sport", ["MLB", "NBA Points", "NBA Assists"], key="lab_sport")
 
-    preds = load_predictions(lab_sport)
+    sport_key = 'MLB' if lab_sport == 'MLB' else ('NBA' if lab_sport == 'NBA Points' else 'NBA_AST')
+    preds = load_predictions(sport_key)
     preds_with_actual = [p for p in preds if p.get('actual') is not None]
 
     st.subheader("📥 Update Actual Results")
@@ -1447,10 +1861,9 @@ elif nav == "🔬 Model Lab" and is_admin:
         for i, pred in enumerate(preds_today):
             col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
-                label = "Pitcher" if lab_sport == "MLB" else "Player"
                 st.write(f"**{pred['pitcher']}** — Proj: {pred['projection']}")
             with col2:
-                actual = st.number_input(f"Actual", value=0, key=f"actual_{i}", min_value=0)
+                actual = st.number_input("Actual", value=0, key=f"actual_{i}", min_value=0)
             with col3:
                 if st.button("Save", key=f"save_actual_{i}"):
                     update_prediction(pred['id'], {'actual': actual})
@@ -1497,8 +1910,35 @@ elif nav == "🔬 Model Lab" and is_admin:
             st.dataframe(version_df, use_container_width=True)
             st.bar_chart(version_df.set_index('Version')['MAE'])
 
+        elif lab_sport == "NBA Points":
+            st.subheader("🏀 NBA Points Model Performance")
+
         else:
-            st.subheader("🏀 NBA Model Performance")
+            st.subheader("🏀 NBA Assists — Conversion Rate Tester")
+            conversion_rate = st.select_slider(
+                "Potential Assist Conversion Rate",
+                options=[0.42, 0.45, 0.48],
+                value=0.45
+            )
+            st.caption(f"Testing: expected assists = potential assists × {conversion_rate}")
+
+            if preds_with_actual:
+                errors_by_rate = {}
+                for rate in [0.42, 0.45, 0.48]:
+                    errors = []
+                    for pred in preds_with_actual:
+                        proj = pred['projection']
+                        actual = pred['actual']
+                        errors.append(abs(proj - actual))
+                    errors_by_rate[rate] = round(sum(errors) / len(errors), 2)
+
+                rate_df = pd.DataFrame([
+                    {'Conversion Rate': k, 'MAE': v}
+                    for k, v in errors_by_rate.items()
+                ])
+                st.dataframe(rate_df, use_container_width=True)
+                best_rate = min(errors_by_rate, key=errors_by_rate.get)
+                st.success(f"✅ Best conversion rate so far: **{best_rate}** with MAE of **{errors_by_rate[best_rate]}**")
 
         preds_with_tier = [p for p in preds_with_actual if p.get('confidence_tier')]
         if preds_with_tier:
@@ -1531,7 +1971,7 @@ elif nav == "🔬 Model Lab" and is_admin:
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
-    backtest_sport = st.selectbox("Sport", ["MLB", "NBA"], key="backtest_sport")
+    backtest_sport = st.selectbox("Sport", ["MLB", "NBA Points", "NBA Assists"], key="backtest_sport")
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
     if backtest_sport == "MLB":
@@ -1577,7 +2017,8 @@ elif nav == "🧪 Backtest" and is_admin:
 
     else:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
-        
+        is_assists = backtest_sport == "NBA Assists"
+
         if st.button("🔍 Load NBA Games & Run Projections", use_container_width=True):
             with st.spinner(f"Pulling NBA games for {backtest_date}..."):
                 date_str = backtest_date.strftime('%m/%d/%Y')
@@ -1612,26 +2053,32 @@ elif nav == "🧪 Backtest" and is_admin:
                             for row in rows:
                                 player = dict(zip(headers_list, row))
                                 player_name = player['PLAYER_NAME']
-                                actual_pts = player.get('PTS', None)
-                                if actual_pts is None:
+                                actual_val = player.get('AST' if is_assists else 'PTS', None)
+                                if actual_val is None:
                                     continue
 
                                 team_abbrev = player.get('TEAM_ABBREVIATION', '')
                                 home_or_away = 'home' if team_abbrev == home_abbrev else 'away'
                                 opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
 
-                                result = run_nba_points_projection(
-                                    player_name, opp_abbrev, home_name, away_name,
-                                    home_or_away, backtest_season_nba
-                                )
+                                if is_assists:
+                                    result = run_nba_assists_projection(
+                                        player_name, opp_abbrev, home_name, away_name,
+                                        home_or_away, backtest_season_nba
+                                    )
+                                else:
+                                    result = run_nba_points_projection(
+                                        player_name, opp_abbrev, home_name, away_name,
+                                        home_or_away, backtest_season_nba
+                                    )
 
                                 if result:
-                                    error = round(abs(result['projection'] - actual_pts), 1)
+                                    error = round(abs(result['projection'] - actual_val), 1)
                                     results.append({
                                         'Player': player_name,
                                         'Matchup': f"{away_name} @ {home_name}",
                                         'Projection': result['projection'],
-                                        'Actual PTS': actual_pts,
+                                        'Actual': actual_val,
                                         'Error': error,
                                         'Tier': result['confidence_tier']
                                     })
