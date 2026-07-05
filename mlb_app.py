@@ -32,12 +32,21 @@ EDGE_SCORE_CAPS = {
     "nfl_receptions": 2.5,
 }
 
+MIN_EDGE_FOR_EV = {
+    "mlb_strikeouts": 0.75,
+    "nba_assists": 0.75,
+    "nba_points": 1.5,
+    "nfl_pass_attempts": 2.0,
+    "nfl_completions": 1.5,
+    "nfl_receptions": 1.0,
+}
+
 def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
     if sport == 'mlb_strikeouts':
         if cv >= 0.50:
             return max(3.0, projection * 0.45)
         elif cv >= 0.35:
-            return max(2.5, projection * 0.42)
+            return max(3.0, projection * 0.52)
         elif cv >= 0.20:
             return max(2.0, projection * 0.30)
         else:
@@ -120,9 +129,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
     model_prob = info.get('Model Prob')
     no_vig_prob = info.get('No Vig Prob')
     ev_pct = info.get('EV%')
-    model_edge = info.get('Model Edge')
     tier = info.get('Tier')
-    cv = result.get('cv') if result else None
 
     if proj and line:
         diff = round(proj - line, 1)
@@ -214,6 +221,11 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         if float(line).is_integer():
             return None
 
+        model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
+        min_edge = MIN_EDGE_FOR_EV.get(sport, 0.75)
+        if model_edge < min_edge:
+            return None
+
         min_std = get_min_std_dev(cv, projection, sport)
         effective_std = max(std_dev, min_std)
 
@@ -239,7 +251,6 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         ev_dollar = calculate_ev(model_prob, odds)
         ev_pct = calculate_ev_pct(model_prob, odds)
         prob_edge = round((model_prob - fair_prob) * 100, 2)
-        model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
         score = calculate_score(model_edge, ev_pct, cv, sport)
         return {
             'model_prob': model_prob,
@@ -1138,8 +1149,7 @@ elif nav == "⚾ MLB Models":
                                                     'Tier': None, 'Score': None, 'Stars': None,
                                                     'EV%': None, 'MM Tier': None,
                                                     'Model Prob': None, 'No Vig Prob': None,
-                                                    'Model Edge': None, 'Odds': None,
-                                                    'Direction': None, 'Last Result': None
+                                                    'Model Edge': None, 'Odds': None, 'Direction': None
                                                 }
                                             if 'FanDuel' in book_name:
                                                 all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
@@ -1332,7 +1342,6 @@ elif nav == "⚾ MLB Models":
                     if st.button("📝 Log", key=f"log_{pitcher}"):
                         st.session_state[f'log_modal_{pitcher}'] = True
 
-            # ---- WHY THIS BET ----
             if info.get('Projection') is not None and pitcher in pitcher_results:
                 result = pitcher_results[pitcher]
                 direction = info.get('Direction', 'over')
@@ -1342,7 +1351,6 @@ elif nav == "⚾ MLB Models":
                         for line in why_lines:
                             st.markdown(line)
 
-            # ---- LOG MODAL ----
             if st.session_state.get(f'log_modal_{pitcher}'):
                 with st.expander(f"📝 Log Bet — {pitcher}", expanded=True):
                     col_a, col_b = st.columns(2)
@@ -1360,24 +1368,16 @@ elif nav == "⚾ MLB Models":
                         bet_val = log_bet or 0
                         profit = calc_profit(bet_val, odds, log_result)
                         save_bet({
-                            'date': str(date.today()),
-                            'pitcher': pitcher,
+                            'date': str(date.today()), 'pitcher': pitcher,
                             'projection': info.get('Projection') or 0,
                             'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
-                            'over_under': log_ou,
-                            'odds': odds,
-                            'bet_amount': bet_val,
-                            'result': log_result,
-                            'actual': log_actual or 0,
-                            'profit': profit,
-                            'sport': 'MLB',
-                            'ev_pct': info.get('EV%'),
-                            'mm_score': info.get('Score'),
-                            'mm_tier': info.get('MM Tier'),
-                            'model_edge': info.get('Model Edge'),
-                            'no_vig_prob': info.get('No Vig Prob'),
-                            'model_prob': info.get('Model Prob'),
-                            'confidence_tier': info.get('Tier'),
+                            'over_under': log_ou, 'odds': odds,
+                            'bet_amount': bet_val, 'result': log_result,
+                            'actual': log_actual or 0, 'profit': profit,
+                            'sport': 'MLB', 'ev_pct': info.get('EV%'),
+                            'mm_score': info.get('Score'), 'mm_tier': info.get('MM Tier'),
+                            'model_edge': info.get('Model Edge'), 'no_vig_prob': info.get('No Vig Prob'),
+                            'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
                         })
                         st.session_state[f'log_modal_{pitcher}'] = False
                         st.success(f"✅ Bet logged for {pitcher}!")
