@@ -32,21 +32,12 @@ EDGE_SCORE_CAPS = {
     "nfl_receptions": 2.5,
 }
 
-MIN_EDGE_FOR_EV = {
-    "mlb_strikeouts": 0.75,
-    "nba_assists": 0.75,
-    "nba_points": 1.5,
-    "nfl_pass_attempts": 2.0,
-    "nfl_completions": 1.5,
-    "nfl_receptions": 1.0,
-}
-
 def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
     if sport == 'mlb_strikeouts':
         if cv >= 0.50:
-            return max(3.0, projection * 0.45)
+            return max(4.5, projection * 0.80)
         elif cv >= 0.35:
-            return max(3.0, projection * 0.52)
+            return max(3.5, projection * 0.65)
         elif cv >= 0.20:
             return max(2.0, projection * 0.30)
         else:
@@ -221,11 +212,6 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         if float(line).is_integer():
             return None
 
-        model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
-        min_edge = MIN_EDGE_FOR_EV.get(sport, 0.75)
-        if model_edge < min_edge:
-            return None
-
         min_std = get_min_std_dev(cv, projection, sport)
         effective_std = max(std_dev, min_std)
 
@@ -235,9 +221,9 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
 
         if sport == 'mlb_strikeouts':
             if cv >= 0.50:
-                model_prob = max(0.35, min(0.62, model_prob))
+                model_prob = max(0.35, min(0.58, model_prob))
             elif cv >= 0.35:
-                model_prob = max(0.30, min(0.68, model_prob))
+                model_prob = max(0.30, min(0.62, model_prob))
             else:
                 model_prob = max(0.25, min(0.72, model_prob))
         elif sport == 'nba_points':
@@ -251,6 +237,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         ev_dollar = calculate_ev(model_prob, odds)
         ev_pct = calculate_ev_pct(model_prob, odds)
         prob_edge = round((model_prob - fair_prob) * 100, 2)
+        model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
         score = calculate_score(model_edge, ev_pct, cv, sport)
         return {
             'model_prob': model_prob,
