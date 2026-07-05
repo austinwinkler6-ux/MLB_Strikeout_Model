@@ -80,13 +80,20 @@ def calculate_ev_pct(model_prob, odds, bet_amount=100):
 
 def calculate_score(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     if cv >= 0.50:
-        return 0
+        return {'total': 0, 'edge_score': 0, 'ev_score': 0, 'confidence_score': 0, 'direction_score': 0}
     cap = EDGE_SCORE_CAPS.get(sport, 2.0)
     edge_score = min(40, round((max(0, model_edge) / cap) * 40, 1))
     ev_score = min(35, round((max(0, ev_pct) / 15.0) * 35, 1))
     confidence_score = round(max(0, (0.50 - cv) / 0.50) * 15, 1)
     direction_score = 10 if (model_edge > 0 and ev_pct > 0) else 0
-    return max(0, min(100, round(edge_score + ev_score + confidence_score + direction_score)))
+    total = max(0, min(100, round(edge_score + ev_score + confidence_score + direction_score)))
+    return {
+        'total': total,
+        'edge_score': edge_score,
+        'ev_score': ev_score,
+        'confidence_score': confidence_score,
+        'direction_score': direction_score,
+    }
 
 def score_to_stars(score):
     if score >= 90: return "⭐⭐⭐⭐⭐"
@@ -102,6 +109,8 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     model_strong = model_edge >= threshold
     same_direction = model_edge > 0 and ev_pct > 0
     if model_strong and ev_pct >= 6.0 and same_direction:
+        if cv >= 0.35:
+            return "⚠️ High Variance +EV"
         return "🥇 Consensus Gold"
     elif model_strong and same_direction:
         return "📊 Model Edge"
@@ -150,7 +159,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         lines.append(f"{icon} No-vig probability: **{no_vig_pct}%** → Model probability: **{model_pct}%** ({'+'if prob_diff>0 else ''}{prob_diff}% edge)")
 
     if ev_pct is not None:
-        if ev_pct >= 12:
+        if ev_pct >= 15:
             lines.append(f"✅ EV: **+{ev_pct}%** — elite expected value")
         elif ev_pct >= 7.5:
             lines.append(f"✅ EV: **+{ev_pct}%** — strong expected value")
@@ -238,7 +247,8 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         ev_pct = calculate_ev_pct(model_prob, odds)
         prob_edge = round((model_prob - fair_prob) * 100, 2)
         model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
-        score = calculate_score(model_edge, ev_pct, cv, sport)
+        score_breakdown = calculate_score(model_edge, ev_pct, cv, sport)
+        score = score_breakdown['total']
         return {
             'model_prob': model_prob,
             'no_vig_prob': round(fair_prob, 3),
@@ -247,6 +257,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'ev_pct': ev_pct,
             'model_edge': model_edge,
             'score': score,
+            'score_breakdown': score_breakdown,
             'stars': score_to_stars(score),
             'tier': get_tier(model_edge, ev_pct, cv, sport)
         }
@@ -1224,7 +1235,13 @@ elif nav == "⚾ MLB Models":
                                 'pitch_count_factor': result['pitch_count_factor'],
                                 'lineup_factor': result['lineup_factor'],
                                 'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
-                                'actual': None, 'sport': 'MLB'
+                                'actual': None, 'sport': 'MLB',
+                                'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                                'mm_score': ev_result['score'] if ev_result else None,
+                                'mm_tier': ev_result['tier'] if ev_result else None,
+                                'model_prob': ev_result['model_prob'] if ev_result else None,
+                                'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                                'model_edge': ev_result['model_edge'] if ev_result else None,
                             })
 
                 status_text.text(f"✅ Done! All {total} projections complete.")
@@ -1321,7 +1338,13 @@ elif nav == "⚾ MLB Models":
                                     'pitch_count_factor': result['pitch_count_factor'],
                                     'lineup_factor': result['lineup_factor'],
                                     'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
-                                    'actual': None, 'sport': 'MLB'
+                                    'actual': None, 'sport': 'MLB',
+                                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                                    'mm_score': ev_result['score'] if ev_result else None,
+                                    'mm_tier': ev_result['tier'] if ev_result else None,
+                                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                                    'model_edge': ev_result['model_edge'] if ev_result else None,
                                 })
                                 st.rerun()
             with col11:
@@ -1344,14 +1367,13 @@ elif nav == "⚾ MLB Models":
                     with col_a:
                         log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"log_ou_{pitcher}")
                         log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100", key=f"log_bet_{pitcher}")
+                        log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"log_odds_{pitcher}")
                     with col_b:
                         log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 7", key=f"log_actual_{pitcher}")
                         log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"log_result_{pitcher}")
 
                     if st.button(f"✅ Confirm Log Bet", key=f"log_confirm_{pitcher}", use_container_width=True):
-                        odds = info.get('FanDuel Over') if log_ou == 'Over' else info.get('FanDuel Under')
-                        odds = odds or (info.get('DraftKings Over') if log_ou == 'Over' else info.get('DraftKings Under'))
-                        odds = odds or -110
+                        odds = int(log_odds) if log_odds else -110
                         bet_val = log_bet or 0
                         profit = calc_profit(bet_val, odds, log_result)
                         save_bet({
@@ -1519,7 +1541,13 @@ elif nav == "🏀 NBA Models":
                                     'pitch_count_factor': result['expected_minutes'],
                                     'lineup_factor': result.get('usage_rate', result.get('potential_ast_adj', 0)),
                                     'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
-                                    'actual': None, 'sport': sport_key.upper().replace('_', '_')
+                                    'actual': None, 'sport': sport_key.upper().replace('_', '_'),
+                                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                                    'mm_score': ev_result['score'] if ev_result else None,
+                                    'mm_tier': ev_result['tier'] if ev_result else None,
+                                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                                    'model_edge': ev_result['model_edge'] if ev_result else None,
                                 })
 
                     status_text.text(f"✅ Done! All {total} projections complete.")
@@ -1652,7 +1680,7 @@ elif nav == "📒 Bet Tracker":
     with col3:
         bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
         bt_mm_score = st.number_input("MM Score", value=None, placeholder="e.g. 82", step=1)
-        bt_mm_tier = st.selectbox("MM Tier", ["", "🥇 Consensus Gold", "📊 Model Edge", "💰 +EV Only", "⚪ Low Signal"])
+        bt_mm_tier = st.selectbox("MM Tier", ["", "🥇 Consensus Gold", "⚠️ High Variance +EV", "📊 Model Edge", "💰 +EV Only", "⚪ Low Signal"])
         bt_confidence_tier = st.selectbox("Confidence Tier", ["", "🟢 Elite Stability", "🟡 Normal", "🟠 High Variance", "🔴 Pass Candidate"])
         bt_no_vig_prob = st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
         bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
@@ -1698,13 +1726,8 @@ elif nav == "📒 Bet Tracker":
             col3.metric("Total Profit", f"${total_profit}")
             col4.metric("ROI", f"{roi}%")
 
-            quality_cols = st.columns(3)
             if 'ev_pct' in bets_df.columns and bets_df['ev_pct'].notna().any():
-                quality_cols[0].metric("Avg EV%", f"{round(bets_df['ev_pct'].dropna().mean(), 2)}%")
-            if 'mm_score' in bets_df.columns and bets_df['mm_score'].notna().any():
-                quality_cols[1].metric("Avg MM Score", f"{round(bets_df['mm_score'].dropna().mean(), 1)}")
-            if 'model_edge' in bets_df.columns and bets_df['model_edge'].notna().any():
-                quality_cols[2].metric("Avg Model Edge", f"{round(bets_df['model_edge'].dropna().mean(), 2)}")
+                st.metric("Avg EV%", f"{round(bets_df['ev_pct'].dropna().mean(), 2)}%")
 
         if 'mm_tier' in bets_df.columns and bets_df['mm_tier'].notna().any():
             st.markdown("---")
@@ -1767,19 +1790,6 @@ elif nav == "📒 Bet Tracker":
             if sport_data:
                 st.dataframe(pd.DataFrame(sport_data), use_container_width=True)
 
-        if 'closing_line' in bets_df.columns and bets_df['closing_line'].notna().any():
-            st.markdown("---")
-            st.subheader("📈 Closing Line Value (CLV)")
-            clv_df = bets_df[bets_df['closing_line'].notna() & bets_df['opening_line'].notna()].copy()
-            if not clv_df.empty:
-                clv_df['clv_points'] = clv_df.apply(
-                    lambda r: r['closing_line'] - r['opening_line'] if r['over_under'] == 'Over' else r['opening_line'] - r['closing_line'], axis=1)
-                beat_close = len(clv_df[clv_df['clv_points'] > 0])
-                avg_clv = round(clv_df['clv_points'].mean(), 3)
-                col1, col2 = st.columns(2)
-                col1.metric("Avg CLV", f"{avg_clv} pts")
-                col2.metric("Beat Closing Line", f"{round(beat_close / len(clv_df) * 100, 1)}%")
-
         settled_with_data = bets_df[
             (bets_df['result'] != 'Pending') &
             (bets_df['opening_line'] > 0) &
@@ -1805,14 +1815,17 @@ elif nav == "📒 Bet Tracker":
 
         st.markdown("---")
         st.subheader("📝 All Bets")
-        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id'] if c in bets_df.columns], errors='ignore')
+        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id', 'closing_line', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
+        if 'no_vig_prob' in display_df.columns:
+            display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
+        if 'model_prob' in display_df.columns:
+            display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         edited_df = st.data_editor(
             display_df, use_container_width=True, num_rows="dynamic",
             column_config={
                 'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
                 'actual': st.column_config.NumberColumn('Actual', min_value=0),
                 'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
-                'closing_line': st.column_config.NumberColumn('Closing Line', min_value=0.0, step=0.5),
                 'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
                 'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0),
                 'odds': st.column_config.NumberColumn('Odds'),
@@ -1820,8 +1833,8 @@ elif nav == "📒 Bet Tracker":
                 'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
                 'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL']),
                 'ev_pct': st.column_config.NumberColumn('EV%'),
-                'mm_score': st.column_config.NumberColumn('MM Score'),
-                'mm_tier': st.column_config.SelectboxColumn('MM Tier', options=['🥇 Consensus Gold', '📊 Model Edge', '💰 +EV Only', '⚪ Low Signal']),
+                'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
+                'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'confidence_tier': st.column_config.SelectboxColumn('Conf Tier', options=['🟢 Elite Stability', '🟡 Normal', '🟠 High Variance', '🔴 Pass Candidate']),
             }
         )
@@ -1833,15 +1846,18 @@ elif nav == "📒 Bet Tracker":
                 for i, b in enumerate(updated_bets):
                     b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
                     if i < len(bets) and bets[i].get('id'):
+                        no_vig_val = b.get('no_vig_prob')
+                        model_prob_val = b.get('model_prob')
                         update_bet(bets[i]['id'], {
                             'actual': b.get('actual'), 'result': b.get('result'),
                             'odds': b.get('odds'), 'bet_amount': b.get('bet_amount'),
-                            'opening_line': b.get('opening_line'), 'closing_line': b.get('closing_line'),
+                            'opening_line': b.get('opening_line'),
                             'projection': b.get('projection'), 'over_under': b.get('over_under'),
                             'profit': b['profit'], 'sport': b.get('sport', 'MLB'),
-                            'ev_pct': b.get('ev_pct'), 'mm_score': b.get('mm_score'),
-                            'mm_tier': b.get('mm_tier'), 'model_edge': b.get('model_edge'),
-                            'no_vig_prob': b.get('no_vig_prob'), 'model_prob': b.get('model_prob'),
+                            'ev_pct': b.get('ev_pct'),
+                            'model_edge': b.get('model_edge'),
+                            'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
+                            'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
                             'confidence_tier': b.get('confidence_tier')
                         })
                 st.rerun()
