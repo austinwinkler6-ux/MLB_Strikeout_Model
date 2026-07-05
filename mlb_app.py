@@ -35,32 +35,18 @@ EDGE_SCORE_CAPS = {
 def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
     if sport == 'mlb_strikeouts':
         if cv >= 0.50:
-            return max(2.5, projection * 0.35)
+            return max(3.0, projection * 0.45)
         elif cv >= 0.35:
-            return max(2.0, projection * 0.28)
+            return max(2.5, projection * 0.38)
         elif cv >= 0.20:
-            return max(1.2, projection * 0.18)
+            return max(2.0, projection * 0.30)
         else:
-            return max(0.6, projection * 0.10)
+            return max(1.6, projection * 0.25)
     elif sport == 'nba_points':
-        if cv >= 0.50:
-            return max(8.0, projection * 0.32)
-        elif cv >= 0.35:
-            return max(6.0, projection * 0.25)
-        elif cv >= 0.20:
-            return max(4.0, projection * 0.18)
-        else:
-            return max(2.5, projection * 0.12)
+        return max(5.0, projection * 0.22)
     elif sport == 'nba_assists':
-        if cv >= 0.50:
-            return max(3.0, projection * 0.35)
-        elif cv >= 0.35:
-            return max(2.0, projection * 0.28)
-        elif cv >= 0.20:
-            return max(1.2, projection * 0.20)
-        else:
-            return max(0.5, projection * 0.12)
-    return max(1.0, projection * 0.20)
+        return max(1.5, projection * 0.25)
+    return max(1.5, projection * 0.25)
 
 def remove_vig(over_odds, under_odds):
     def to_prob(odds):
@@ -131,6 +117,16 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         fair_over_prob, fair_under_prob = remove_vig(over_odds, under_odds)
         fair_prob = fair_over_prob if direction == 'over' else fair_under_prob
         model_prob = projection_to_probability(projection, line, effective_std, direction)
+
+        if sport == 'mlb_strikeouts':
+            model_prob = max(0.25, min(0.72, model_prob))
+        elif sport == 'nba_points':
+            model_prob = max(0.25, min(0.70, model_prob))
+        elif sport == 'nba_assists':
+            model_prob = max(0.25, min(0.72, model_prob))
+        else:
+            model_prob = max(0.25, min(0.72, model_prob))
+
         odds = over_odds if direction == 'over' else under_odds
         ev_dollar = calculate_ev(model_prob, odds)
         ev_pct = calculate_ev_pct(model_prob, odds)
