@@ -37,7 +37,7 @@ def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
         if cv >= 0.50:
             return max(3.0, projection * 0.45)
         elif cv >= 0.35:
-            return max(2.5, projection * 0.38)
+            return max(2.5, projection * 0.42)
         elif cv >= 0.20:
             return max(2.0, projection * 0.30)
         else:
@@ -81,7 +81,6 @@ def calculate_ev_pct(model_prob, odds, bet_amount=100):
 def calculate_score(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     if cv >= 0.50:
         return 0
-
     cap = EDGE_SCORE_CAPS.get(sport, 2.0)
     edge_score = min(40, round((max(0, model_edge) / cap) * 40, 1))
     ev_score = min(35, round((max(0, ev_pct) / 15.0) * 35, 1))
@@ -98,22 +97,115 @@ def score_to_stars(score):
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
-
     if cv >= 0.50:
         return "🔴 Pass Candidate"
-
     model_strong = model_edge >= threshold
-    ev_strong = ev_pct >= 4.0
     same_direction = model_edge > 0 and ev_pct > 0
-
-    if model_strong and ev_strong and same_direction:
+    if model_strong and ev_pct >= 6.0 and same_direction:
         return "🥇 Consensus Gold"
     elif model_strong and same_direction:
         return "📊 Model Edge"
-    elif ev_strong and same_direction:
+    elif ev_pct >= 7.5 and same_direction:
         return "💰 +EV Only"
     else:
         return "⚪ Low Signal"
+
+def generate_why(info, result, direction, sport='mlb_strikeouts'):
+    lines = []
+    proj = info.get('Projection')
+    line = info.get('FanDuel Line') or info.get('DraftKings Line')
+    over_odds = info.get('FanDuel Over') or info.get('DraftKings Over')
+    under_odds = info.get('FanDuel Under') or info.get('DraftKings Under')
+    odds = over_odds if direction == 'over' else under_odds
+    model_prob = info.get('Model Prob')
+    no_vig_prob = info.get('No Vig Prob')
+    ev_pct = info.get('EV%')
+    model_edge = info.get('Model Edge')
+    tier = info.get('Tier')
+    cv = result.get('cv') if result else None
+
+    if proj and line:
+        diff = round(proj - line, 1)
+        if direction == 'over':
+            icon = "✅" if diff > 0 else "⚠️"
+            lines.append(f"{icon} Model projects **{proj}** vs book line of **{line}** ({'+'if diff>0 else ''}{diff} edge)")
+        else:
+            diff_under = round(line - proj, 1)
+            icon = "✅" if diff_under > 0 else "⚠️"
+            lines.append(f"{icon} Model projects **{proj}** vs book line of **{line}** ({'+'if diff_under>0 else ''}{diff_under} under edge)")
+
+    if odds:
+        if odds > 0:
+            lines.append(f"✅ Book offering **+{odds}** — plus-money on this side")
+        elif odds >= -115:
+            lines.append(f"✅ Book offering **{odds}** — near even money, reasonable")
+        elif odds >= -130:
+            lines.append(f"⚠️ Book offering **{odds}** — moderate juice")
+        else:
+            lines.append(f"⚠️ Book offering **{odds}** — heavy juice, higher break-even needed")
+
+    if no_vig_prob and model_prob:
+        no_vig_pct = round(no_vig_prob * 100, 1)
+        model_pct = round(model_prob * 100, 1)
+        prob_diff = round((model_prob - no_vig_prob) * 100, 1)
+        icon = "✅" if prob_diff > 3 else ("⚠️" if prob_diff > 0 else "❌")
+        lines.append(f"{icon} No-vig probability: **{no_vig_pct}%** → Model probability: **{model_pct}%** ({'+'if prob_diff>0 else ''}{prob_diff}% edge)")
+
+    if ev_pct is not None:
+        if ev_pct >= 12:
+            lines.append(f"✅ EV: **+{ev_pct}%** — elite expected value")
+        elif ev_pct >= 7.5:
+            lines.append(f"✅ EV: **+{ev_pct}%** — strong expected value")
+        elif ev_pct >= 4:
+            lines.append(f"⚠️ EV: **+{ev_pct}%** — moderate expected value")
+        elif ev_pct > 0:
+            lines.append(f"⚠️ EV: **+{ev_pct}%** — marginal expected value")
+        else:
+            lines.append(f"❌ EV: **{ev_pct}%** — negative expected value")
+
+    if tier:
+        if "Elite" in tier:
+            lines.append(f"✅ **{tier}** — highly consistent pitcher, low variance")
+        elif "Normal" in tier:
+            lines.append(f"✅ **{tier}** — reasonable consistency")
+        elif "High Variance" in tier:
+            lines.append(f"⚠️ **{tier}** — results vary significantly game to game")
+        elif "Pass Candidate" in tier:
+            lines.append(f"❌ **{tier}** — extremely high variance, use caution")
+
+    if result:
+        opp_factor = result.get('opp_factor')
+        if opp_factor:
+            if opp_factor >= 1.05:
+                lines.append(f"✅ Opponent K% is **above average** — favorable matchup")
+            elif opp_factor <= 0.95:
+                lines.append(f"⚠️ Opponent K% is **below average** — tougher matchup")
+            else:
+                lines.append(f"➖ Opponent K% is near league average")
+
+        park_factor = result.get('park_factor')
+        if park_factor:
+            if park_factor >= 1.03:
+                lines.append(f"✅ Park factor **{park_factor}** — pitcher-friendly park")
+            elif park_factor <= 0.97:
+                lines.append(f"⚠️ Park factor **{park_factor}** — hitter-friendly park")
+
+        umpire_factor = result.get('umpire_factor')
+        umpire_name = result.get('umpire_name')
+        if umpire_factor and umpire_name:
+            if umpire_factor >= 1.02:
+                lines.append(f"✅ Umpire **{umpire_name}** has a larger strike zone — boosts K rate")
+            elif umpire_factor <= 0.98:
+                lines.append(f"⚠️ Umpire **{umpire_name}** has a tighter strike zone — hurts K rate")
+
+        lineup_factor = result.get('lineup_factor')
+        if lineup_factor:
+            if lineup_factor >= 0.24:
+                lines.append(f"✅ Today's lineup K% is **above average** — favorable")
+            elif lineup_factor <= 0.20:
+                lines.append(f"⚠️ Today's lineup K% is **below average** — tougher")
+
+    return lines
 
 def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction='over', sport='mlb_strikeouts'):
     if not over_odds or not under_odds:
@@ -986,7 +1078,8 @@ if nav == "🏠 Home":
     2. **Load today's props** to view live player prop lines from FanDuel and DraftKings.
     3. **Run projections** to compare our model's projections against the sportsbooks and identify potential value opportunities.
     4. **Check the Model Metrics Score** — higher scores mean both our model and the market agree there's value.
-    5. **Click 📝 Log** on any row to auto-fill your bet tracker — no manual entry needed.
+    5. **Click 💡 Why this bet?** to see the full reasoning behind each recommendation.
+    6. **Click 📝 Log** on any row to auto-fill your bet tracker — no manual entry needed.
     """)
 
     st.markdown("---")
@@ -1044,7 +1137,9 @@ elif nav == "⚾ MLB Models":
                                                     'Projection': None, 'Edge': None, 'Play': None,
                                                     'Tier': None, 'Score': None, 'Stars': None,
                                                     'EV%': None, 'MM Tier': None,
-                                                    'Model Prob': None, 'No Vig Prob': None, 'Model Edge': None, 'Odds': None
+                                                    'Model Prob': None, 'No Vig Prob': None,
+                                                    'Model Edge': None, 'Odds': None,
+                                                    'Direction': None, 'Last Result': None
                                                 }
                                             if 'FanDuel' in book_name:
                                                 all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
@@ -1061,6 +1156,7 @@ elif nav == "⚾ MLB Models":
 
                     st.session_state['all_pitchers'] = all_pitchers
                     st.session_state['season'] = '2026'
+                    st.session_state['pitcher_results'] = {}
                 except Exception as e:
                     st.error(f"Error: {e}")
 
@@ -1074,6 +1170,8 @@ elif nav == "⚾ MLB Models":
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 total = len(all_pitchers)
+                if 'pitcher_results' not in st.session_state:
+                    st.session_state['pitcher_results'] = {}
 
                 for i, (pitcher, info) in enumerate(all_pitchers.items()):
                     status_text.text(f"Running {i+1} of {total}: {pitcher}")
@@ -1115,7 +1213,9 @@ elif nav == "⚾ MLB Models":
                                 'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
                                 'Model Edge': ev_result['model_edge'] if ev_result else None,
                                 'Odds': over_odds if direction == 'over' else under_odds,
+                                'Direction': direction,
                             })
+                            st.session_state['pitcher_results'][pitcher] = result
 
                             save_prediction({
                                 'date': date.today().strftime('%Y-%m-%d'),
@@ -1137,6 +1237,7 @@ elif nav == "⚾ MLB Models":
     if 'all_pitchers' in st.session_state:
         all_pitchers = st.session_state['all_pitchers']
         season = st.session_state.get('season', '2026')
+        pitcher_results = st.session_state.get('pitcher_results', {})
 
         sorted_pitchers = sorted(
             all_pitchers.items(),
@@ -1209,7 +1310,9 @@ elif nav == "⚾ MLB Models":
                                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
                                     'Model Edge': ev_result['model_edge'] if ev_result else None,
                                     'Odds': over_odds if direction == 'over' else under_odds,
+                                    'Direction': direction,
                                 })
+                                st.session_state['pitcher_results'][pitcher] = result
                                 st.session_state['last_pitcher'] = pitcher
                                 save_prediction({
                                     'date': date.today().strftime('%Y-%m-%d'),
@@ -1229,6 +1332,17 @@ elif nav == "⚾ MLB Models":
                     if st.button("📝 Log", key=f"log_{pitcher}"):
                         st.session_state[f'log_modal_{pitcher}'] = True
 
+            # ---- WHY THIS BET ----
+            if info.get('Projection') is not None and pitcher in pitcher_results:
+                result = pitcher_results[pitcher]
+                direction = info.get('Direction', 'over')
+                why_lines = generate_why(info, result, direction, 'mlb_strikeouts')
+                if why_lines:
+                    with st.expander(f"💡 Why this bet? — {pitcher}"):
+                        for line in why_lines:
+                            st.markdown(line)
+
+            # ---- LOG MODAL ----
             if st.session_state.get(f'log_modal_{pitcher}'):
                 with st.expander(f"📝 Log Bet — {pitcher}", expanded=True):
                     col_a, col_b = st.columns(2)
