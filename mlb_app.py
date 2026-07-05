@@ -32,6 +32,36 @@ EDGE_SCORE_CAPS = {
     "nfl_receptions": 2.5,
 }
 
+def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
+    if sport == 'mlb_strikeouts':
+        if cv >= 0.50:
+            return max(2.5, projection * 0.35)
+        elif cv >= 0.35:
+            return max(2.0, projection * 0.28)
+        elif cv >= 0.20:
+            return max(1.2, projection * 0.18)
+        else:
+            return max(0.6, projection * 0.10)
+    elif sport == 'nba_points':
+        if cv >= 0.50:
+            return max(8.0, projection * 0.32)
+        elif cv >= 0.35:
+            return max(6.0, projection * 0.25)
+        elif cv >= 0.20:
+            return max(4.0, projection * 0.18)
+        else:
+            return max(2.5, projection * 0.12)
+    elif sport == 'nba_assists':
+        if cv >= 0.50:
+            return max(3.0, projection * 0.35)
+        elif cv >= 0.35:
+            return max(2.0, projection * 0.28)
+        elif cv >= 0.20:
+            return max(1.2, projection * 0.20)
+        else:
+            return max(0.5, projection * 0.12)
+    return max(1.0, projection * 0.20)
+
 def remove_vig(over_odds, under_odds):
     def to_prob(odds):
         if odds > 0:
@@ -95,9 +125,12 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
     if not over_odds or not under_odds:
         return None
     try:
+        min_std = get_min_std_dev(cv, projection, sport)
+        effective_std = max(std_dev, min_std)
+
         fair_over_prob, fair_under_prob = remove_vig(over_odds, under_odds)
         fair_prob = fair_over_prob if direction == 'over' else fair_under_prob
-        model_prob = projection_to_probability(projection, line, std_dev, direction)
+        model_prob = projection_to_probability(projection, line, effective_std, direction)
         odds = over_odds if direction == 'over' else under_odds
         ev_dollar = calculate_ev(model_prob, odds)
         ev_pct = calculate_ev_pct(model_prob, odds)
