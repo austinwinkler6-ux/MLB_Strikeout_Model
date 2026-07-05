@@ -79,6 +79,9 @@ def calculate_ev_pct(model_prob, odds, bet_amount=100):
     return round((calculate_ev(model_prob, odds, bet_amount) / bet_amount) * 100, 2)
 
 def calculate_score(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
+    if cv >= 0.50:
+        return 0
+
     cap = EDGE_SCORE_CAPS.get(sport, 2.0)
     edge_score = min(40, round((max(0, model_edge) / cap) * 40, 1))
     ev_score = min(35, round((max(0, ev_pct) / 15.0) * 35, 1))
@@ -93,11 +96,16 @@ def score_to_stars(score):
     elif score >= 45: return "⭐⭐"
     else: return "⭐"
 
-def get_tier(model_edge, ev_pct, sport="mlb_strikeouts"):
+def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
+
+    if cv >= 0.50:
+        return "🔴 Pass Candidate"
+
     model_strong = model_edge >= threshold
     ev_strong = ev_pct >= 4.0
     same_direction = model_edge > 0 and ev_pct > 0
+
     if model_strong and ev_strong and same_direction:
         return "🥇 Consensus Gold"
     elif model_strong and same_direction:
@@ -111,6 +119,9 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
     if not over_odds or not under_odds:
         return None
     try:
+        if float(line).is_integer():
+            return None
+
         min_std = get_min_std_dev(cv, projection, sport)
         effective_std = max(std_dev, min_std)
 
@@ -119,7 +130,12 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         model_prob = projection_to_probability(projection, line, effective_std, direction)
 
         if sport == 'mlb_strikeouts':
-            model_prob = max(0.25, min(0.72, model_prob))
+            if cv >= 0.50:
+                model_prob = max(0.35, min(0.62, model_prob))
+            elif cv >= 0.35:
+                model_prob = max(0.30, min(0.68, model_prob))
+            else:
+                model_prob = max(0.25, min(0.72, model_prob))
         elif sport == 'nba_points':
             model_prob = max(0.25, min(0.70, model_prob))
         elif sport == 'nba_assists':
@@ -142,7 +158,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'model_edge': model_edge,
             'score': score,
             'stars': score_to_stars(score),
-            'tier': get_tier(model_edge, ev_pct, sport)
+            'tier': get_tier(model_edge, ev_pct, cv, sport)
         }
     except:
         return None
@@ -931,7 +947,6 @@ if nav == "🏠 Home":
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
@@ -1125,7 +1140,10 @@ elif nav == "⚾ MLB Models":
 
         sorted_pitchers = sorted(
             all_pitchers.items(),
-            key=lambda x: x[1]['Score'] if x[1]['Score'] is not None else -1,
+            key=lambda x: (
+                x[1].get('MM Tier') != "🔴 Pass Candidate",
+                x[1]['Score'] if x[1]['Score'] is not None else -1
+            ),
             reverse=True
         )
 
@@ -1413,7 +1431,10 @@ elif nav == "🏀 NBA Models":
 
             sorted_players = sorted(
                 all_players.items(),
-                key=lambda x: x[1]['Score'] if x[1]['Score'] is not None else -1,
+                key=lambda x: (
+                    x[1].get('MM Tier') != "🔴 Pass Candidate",
+                    x[1]['Score'] if x[1]['Score'] is not None else -1
+                ),
                 reverse=True
             )
 
