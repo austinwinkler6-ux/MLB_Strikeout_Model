@@ -97,7 +97,7 @@ def calculate_odds_edge_cents(market_odds, fair_odds):
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
-    ev_threshold = 10.0 if cv >= 0.35 else 7.5
+    ev_threshold = 15.0 if cv >= 0.35 else 10.0
 
     if cv >= 0.50:
         return "🔴 Pass"
@@ -166,13 +166,13 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
 
     if ev_pct is not None:
         if ev_pct >= 15:
-            lines.append(f"✅ EV: **+{ev_pct}%** — elite expected value")
-        elif ev_pct >= 7.5:
-            lines.append(f"✅ EV: **+{ev_pct}%** — strong expected value")
-        elif ev_pct >= 4:
-            lines.append(f"⚠️ EV: **+{ev_pct}%** — moderate expected value")
+            lines.append(f"✅ EV: **+{ev_pct}%** — exceptional value")
+        elif ev_pct >= 10:
+            lines.append(f"✅ EV: **+{ev_pct}%** — strong value")
+        elif ev_pct >= 5:
+            lines.append(f"⚠️ EV: **+{ev_pct}%** — good value")
         elif ev_pct > 0:
-            lines.append(f"⚠️ EV: **+{ev_pct}%** — marginal expected value")
+            lines.append(f"⚠️ EV: **+{ev_pct}%** — slight edge")
         else:
             lines.append(f"❌ EV: **{ev_pct}%** — negative expected value")
 
@@ -234,11 +234,18 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         fair_prob = fair_over_prob if direction == 'over' else fair_under_prob
 
         raw_edge = projection - line if direction == 'over' else line - projection
+        edge_magnitude = abs(raw_edge)
+
+        # Inflate uncertainty for small edges
+        if edge_magnitude < 0.5:
+            effective_std *= 1.30
+        elif edge_magnitude < 1.0:
+            effective_std *= 1.15
 
         # Shrink small edges harder
-        if abs(raw_edge) < 0.5:
+        if edge_magnitude < 0.5:
             shrink = 0.35
-        elif abs(raw_edge) < 1.0:
+        elif edge_magnitude < 1.0:
             shrink = 0.55
         else:
             shrink = 0.75
