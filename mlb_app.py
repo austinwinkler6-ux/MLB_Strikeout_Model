@@ -181,13 +181,13 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
 
     if tier:
         if "Stable" in tier:
-            lines.append(f"✅ **{tier}** — highly consistent pitcher, low variance")
+            lines.append(f"✅ Performance Variance: **{tier}** — highly consistent pitcher, low variance")
         elif "Normal" in tier:
-            lines.append(f"✅ **{tier}** — reasonable consistency")
+            lines.append(f"✅ Performance Variance: **{tier}** — reasonable consistency")
         elif "Volatile" in tier:
-            lines.append(f"⚠️ **{tier}** — results vary significantly game to game")
+            lines.append(f"⚠️ Performance Variance: **{tier}** — results vary significantly game to game")
         elif "Uncertain Workload" in tier:
-            lines.append(f"❌ **{tier}** — extremely high variance, use caution")
+            lines.append(f"❌ Performance Variance: **{tier}** — extremely high variance, use caution")
 
     if result:
         workload_tier = result.get('workload_tier')
