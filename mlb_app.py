@@ -192,6 +192,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
     if result:
         workload_tier = result.get('workload_tier')
         expected_innings = result.get('expected_innings')
+        expected_minutes = result.get('expected_minutes')
         if workload_tier:
             if "Stable" in workload_tier:
                 icon = "✅"
@@ -199,8 +200,13 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 icon = "⚠️"
             else:
                 icon = "❌"
-            innings_note = f" — expected **{expected_innings} IP**" if expected_innings is not None else ""
-            lines.append(f"{icon} Role Stability: **{workload_tier}**{innings_note}")
+            if expected_innings is not None:
+                workload_note = f" — expected **{expected_innings} IP**"
+            elif expected_minutes is not None:
+                workload_note = f" — expected **{expected_minutes} MIN**"
+            else:
+                workload_note = ""
+            lines.append(f"{icon} Role Stability: **{workload_tier}**{workload_note}")
 
         opp_factor = result.get('opp_factor')
         if opp_factor:
@@ -232,6 +238,52 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 lines.append(f"✅ Today's lineup K% is **above average** — favorable")
             elif lineup_factor <= 0.20:
                 lines.append(f"⚠️ Today's lineup K% is **below average** — tougher")
+
+        if sport in ('nba_points', 'nba_assists'):
+            opp_pace = result.get('opp_pace')
+            if opp_pace:
+                if opp_pace >= league_avg_pace + 2:
+                    lines.append(f"✅ Opponent pace **{opp_pace}** — faster pace, more possessions")
+                elif opp_pace <= league_avg_pace - 2:
+                    lines.append(f"⚠️ Opponent pace **{opp_pace}** — slower pace, fewer possessions")
+                else:
+                    lines.append(f"➖ Opponent pace **{opp_pace}** — near league average")
+
+            rest_adj = result.get('rest_adj')
+            days_rest = result.get('days_rest')
+            if rest_adj:
+                icon = "✅" if rest_adj > 0 else "⚠️"
+                rest_note = f" ({days_rest} days rest)" if days_rest is not None else ""
+                lines.append(f"{icon} Rest adjustment **{rest_adj:+}**{rest_note}")
+
+            if sport == 'nba_points':
+                opp_def_rating = result.get('opp_def_rating')
+                if opp_def_rating:
+                    if opp_def_rating >= league_avg_def_rating + 2:
+                        lines.append(f"✅ Opponent defensive rating **{opp_def_rating}** — weaker defense, favorable matchup")
+                    elif opp_def_rating <= league_avg_def_rating - 2:
+                        lines.append(f"⚠️ Opponent defensive rating **{opp_def_rating}** — stronger defense, tougher matchup")
+
+                usage_adj = result.get('usage_adj')
+                if usage_adj:
+                    icon = "✅" if usage_adj > 0 else "⚠️"
+                    lines.append(f"{icon} Usage adjustment **{usage_adj:+}** based on recent shot volume")
+
+            elif sport == 'nba_assists':
+                ast_pct_adj = result.get('ast_pct_adj')
+                if ast_pct_adj:
+                    icon = "✅" if ast_pct_adj > 0 else "⚠️"
+                    lines.append(f"{icon} Assist rate adjustment **{ast_pct_adj:+}** based on playmaking usage")
+
+                potential_ast_adj = result.get('potential_ast_adj')
+                if potential_ast_adj:
+                    icon = "✅" if potential_ast_adj > 0 else "⚠️"
+                    lines.append(f"{icon} Potential-assists tracking adjustment **{potential_ast_adj:+}**")
+
+                opp_ast_adj = result.get('opp_ast_adj')
+                if opp_ast_adj:
+                    icon = "✅" if opp_ast_adj > 0 else "⚠️"
+                    lines.append(f"{icon} Opponent assists-allowed adjustment **{opp_ast_adj:+}**")
 
     return lines
 
@@ -859,6 +911,17 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
+        last10_min_series = df['MIN'].tail(10)
+        last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
+        min_cv = round(last10_min_std / last10_min, 3) if last10_min > 0 else 1.0
+
+        if min_cv < 0.20:
+            workload_tier = "🟢 Stable Rotation Player"
+        elif min_cv < 0.35:
+            workload_tier = "🟡 Changing Role"
+        else:
+            workload_tier = "🔴 Highly Volatile Minutes"
+
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
 
@@ -934,7 +997,8 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'location_adj': location_adj, 'rest_adj': rest_adj, 'team_total_adj': team_total_adj,
             'minutes_pts_adj': minutes_pts_adj, 'usage_adj': usage_adj, 'def_adj': def_adj,
             'pace_adj': pace_adj, 'implied_team_total': implied_team_total, 'game_total': game_total,
-            'cv': cv, 'confidence_tier': confidence_tier, 'days_rest': days_rest
+            'cv': cv, 'confidence_tier': confidence_tier, 'days_rest': days_rest,
+            'min_cv': min_cv, 'workload_tier': workload_tier,
         }
     except Exception as e:
         return None
@@ -976,6 +1040,17 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         elif cv < 0.35: confidence_tier = "🟡 Normal"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
+
+        last10_min_series = df['MIN'].tail(10)
+        last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
+        min_cv = round(last10_min_std / last10_min, 3) if last10_min > 0 else 1.0
+
+        if min_cv < 0.20:
+            workload_tier = "🟢 Stable Rotation Player"
+        elif min_cv < 0.35:
+            workload_tier = "🟡 Changing Role"
+        else:
+            workload_tier = "🔴 Highly Volatile Minutes"
 
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
@@ -1073,7 +1148,8 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             'pace_adj': pace_adj, 'opp_ast_adj': opp_ast_adj, 'opp_ast_allowed': opp_ast_allowed,
             'total_adj': total_adj, 'raw_adjustment': round(raw_adjustment, 2),
             'game_total': game_total, 'spread': spread, 'cv': cv,
-            'confidence_tier': confidence_tier, 'days_rest': days_rest
+            'confidence_tier': confidence_tier, 'days_rest': days_rest,
+            'min_cv': min_cv, 'workload_tier': workload_tier,
         }
     except Exception as e:
         return None
@@ -1528,7 +1604,8 @@ elif nav == "🏀 NBA Models":
                                                         'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
                                                         'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
                                                         'Projection': None, 'Edge': None, 'Play': None,
-                                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None
+                                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None
                                                     }
                                                 if 'FanDuel' in book_name:
                                                     all_players[player]['FanDuel Line'] = outcome['point']
@@ -1545,6 +1622,8 @@ elif nav == "🏀 NBA Models":
 
                         st.session_state[all_players_key] = all_players
                         st.session_state['nba_season'] = '2025-26'
+                        st.session_state[f'{session_key}_results'] = {}
+                        st.session_state[f'manual_run_order_{session_key}'] = {}
                         st.success(f"Loaded {len(all_players)} players!")
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -1607,8 +1686,15 @@ elif nav == "🏀 NBA Models":
                                     'Tier': result['confidence_tier'],
                                     'EV%': ev_result['ev_pct'] if ev_result else None,
                                     'MM Tier': ev_result['tier'] if ev_result else None,
-                                    'Low Confidence': ev_result['low_confidence'] if ev_result else None
+                                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                                    'Direction': direction,
+                                    'Odds': over_odds if direction == 'over' else under_odds,
                                 })
+                                st.session_state.setdefault(f'{session_key}_results', {})
+                                st.session_state[f'{session_key}_results'][player] = result
+                                bet_sport_label = 'NBA' if sport_key == 'nba_points' else 'NBA_AST'
                                 save_prediction({
                                     'date': date.today().strftime('%Y-%m-%d'),
                                     'pitcher': player, 'opponent': opp_abbrev, 'home_team': home_team,
@@ -1621,7 +1707,7 @@ elif nav == "🏀 NBA Models":
                                     'pitch_count_factor': result['expected_minutes'],
                                     'lineup_factor': result.get('usage_rate', result.get('potential_ast_adj', 0)),
                                     'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
-                                    'actual': None, 'sport': sport_key.upper().replace('_', '_'),
+                                    'actual': None, 'sport': bet_sport_label,
                                     'ev_pct': ev_result['ev_pct'] if ev_result else None,
                                     'mm_tier': ev_result['tier'] if ev_result else None,
                                     'model_prob': ev_result['model_prob'] if ev_result else None,
@@ -1636,10 +1722,14 @@ elif nav == "🏀 NBA Models":
         if all_players_key in st.session_state:
             all_players = st.session_state[all_players_key]
             season = st.session_state.get('nba_season', '2025-26')
+            player_results = st.session_state.get(f'{session_key}_results', {})
+            manual_run_order = st.session_state.get(f'manual_run_order_{session_key}', {})
 
             sorted_players = sorted(
                 all_players.items(),
                 key=lambda x: (
+                    x[0] in manual_run_order,
+                    manual_run_order.get(x[0], 0),
                     TIER_RANK.get(x[1].get('MM Tier'), -1),
                     x[1]['EV%'] if x[1]['EV%'] is not None else -999,
                     abs(x[1]['Edge']) if x[1]['Edge'] is not None else -999
@@ -1648,7 +1738,7 @@ elif nav == "🏀 NBA Models":
             )
 
             for player, info in sorted_players:
-                col1, col2, col3, col4, col5, col6, col7, col8, col9, col10 = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+                col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
                 with col1:
                     st.write(f"**{player}**")
                     st.caption(f"{info['away']} @ {info['home']}")
@@ -1716,9 +1806,63 @@ elif nav == "🏀 NBA Models":
                                         'Tier': result['confidence_tier'],
                                         'EV%': ev_result['ev_pct'] if ev_result else None,
                                         'MM Tier': ev_result['tier'] if ev_result else None,
-                                        'Low Confidence': ev_result['low_confidence'] if ev_result else None
+                                        'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                                        'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                        'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                                        'Direction': direction,
+                                        'Odds': over_odds if direction == 'over' else under_odds,
                                     })
+                                    st.session_state.setdefault(f'{session_key}_results', {})
+                                    st.session_state[f'{session_key}_results'][player] = result
+                                    st.session_state.setdefault(f'manual_run_order_{session_key}', {})
+                                    st.session_state[f'manual_run_counter_{session_key}'] = st.session_state.get(f'manual_run_counter_{session_key}', 0) + 1
+                                    st.session_state[f'manual_run_order_{session_key}'][player] = st.session_state[f'manual_run_counter_{session_key}']
                                     st.rerun()
+                with col11:
+                    if info.get('Projection') is not None:
+                        if st.button("📝 Log", key=f"{session_key}_log_{player}"):
+                            st.session_state[f'{session_key}_log_modal_{player}'] = True
+
+                if info.get('Projection') is not None and player in player_results:
+                    result = player_results[player]
+                    direction = info.get('Direction', 'over')
+                    why_lines = generate_why(info, result, direction, sport_key)
+                    if why_lines:
+                        with st.expander(f"💡 Why this bet? — {player}"):
+                            for line in why_lines:
+                                st.markdown(line)
+
+                if st.session_state.get(f'{session_key}_log_modal_{player}'):
+                    bet_sport_label = 'NBA' if sport_key == 'nba_points' else 'NBA_AST'
+                    with st.expander(f"📝 Log Bet — {player}", expanded=True):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"{session_key}_log_ou_{player}")
+                            log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100", key=f"{session_key}_log_bet_{player}")
+                            log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"{session_key}_log_odds_{player}")
+                        with col_b:
+                            log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 25", key=f"{session_key}_log_actual_{player}")
+                            log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"{session_key}_log_result_{player}")
+
+                        if st.button("✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player}", use_container_width=True):
+                            odds = int(log_odds) if log_odds else -110
+                            bet_val = log_bet or 0
+                            profit = calc_profit(bet_val, odds, log_result)
+                            save_bet({
+                                'date': str(date.today()), 'pitcher': player,
+                                'projection': info.get('Projection') or 0,
+                                'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
+                                'over_under': log_ou, 'odds': odds,
+                                'bet_amount': bet_val, 'result': log_result,
+                                'actual': log_actual or 0, 'profit': profit,
+                                'sport': bet_sport_label, 'ev_pct': info.get('EV%'),
+                                'mm_tier': info.get('MM Tier'),
+                                'model_edge': info.get('Edge'), 'confidence_tier': info.get('Tier'),
+                            })
+                            st.session_state[f'{session_key}_log_modal_{player}'] = False
+                            st.success(f"✅ Bet logged for {player}!")
+                            st.rerun()
+
                 st.divider()
 
     if nba_model_select == "NBA Points":
