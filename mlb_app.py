@@ -259,11 +259,13 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
 
         if sport == 'mlb_strikeouts':
             if cv >= 0.50:
-                model_prob = max(0.35, min(0.58, model_prob))
+                model_prob = min(0.55, model_prob)
             elif cv >= 0.35:
-                model_prob = max(0.30, min(0.62, model_prob))
+                model_prob = min(0.57, model_prob)
+            elif cv >= 0.20:
+                model_prob = min(0.63, model_prob)
             else:
-                model_prob = max(0.25, min(0.72, model_prob))
+                model_prob = min(0.68, model_prob)
         elif sport == 'nba_points':
             model_prob = max(0.25, min(0.70, model_prob))
         elif sport == 'nba_assists':
@@ -271,11 +273,37 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         else:
             model_prob = max(0.25, min(0.72, model_prob))
 
+        model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
+
+        if cv >= 0.50:
+            return {
+                'model_prob': model_prob,
+                'no_vig_prob': round(fair_prob, 3),
+                'prob_edge': None,
+                'ev_dollar': None,
+                'ev_pct': None,
+                'model_edge': model_edge,
+                'fair_odds': None,
+                'edge_cents': None,
+                'tier': "🔴 Pass"
+            }
+
         odds = over_odds if direction == 'over' else under_odds
         ev_dollar = calculate_ev(model_prob, odds)
         ev_pct = calculate_ev_pct(model_prob, odds)
+
+        # Penalize EV on small edges so a 0.2 edge can't show double-digit EV
+        if abs(model_edge) < 0.5:
+            ev_pct *= 0.35
+            ev_dollar *= 0.35
+        elif abs(model_edge) < 0.75:
+            ev_pct *= 0.60
+            ev_dollar *= 0.60
+
+        ev_pct = round(ev_pct, 2)
+        ev_dollar = round(ev_dollar, 2)
+
         prob_edge = round((model_prob - fair_prob) * 100, 2)
-        model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
         fair_odds = prob_to_american_odds(model_prob)
         edge_cents = calculate_odds_edge_cents(odds, fair_odds)
         return {
