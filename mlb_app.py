@@ -180,13 +180,13 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         lines.append("⚠️ **Low Confidence** — this projection carries very high variance. The EV above is calculated the same as any other prop, but treat it with caution and consider passing.")
 
     if tier:
-        if "Elite" in tier:
+        if "Stable" in tier:
             lines.append(f"✅ **{tier}** — highly consistent pitcher, low variance")
         elif "Normal" in tier:
             lines.append(f"✅ **{tier}** — reasonable consistency")
-        elif "High Variance" in tier:
+        elif "Volatile" in tier:
             lines.append(f"⚠️ **{tier}** — results vary significantly game to game")
-        elif "Pass Candidate" in tier:
+        elif "Uncertain Workload" in tier:
             lines.append(f"❌ **{tier}** — extremely high variance, use caution")
 
     if result:
@@ -670,10 +670,10 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         last10_k_std = round(last10_strikeouts.std(), 2) if len(last10_strikeouts) > 1 else 0.0
         cv = round(last10_k_std / last10_k_avg, 3) if last10_k_avg > 0 else 1.0
 
-        if cv < 0.20: confidence_tier = "🟢 Elite Stability"
+        if cv < 0.20: confidence_tier = "🟢 Stable"
         elif cv < 0.35: confidence_tier = "🟡 Normal"
-        elif cv < 0.50: confidence_tier = "🟠 High Variance"
-        else: confidence_tier = "🔴 Pass Candidate"
+        elif cv < 0.50: confidence_tier = "🟠 Volatile"
+        else: confidence_tier = "🔴 Uncertain Workload"
 
         last3_pitches = round(df['pitches'].head(3).mean(), 1)
         last10_pitches = round(df['pitches'].head(10).mean(), 1)
@@ -854,10 +854,10 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         last10_pts_std = round(last10_pts.std(), 2) if len(last10_pts) > 1 else 0.0
         cv = round(last10_pts_std / round(last10_pts.mean(), 2), 3) if round(last10_pts.mean(), 2) > 0 else 1.0
 
-        if cv < 0.20: confidence_tier = "🟢 Elite Stability"
+        if cv < 0.20: confidence_tier = "🟢 Stable"
         elif cv < 0.35: confidence_tier = "🟡 Normal"
-        elif cv < 0.50: confidence_tier = "🟠 High Variance"
-        else: confidence_tier = "🔴 Pass Candidate"
+        elif cv < 0.50: confidence_tier = "🟠 Volatile"
+        else: confidence_tier = "🔴 Uncertain Workload"
 
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
@@ -972,10 +972,10 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         last10_ast_std = round(last10_ast.std(), 2) if len(last10_ast) > 1 else 0.0
         cv = round(last10_ast_std / last10_ast_avg, 3) if last10_ast_avg > 0 else 1.0
 
-        if cv < 0.20: confidence_tier = "🟢 Elite Stability"
+        if cv < 0.20: confidence_tier = "🟢 Stable"
         elif cv < 0.35: confidence_tier = "🟡 Normal"
-        elif cv < 0.50: confidence_tier = "🟠 High Variance"
-        else: confidence_tier = "🔴 Pass Candidate"
+        elif cv < 0.50: confidence_tier = "🟠 Volatile"
+        else: confidence_tier = "🔴 Uncertain Workload"
 
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
@@ -1756,7 +1756,7 @@ elif nav == "📒 Bet Tracker":
         bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
     with col3:
         bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
-        bt_confidence_tier = st.selectbox("Confidence Tier", ["", "🟢 Elite Stability", "🟡 Normal", "🟠 High Variance", "🔴 Pass Candidate"])
+        bt_confidence_tier = st.selectbox("Confidence Tier", ["", "🟢 Stable", "🟡 Normal", "🟠 Volatile", "🔴 Uncertain Workload"])
         bt_no_vig_prob = st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
         bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
 
@@ -1877,7 +1877,7 @@ elif nav == "📒 Bet Tracker":
                 'ev_pct': st.column_config.NumberColumn('EV%'),
                 'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
-                'confidence_tier': st.column_config.SelectboxColumn('Conf Tier', options=['🟢 Elite Stability', '🟡 Normal', '🟠 High Variance', '🔴 Pass Candidate']),
+                'confidence_tier': st.column_config.SelectboxColumn('Conf Tier', options=['🟢 Stable', '🟡 Normal', '🟠 Volatile', '🔴 Uncertain Workload']),
             }
         )
 
