@@ -176,6 +176,9 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         else:
             lines.append(f"❌ EV: **{ev_pct}%** — negative expected value")
 
+    if info.get('Low Confidence'):
+        lines.append("⚠️ **Low Confidence** — this projection carries very high variance. The EV above is calculated the same as any other prop, but treat it with caution and consider passing.")
+
     if tier:
         if "Elite" in tier:
             lines.append(f"✅ **{tier}** — highly consistent pitcher, low variance")
@@ -187,6 +190,18 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
             lines.append(f"❌ **{tier}** — extremely high variance, use caution")
 
     if result:
+        workload_tier = result.get('workload_tier')
+        expected_innings = result.get('expected_innings')
+        if workload_tier:
+            if "Stable" in workload_tier:
+                icon = "✅"
+            elif "Changing" in workload_tier:
+                icon = "⚠️"
+            else:
+                icon = "❌"
+            innings_note = f" — expected **{expected_innings} IP**" if expected_innings is not None else ""
+            lines.append(f"{icon} Role Stability: **{workload_tier}**{innings_note}")
+
         opp_factor = result.get('opp_factor')
         if opp_factor:
             if opp_factor >= 1.05:
@@ -274,19 +289,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             model_prob = max(0.25, min(0.72, model_prob))
 
         model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
-
-        if cv >= 0.50:
-            return {
-                'model_prob': model_prob,
-                'no_vig_prob': round(fair_prob, 3),
-                'prob_edge': None,
-                'ev_dollar': None,
-                'ev_pct': None,
-                'model_edge': model_edge,
-                'fair_odds': None,
-                'edge_cents': None,
-                'tier': "🔴 Pass"
-            }
+        low_confidence = cv >= 0.50
 
         odds = over_odds if direction == 'over' else under_odds
         ev_dollar = calculate_ev(model_prob, odds)
@@ -315,6 +318,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'model_edge': model_edge,
             'fair_odds': fair_odds,
             'edge_cents': edge_cents,
+            'low_confidence': low_confidence,
             'tier': get_tier(model_edge, ev_pct, cv, sport)
         }
     except:
@@ -650,6 +654,17 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         last10_k_pct = round(df['strikeouts'].head(10).sum() / df['batters_faced'].head(10).sum(), 3)
         recent_strike_pct = round(df['strike_pct'].head(5).mean(), 3)
 
+        last10_ip = df['innings'].head(10)
+        last10_ip_std = round(last10_ip.std(), 2) if len(last10_ip) > 1 else 0.0
+        ip_cv = round(last10_ip_std / last10_avg_ip, 3) if last10_avg_ip > 0 else 1.0
+
+        if ip_cv < 0.20:
+            workload_tier = "🟢 Stable Starter"
+        elif ip_cv < 0.35:
+            workload_tier = "🟡 Recently Changing Workload"
+        else:
+            workload_tier = "🔴 Highly Volatile Usage"
+
         last10_strikeouts = df['strikeouts'].head(10)
         last10_k_avg = round(last10_strikeouts.mean(), 2)
         last10_k_std = round(last10_strikeouts.std(), 2) if len(last10_strikeouts) > 1 else 0.0
@@ -803,6 +818,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'last3_pitches': last3_pitches, 'season_avg_pitches': season_avg_pitches,
             'pitch_count_factor': round(pitch_based_ip, 2),
             'lineup_factor': round(lineup_k_pct, 3) if lineup_k_pct else None,
+            'ip_cv': ip_cv, 'workload_tier': workload_tier,
         }
     except Exception as e:
         return None
@@ -1204,7 +1220,7 @@ elif nav == "⚾ MLB Models":
                                                     'EV%': None, 'MM Tier': None,
                                                     'Model Prob': None, 'No Vig Prob': None,
                                                     'Model Edge': None, 'Odds': None, 'Direction': None,
-                                                    'Fair Odds': None, 'Edge Cents': None
+                                                    'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
                                                 }
                                             if 'FanDuel' in book_name:
                                                 all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
@@ -1281,6 +1297,7 @@ elif nav == "⚾ MLB Models":
                                 'Direction': direction,
                                 'Fair Odds': ev_result['fair_odds'] if ev_result else None,
                                 'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                                'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                             })
                             st.session_state['pitcher_results'][pitcher] = result
 
@@ -1347,6 +1364,8 @@ elif nav == "⚾ MLB Models":
             with col8:
                 ev = info.get('EV%')
                 st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
+                if info.get('Low Confidence'):
+                    st.caption("⚠️ Low Confidence")
             with col9:
                 st.write(info.get('MM Tier') if info.get('MM Tier') else "—")
             with col10:
@@ -1384,6 +1403,7 @@ elif nav == "⚾ MLB Models":
                                     'Direction': direction,
                                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
                                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                                 })
                                 st.session_state['pitcher_results'][pitcher] = result
                                 st.session_state['last_pitcher'] = pitcher
@@ -1508,7 +1528,7 @@ elif nav == "🏀 NBA Models":
                                                         'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
                                                         'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
                                                         'Projection': None, 'Edge': None, 'Play': None,
-                                                        'Tier': None, 'EV%': None, 'MM Tier': None
+                                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None
                                                     }
                                                 if 'FanDuel' in book_name:
                                                     all_players[player]['FanDuel Line'] = outcome['point']
@@ -1586,7 +1606,8 @@ elif nav == "🏀 NBA Models":
                                     'Projection': proj, 'Edge': edge, 'Play': play,
                                     'Tier': result['confidence_tier'],
                                     'EV%': ev_result['ev_pct'] if ev_result else None,
-                                    'MM Tier': ev_result['tier'] if ev_result else None
+                                    'MM Tier': ev_result['tier'] if ev_result else None,
+                                    'Low Confidence': ev_result['low_confidence'] if ev_result else None
                                 })
                                 save_prediction({
                                     'date': date.today().strftime('%Y-%m-%d'),
@@ -1648,6 +1669,8 @@ elif nav == "🏀 NBA Models":
                 with col8:
                     ev = info.get('EV%')
                     st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
+                    if info.get('Low Confidence'):
+                        st.caption("⚠️ Low Confidence")
                 with col9:
                     st.write(info.get('MM Tier') if info.get('MM Tier') else "—")
                 with col10:
@@ -1692,7 +1715,8 @@ elif nav == "🏀 NBA Models":
                                         'Projection': proj, 'Edge': edge, 'Play': play,
                                         'Tier': result['confidence_tier'],
                                         'EV%': ev_result['ev_pct'] if ev_result else None,
-                                        'MM Tier': ev_result['tier'] if ev_result else None
+                                        'MM Tier': ev_result['tier'] if ev_result else None,
+                                        'Low Confidence': ev_result['low_confidence'] if ev_result else None
                                     })
                                     st.rerun()
                 st.divider()
