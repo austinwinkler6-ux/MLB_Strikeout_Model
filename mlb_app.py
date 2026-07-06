@@ -208,6 +208,13 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 workload_note = ""
             lines.append(f"{icon} Role Stability: **{workload_tier}**{workload_note}")
 
+        streak = result.get('consecutive_5ip_starts')
+        if streak is not None and streak >= 2:
+            if streak >= 3:
+                lines.append(f"✅ **{streak} consecutive starts of 5+ IP** — model now treats him as a confirmed starter and weights season/role baseline more heavily")
+            else:
+                lines.append(f"⚠️ **{streak} consecutive starts of 5+ IP** — possible role change underway, model is leaning harder on recent workload")
+
         opp_factor = result.get('opp_factor')
         if opp_factor:
             if opp_factor >= 1.05:
@@ -749,7 +756,22 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         pitcher_skill = round((season_k_pct * 0.70) + (last10_k_pct * 0.15) + (last5_k_pct * 0.15), 3)
         last3_starter = (last3_avg_ip >= 4.8) or (sum(df['innings'].head(3) >= 5.0) >= 2)
 
-        if last3_starter:
+        # Count consecutive recent starts (most recent first) with 5+ IP,
+        # so a pitcher moving back into a normal starter role is recognized quickly.
+        consecutive_5ip_starts = 0
+        for ip in df['innings']:
+            if ip >= 5.0:
+                consecutive_5ip_starts += 1
+            else:
+                break
+
+        if consecutive_5ip_starts >= 3:
+            # Confirmed back to a normal starter role — trust season/role baseline again
+            ip_season_w, ip_last10_w, ip_last5_w = 0.35, 0.40, 0.25
+        elif consecutive_5ip_starts == 2:
+            # Role change likely underway — lean harder into recent workload
+            ip_season_w, ip_last10_w, ip_last5_w = 0.15, 0.25, 0.60
+        elif last3_starter:
             ip_season_w, ip_last10_w, ip_last5_w = 0.20, 0.30, 0.50
         elif last5_avg_ip > season_avg_ip * 1.5 or last5_avg_ip < season_avg_ip * 0.6:
             ip_season_w, ip_last10_w, ip_last5_w = 0.20, 0.30, 0.50
@@ -871,6 +893,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'pitch_count_factor': round(pitch_based_ip, 2),
             'lineup_factor': round(lineup_k_pct, 3) if lineup_k_pct else None,
             'ip_cv': ip_cv, 'workload_tier': workload_tier,
+            'consecutive_5ip_starts': consecutive_5ip_starts,
         }
     except Exception as e:
         return None
