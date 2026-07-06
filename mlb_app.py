@@ -69,6 +69,32 @@ def calculate_ev(model_prob, odds, bet_amount=100):
 def calculate_ev_pct(model_prob, odds, bet_amount=100):
     return round((calculate_ev(model_prob, odds, bet_amount) / bet_amount) * 100, 2)
 
+def prob_to_american_odds(prob):
+    try:
+        if prob is None or prob <= 0 or prob >= 1:
+            return None
+        if prob >= 0.5:
+            return int(round(-100 * prob / (1 - prob)))
+        else:
+            return int(round(100 * (1 - prob) / prob))
+    except:
+        return None
+
+def odds_to_cents(odds):
+    if odds is None:
+        return None
+    if odds > 0:
+        return round(100 - odds, 1)
+    else:
+        return round(abs(odds) - 100, 1)
+
+def calculate_odds_edge_cents(market_odds, fair_odds):
+    market_cents = odds_to_cents(market_odds)
+    fair_cents = odds_to_cents(fair_odds)
+    if market_cents is None or fair_cents is None:
+        return None
+    return round(fair_cents - market_cents, 1)
+
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
     ev_threshold = 10.0 if cv >= 0.35 else 7.5
@@ -124,6 +150,12 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
             lines.append(f"⚠️ Book offering **{odds}** — moderate juice")
         else:
             lines.append(f"⚠️ Book offering **{odds}** — heavy juice, higher break-even needed")
+
+    fair_odds = info.get('Fair Odds')
+    edge_cents = info.get('Edge Cents')
+    if odds and fair_odds is not None and edge_cents is not None:
+        icon = "✅" if edge_cents > 0 else ("⚠️" if edge_cents == 0 else "❌")
+        lines.append(f"{icon} Market Odds: **{fmt_odds(odds)}** → Fair Odds: **{fmt_odds(fair_odds)}** ({'+' if edge_cents > 0 else ''}{edge_cents} cents edge)")
 
     if no_vig_prob and model_prob:
         no_vig_pct = round(no_vig_prob * 100, 1)
@@ -221,6 +253,8 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         ev_pct = calculate_ev_pct(model_prob, odds)
         prob_edge = round((model_prob - fair_prob) * 100, 2)
         model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
+        fair_odds = prob_to_american_odds(model_prob)
+        edge_cents = calculate_odds_edge_cents(odds, fair_odds)
         return {
             'model_prob': model_prob,
             'no_vig_prob': round(fair_prob, 3),
@@ -228,6 +262,8 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'ev_dollar': ev_dollar,
             'ev_pct': ev_pct,
             'model_edge': model_edge,
+            'fair_odds': fair_odds,
+            'edge_cents': edge_cents,
             'tier': get_tier(model_edge, ev_pct, cv, sport)
         }
     except:
@@ -1037,9 +1073,9 @@ if nav == "🏠 Home":
     with col3:
         st.markdown("""
             <div style='text-align: center; padding: 20px;'>
-                <div style='font-size: 2rem;'>⭐</div>
-                <h3>Model Metrics Score</h3>
-                <p style='color: #64748B;'>Every bet receives a confidence score based on projection edge, expected value, historical consistency, and market alignment.</p>
+                <div style='font-size: 2rem;'>🎯</div>
+                <h3>Clear Bet Tiers</h3>
+                <p style='color: #64748B;'>Every prop is sorted into Best Bet, Playable, Lean, or Pass based on model edge, expected value, and confidence — no confusing scores to interpret.</p>
             </div>
         """, unsafe_allow_html=True)
 
@@ -1055,7 +1091,7 @@ if nav == "🏠 Home":
     1. **Select your sport** from the sidebar to access the available models.
     2. **Load today's props** to view live player prop lines from FanDuel and DraftKings.
     3. **Run projections** to compare our model's projections against the sportsbooks and identify potential value opportunities.
-    4. **Check the Model Metrics Score** — higher scores mean both our model and the market agree there's value.
+    4. **Check the tier** — 🟢 Best Bet, 🔵 Playable, 🟡 Lean, or 🔴 Pass — to see how strongly our model and the market agree there's value.
     5. **Click 💡 Why this bet?** to see the full reasoning behind each recommendation.
     6. **Click 📝 Log** on any row to auto-fill your bet tracker — no manual entry needed.
     """)
@@ -1116,7 +1152,8 @@ elif nav == "⚾ MLB Models":
                                                     'Tier': None,
                                                     'EV%': None, 'MM Tier': None,
                                                     'Model Prob': None, 'No Vig Prob': None,
-                                                    'Model Edge': None, 'Odds': None, 'Direction': None
+                                                    'Model Edge': None, 'Odds': None, 'Direction': None,
+                                                    'Fair Odds': None, 'Edge Cents': None
                                                 }
                                             if 'FanDuel' in book_name:
                                                 all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
@@ -1191,6 +1228,8 @@ elif nav == "⚾ MLB Models":
                                 'Model Edge': ev_result['model_edge'] if ev_result else None,
                                 'Odds': over_odds if direction == 'over' else under_odds,
                                 'Direction': direction,
+                                'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                             })
                             st.session_state['pitcher_results'][pitcher] = result
 
@@ -1229,7 +1268,8 @@ elif nav == "⚾ MLB Models":
                 x[0] in manual_run_order,
                 manual_run_order.get(x[0], 0),
                 TIER_RANK.get(x[1].get('MM Tier'), -1),
-                x[1]['EV%'] if x[1]['EV%'] is not None else -999
+                x[1]['EV%'] if x[1]['EV%'] is not None else -999,
+                abs(x[1]['Edge']) if x[1]['Edge'] is not None else -999
             ),
             reverse=True
         )
@@ -1291,6 +1331,8 @@ elif nav == "⚾ MLB Models":
                                     'Model Edge': ev_result['model_edge'] if ev_result else None,
                                     'Odds': over_odds if direction == 'over' else under_odds,
                                     'Direction': direction,
+                                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                                 })
                                 st.session_state['pitcher_results'][pitcher] = result
                                 st.session_state['last_pitcher'] = pitcher
@@ -1527,7 +1569,8 @@ elif nav == "🏀 NBA Models":
                 all_players.items(),
                 key=lambda x: (
                     TIER_RANK.get(x[1].get('MM Tier'), -1),
-                    x[1]['EV%'] if x[1]['EV%'] is not None else -999
+                    x[1]['EV%'] if x[1]['EV%'] is not None else -999,
+                    abs(x[1]['Edge']) if x[1]['Edge'] is not None else -999
                 ),
                 reverse=True
             )
