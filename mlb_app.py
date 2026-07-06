@@ -232,7 +232,23 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
 
         fair_over_prob, fair_under_prob = remove_vig(over_odds, under_odds)
         fair_prob = fair_over_prob if direction == 'over' else fair_under_prob
-        model_prob = projection_to_probability(projection, line, effective_std, direction)
+
+        raw_edge = projection - line if direction == 'over' else line - projection
+
+        # Shrink small edges harder
+        if abs(raw_edge) < 0.5:
+            shrink = 0.35
+        elif abs(raw_edge) < 1.0:
+            shrink = 0.55
+        else:
+            shrink = 0.75
+
+        if direction == 'over':
+            adjusted_projection = line + (raw_edge * shrink)
+        else:
+            adjusted_projection = line - (raw_edge * shrink)
+
+        model_prob = projection_to_probability(adjusted_projection, line, effective_std, direction)
 
         if sport == 'mlb_strikeouts':
             if cv >= 0.50:
