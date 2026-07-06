@@ -1731,7 +1731,7 @@ elif nav == "📒 Bet Tracker":
             st.markdown("---")
             st.subheader("💰 Performance by EV%")
             ev_settled = settled[settled['ev_pct'].notna()]
-            ev_buckets = [('0–2%', 0, 2), ('2–4%', 2, 4), ('4–6%', 4, 6), ('6%+', 6, 999)]
+            ev_buckets = [('<0%', -999, 0), ('0–2.5%', 0, 2.5), ('2.5–5%', 2.5, 5), ('5–7.5%', 5, 7.5), ('7.5–10%', 7.5, 10), ('10–15%', 10, 15), ('15%+', 15, 999)]
             ev_data = []
             for label, low, high in ev_buckets:
                 bucket = ev_settled[(ev_settled['ev_pct'] >= low) & (ev_settled['ev_pct'] < high)]
