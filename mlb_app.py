@@ -162,8 +162,9 @@ def inject_custom_css():
 
 inject_custom_css()
 
-def tier_badge(tier_text):
-    """Render an MM Tier string as a colored pill badge."""
+def tier_badge(tier_text, compact=False):
+    """Render an MM Tier string as a colored pill badge.
+    compact=True shrinks font/padding for tight row layouts (MLB/NBA tables)."""
     if not tier_text:
         return "<span class='mm-badge mm-badge-neutral'>—</span>"
     if "Best Bet" in tier_text:
@@ -176,7 +177,17 @@ def tier_badge(tier_text):
         cls = "mm-badge-pass"
     else:
         cls = "mm-badge-neutral"
-    return f"<span class='mm-badge {cls}'>{tier_text}</span>"
+    style = "style='font-size:0.72rem; padding:2px 8px; white-space:normal; line-height:1.3;'" if compact else ""
+    return f"<span class='mm-badge {cls}' {style}>{tier_text}</span>"
+
+def short_tier_label(tier_text):
+    """Abbreviates the longest confidence-tier label for tight row layouts only —
+    full text still used everywhere else (Why this bet?, Bet Tracker, etc.)."""
+    if not tier_text:
+        return "—"
+    if "Uncertain Workload" in tier_text:
+        return "🔴 Uncertain"
+    return tier_text
 
 ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
 ADMIN_EMAIL = "austinwinkler6@icloud.com"
@@ -2108,7 +2119,7 @@ elif nav == "⚾ MLB Models":
         )
 
         for pitcher, info in sorted_pitchers:
-            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.4, 0.9, 0.9, 0.8, 0.8, 0.9, 1.5, 1, 1.8, 0.7, 0.7])
             with col1:
                 st.write(f"**{pitcher}**")
                 st.caption(f"{info['away']} @ {info['home']}")
@@ -2125,14 +2136,14 @@ elif nav == "⚾ MLB Models":
             with col6:
                 st.write(info['Play'] if info['Play'] else "—")
             with col7:
-                st.write(info.get('Tier') if info.get('Tier') else "—")
+                st.write(short_tier_label(info.get('Tier')))
             with col8:
                 ev = info.get('EV%')
                 st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
                 if info.get('Low Confidence'):
-                    st.caption("⚠️ Low Confidence")
+                    st.caption("⚠️ Low Conf.")
             with col9:
-                st.markdown(tier_badge(info.get('MM Tier')), unsafe_allow_html=True)
+                st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
             with col10:
                 if st.button("▶️ Run", key=f"run_{pitcher}"):
                     with st.spinner(f"Running {pitcher}..."):
@@ -2319,7 +2330,7 @@ elif nav == "🏀 NBA Models":
             )
 
             for player, info in sorted_players:
-                col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+                col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.4, 0.9, 0.9, 0.8, 0.8, 0.9, 1.5, 1, 1.8, 0.7, 0.7])
                 with col1:
                     st.write(f"**{player}**")
                     st.caption(f"{info['away']} @ {info['home']}")
@@ -2336,14 +2347,14 @@ elif nav == "🏀 NBA Models":
                 with col6:
                     st.write(info['Play'] if info['Play'] else "—")
                 with col7:
-                    st.write(info.get('Tier') if info.get('Tier') else "—")
+                    st.write(short_tier_label(info.get('Tier')))
                 with col8:
                     ev = info.get('EV%')
                     st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
                     if info.get('Low Confidence'):
-                        st.caption("⚠️ Low Confidence")
+                        st.caption("⚠️ Low Conf.")
                 with col9:
-                    st.markdown(tier_badge(info.get('MM Tier')), unsafe_allow_html=True)
+                    st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
                 with col10:
                     if st.button("▶️ Run", key=f"{session_key}_run_{player}"):
                         with st.spinner(f"Running {player}..."):
