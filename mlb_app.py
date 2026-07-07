@@ -75,6 +75,9 @@ def inject_custom_css():
         border-radius: 8px;
         font-weight: 500;
         transition: all 0.15s ease;
+        white-space: nowrap;
+        padding-left: 10px;
+        padding-right: 10px;
     }
     .stButton > button:hover {
         border-color: var(--mm-accent);
@@ -2119,7 +2122,7 @@ elif nav == "⚾ MLB Models":
         )
 
         for pitcher, info in sorted_pitchers:
-            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.4, 0.9, 0.9, 0.8, 0.8, 0.9, 1.5, 1, 1.8, 0.7, 0.7])
+            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.1, 0.8, 0.8, 0.7, 0.7, 0.8, 1.4, 0.9, 1.6, 1.1, 1.1])
             with col1:
                 st.write(f"**{pitcher}**")
                 st.caption(f"{info['away']} @ {info['home']}")
@@ -2330,7 +2333,7 @@ elif nav == "🏀 NBA Models":
             )
 
             for player, info in sorted_players:
-                col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.4, 0.9, 0.9, 0.8, 0.8, 0.9, 1.5, 1, 1.8, 0.7, 0.7])
+                col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.1, 0.8, 0.8, 0.7, 0.7, 0.8, 1.4, 0.9, 1.6, 1.1, 1.1])
                 with col1:
                     st.write(f"**{player}**")
                     st.caption(f"{info['away']} @ {info['home']}")
