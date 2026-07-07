@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo
+from collections import Counter
 from io import StringIO
 from supabase import create_client, Client
 from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, leaguedashteamstats
@@ -1535,10 +1536,12 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
                                     and outcome.get('name', '').lower() == direction.lower()):
                                 points.append({'line': outcome['point'], 'odds': outcome['price']})
             if points:
-                avg_line = round(sum(p['line'] for p in points) / len(points), 1)
-                avg_prob = sum(odds_to_implied_prob(p['odds']) for p in points) / len(points)
+                line_counts = Counter(p['line'] for p in points)
+                consensus_line = line_counts.most_common(1)[0][0]
+                matching_points = [p for p in points if p['line'] == consensus_line]
+                avg_prob = sum(odds_to_implied_prob(p['odds']) for p in matching_points) / len(matching_points)
                 avg_odds = prob_to_american_odds(avg_prob)
-                return avg_line, avg_odds
+                return consensus_line, avg_odds
         return None, None
     except:
         return None, None
@@ -2624,7 +2627,7 @@ elif nav == "📒 Bet Tracker":
         missing_closing = [b for b in all_settled_for_closing if not b.get('closing_line')]
 
         force_refetch = st.checkbox(
-            "Re-fetch all closing lines (use this if old values look wrong, e.g. odds shorter than 3 digits)"
+            "Re-fetch all closing lines (use this if old values look wrong)"
         )
         bets_to_update = all_settled_for_closing if force_refetch else missing_closing
 
