@@ -284,6 +284,11 @@ def calculate_odds_edge_cents(market_odds, fair_odds):
         return None
     return round(fair_cents - market_cents, 1)
 
+def odds_to_implied_prob(odds):
+    if odds > 0:
+        return 100 / (odds + 100)
+    return abs(odds) / (abs(odds) + 100)
+
 def calculate_odds_clv(placed_odds, closing_odds):
     """Compares the odds a bet was placed at against the closing odds, via
     implied probability rather than the cents-based market-vs-fair formula
@@ -292,15 +297,8 @@ def calculate_odds_clv(placed_odds, closing_odds):
     got, i.e. the market moved in your favor after you bet (good CLV)."""
     if placed_odds is None or closing_odds is None:
         return None
-
-    def implied_prob(odds):
-        if odds > 0:
-            return 100 / (odds + 100)
-        return abs(odds) / (abs(odds) + 100)
-
-    placed_prob = implied_prob(placed_odds)
-    closing_prob = implied_prob(closing_odds)
-
+    placed_prob = odds_to_implied_prob(placed_odds)
+    closing_prob = odds_to_implied_prob(closing_odds)
     return round((closing_prob - placed_prob) * 100, 2)
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
@@ -1494,7 +1492,8 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
                                 points.append({'line': outcome['point'], 'odds': outcome['price']})
             if points:
                 avg_line = round(sum(p['line'] for p in points) / len(points), 1)
-                avg_odds = round(sum(p['odds'] for p in points) / len(points))
+                avg_prob = sum(odds_to_implied_prob(p['odds']) for p in points) / len(points)
+                avg_odds = prob_to_american_odds(avg_prob)
                 return avg_line, avg_odds
         return None, None
     except:
@@ -2690,6 +2689,64 @@ elif nav == "📒 Bet Tracker":
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
             display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
+
+        def _fmt_signed_num(v, decimals=1):
+            if pd.isna(v):
+                return "—"
+            if abs(v) < 10 ** (-decimals) / 2:
+                return f"{0:.{decimals}f}"
+            sign = "+" if v > 0 else ""
+            return f"{sign}{round(v, decimals)}"
+
+        def _clv_emoji(v):
+            if pd.isna(v):
+                return ""
+            if v > 0:
+                return "🟢 "
+            elif v < 0:
+                return "🔴 "
+            return "⚪ "
+
+        def _fmt_odds_signed(v):
+            if pd.isna(v):
+                return "—"
+            v = int(round(v))
+            return f"+{v}" if v > 0 else str(v)
+
+        def _beat_close(clv_val, odds_clv_val):
+            if pd.isna(clv_val):
+                return "—"
+            if clv_val > 0:
+                return "✅"
+            if clv_val < 0:
+                return "❌"
+            if pd.isna(odds_clv_val):
+                return "—"
+            if odds_clv_val > 0:
+                return "✅"
+            if odds_clv_val < 0:
+                return "❌"
+            return "—"
+
+        if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
+            display_df['Beat Close'] = [
+                _beat_close(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
+            ]
+            cols = display_df.columns.tolist()
+            cols.remove('Beat Close')
+            insert_at = cols.index('odds_clv') + 1 if 'odds_clv' in cols else len(cols)
+            cols.insert(insert_at, 'Beat Close')
+            display_df = display_df[cols]
+
+        if 'closing_line' in display_df.columns:
+            display_df['closing_line'] = bets_df['closing_line'].apply(lambda v: "—" if pd.isna(v) else v)
+        if 'clv' in display_df.columns:
+            display_df['clv'] = bets_df['clv'].apply(lambda v: "—" if pd.isna(v) else f"{_clv_emoji(v)}{_fmt_signed_num(v, 1)}")
+        if 'closing_odds' in display_df.columns:
+            display_df['closing_odds'] = bets_df['closing_odds'].apply(_fmt_odds_signed)
+        if 'odds_clv' in display_df.columns:
+            display_df['odds_clv'] = bets_df['odds_clv'].apply(lambda v: "—" if pd.isna(v) else f"{_clv_emoji(v)}{_fmt_signed_num(v, 1)}")
+
         edited_df = st.data_editor(
             display_df, use_container_width=True, num_rows="dynamic",
             column_config={
@@ -2698,7 +2755,7 @@ elif nav == "📒 Bet Tracker":
                 'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
                 'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
                 'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0),
-                'odds': st.column_config.NumberColumn('Odds'),
+                'odds': st.column_config.NumberColumn('Odds', format="%+d"),
                 'profit': st.column_config.NumberColumn('Profit ($)'),
                 'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
                 'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL']),
@@ -2706,10 +2763,11 @@ elif nav == "📒 Bet Tracker":
                 'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'confidence_tier': st.column_config.SelectboxColumn('Reliability', options=['🟢 Reliable', '🟠 Volatile', '🔴 Uncertain Workload']),
-                'closing_line': st.column_config.NumberColumn('Closing Line', step=0.5, disabled=True),
-                'clv': st.column_config.NumberColumn('Line CLV', step=0.1, disabled=True, help="Positive = line moved in your favor after you bet"),
-                'closing_odds': st.column_config.NumberColumn('Closing Odds', disabled=True),
-                'odds_clv': st.column_config.NumberColumn('Odds CLV (%)', step=0.1, disabled=True, help="Positive = odds moved in your favor after you bet"),
+                'closing_line': st.column_config.TextColumn('Closing Line', disabled=True),
+                'clv': st.column_config.TextColumn('Line CLV', disabled=True, help="Positive = line moved in your favor after you bet"),
+                'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
+                'odds_clv': st.column_config.TextColumn('Odds CLV', disabled=True, help="Positive = odds moved in your favor after you bet (implied probability movement, not %ROI)"),
+                'Beat Close': st.column_config.TextColumn('Beat Close', disabled=True),
             }
         )
 
