@@ -2675,20 +2675,14 @@ elif nav == "📒 Bet Tracker":
             clv_df = bets_df[bets_df['clv'].notna()]
             avg_clv = clv_df['clv'].mean()
             beat_close_pct = round((clv_df['clv'] > 0).mean() * 100, 1)
-            col1, col2 = st.columns(2)
-            col1.metric("Avg Line CLV", f"{clv_emoji(avg_clv)}{fmt_signed_num(avg_clv, 2)} pts")
-            col2.metric("Beat Closing Line", f"{beat_close_pct}%")
 
             has_odds_clv = 'odds_clv' in bets_df.columns and bets_df['odds_clv'].notna().any()
+            avg_odds_clv = None
+            beat_odds_pct = None
             if has_odds_clv:
                 odds_clv_df = bets_df[bets_df['odds_clv'].notna()]
                 avg_odds_clv = odds_clv_df['odds_clv'].mean()
                 beat_odds_pct = round((odds_clv_df['odds_clv'] > 0).mean() * 100, 1)
-                col3, col4 = st.columns(2)
-                col3.metric("Avg Odds CLV", f"{clv_emoji(avg_odds_clv)}{fmt_signed_num(avg_odds_clv, 2)}")
-                with col3:
-                    st.caption("Implied probability movement (not % ROI)")
-                col4.metric("Beat Closing Odds", f"{beat_odds_pct}%")
 
             beat_close_series = [
                 beat_close_label(c, o) for c, o in zip(
@@ -2697,10 +2691,22 @@ elif nav == "📒 Bet Tracker":
                 )
             ]
             decided = [x for x in beat_close_series if x in ('✅', '❌')]
+
             if decided:
                 overall_beat_pct = round(sum(1 for x in decided if x == '✅') / len(decided) * 100, 1)
-                st.metric("Overall Beat Close %", f"{overall_beat_pct}%")
+                st.metric("📈 Beat Market", f"{overall_beat_pct}%")
                 st.caption("Line CLV is the primary signal; falls back to odds CLV as a tiebreaker when the line didn't move")
+
+            col1, col2 = st.columns(2)
+            col1.metric("🎯 Beat Closing Line", f"{beat_close_pct}%")
+            col2.metric("📏 Avg Line CLV", f"{clv_emoji(avg_clv)}{fmt_signed_num(avg_clv, 2)} pts")
+
+            if has_odds_clv:
+                col3, col4 = st.columns(2)
+                col3.metric("Beat Closing Odds", f"{beat_odds_pct}%")
+                col4.metric("💵 Avg Odds CLV", f"{clv_emoji(avg_odds_clv)}{fmt_signed_num(avg_odds_clv, 2)} implied pts")
+                with col4:
+                    st.caption("Implied probability movement, not % ROI")
 
         if 'ev_pct' in bets_df.columns and not settled.empty and settled['ev_pct'].notna().any():
             st.markdown("---")
