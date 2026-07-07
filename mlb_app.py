@@ -10,6 +10,174 @@ from scipy import stats
 
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
 
+# ==================== GLOBAL DESIGN SYSTEM ====================
+def inject_custom_css():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+    :root {
+        --mm-bg: #0A0E1A;
+        --mm-panel: #11172A;
+        --mm-panel-2: #161D33;
+        --mm-border: #232B45;
+        --mm-text: #E8EAF0;
+        --mm-text-dim: #8A93AB;
+        --mm-text-faint: #5B6479;
+        --mm-accent: #E8A33D;
+        --mm-accent-hover: #F2B457;
+        --mm-success: #34D399;
+        --mm-info: #60A5FA;
+        --mm-warn: #FBBF24;
+        --mm-danger: #F87171;
+        --mm-mono: 'JetBrains Mono', monospace;
+        --mm-display: 'Space Grotesk', sans-serif;
+        --mm-body: 'Inter', sans-serif;
+    }
+
+    html, body, .stApp {
+        background-color: var(--mm-bg) !important;
+        font-family: var(--mm-body);
+        color: var(--mm-text);
+    }
+
+    h1, h2, h3 {
+        font-family: var(--mm-display) !important;
+        letter-spacing: -0.01em;
+    }
+
+    p, span, div, label { font-family: var(--mm-body); }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: var(--mm-panel) !important;
+        border-right: 1px solid var(--mm-border);
+    }
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label {
+        padding: 9px 12px;
+        border-radius: 8px;
+        margin-bottom: 2px;
+        transition: background-color 0.15s ease;
+        font-size: 0.95rem;
+    }
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] label:hover {
+        background-color: var(--mm-panel-2);
+    }
+    [data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] p {
+        color: var(--mm-text-faint) !important;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        background-color: var(--mm-panel-2);
+        color: var(--mm-text);
+        border: 1px solid var(--mm-border);
+        border-radius: 8px;
+        font-weight: 500;
+        transition: all 0.15s ease;
+    }
+    .stButton > button:hover {
+        border-color: var(--mm-accent);
+        color: var(--mm-accent);
+    }
+    .stButton > button[kind="primary"] {
+        background-color: var(--mm-accent);
+        color: #0A0E1A;
+        border: none;
+        font-weight: 600;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background-color: var(--mm-accent-hover);
+    }
+
+    /* Metrics */
+    [data-testid="stMetric"] {
+        background-color: var(--mm-panel);
+        border: 1px solid var(--mm-border);
+        border-radius: 10px;
+        padding: 14px 16px;
+    }
+    [data-testid="stMetricValue"] {
+        font-family: var(--mm-mono) !important;
+        color: var(--mm-text) !important;
+    }
+    [data-testid="stMetricLabel"] {
+        color: var(--mm-text-dim) !important;
+    }
+
+    /* Numeric / data-heavy widgets get mono for scan-ability */
+    .stDataFrame, .stDataFrame * {
+        font-family: var(--mm-mono) !important;
+    }
+    [data-testid="stNumberInput"] input {
+        font-family: var(--mm-mono);
+    }
+
+    /* Inputs */
+    input, textarea, .stSelectbox div[data-baseweb="select"] {
+        background-color: var(--mm-panel-2) !important;
+        border-color: var(--mm-border) !important;
+        color: var(--mm-text) !important;
+        border-radius: 8px !important;
+    }
+
+    /* Expanders (Why this bet / Log bet) */
+    [data-testid="stExpander"] {
+        background-color: var(--mm-panel);
+        border: 1px solid var(--mm-border);
+        border-radius: 10px;
+    }
+
+    /* Dividers */
+    hr {
+        border-color: var(--mm-border) !important;
+    }
+
+    /* Tier badges */
+    .mm-badge {
+        display: inline-block;
+        font-family: var(--mm-body);
+        font-weight: 600;
+        font-size: 0.82rem;
+        padding: 3px 11px;
+        border-radius: 999px;
+        white-space: nowrap;
+        border: 1px solid transparent;
+    }
+    .mm-badge-best { background: rgba(52,211,153,0.12); color: var(--mm-success); border-color: rgba(52,211,153,0.35); }
+    .mm-badge-playable { background: rgba(96,165,250,0.12); color: var(--mm-info); border-color: rgba(96,165,250,0.35); }
+    .mm-badge-lean { background: rgba(251,191,36,0.12); color: var(--mm-warn); border-color: rgba(251,191,36,0.35); }
+    .mm-badge-pass { background: rgba(248,113,113,0.12); color: var(--mm-danger); border-color: rgba(248,113,113,0.35); }
+    .mm-badge-neutral { background: var(--mm-panel-2); color: var(--mm-text-dim); border-color: var(--mm-border); }
+
+    /* Reusable card */
+    .mm-card {
+        background-color: var(--mm-panel);
+        border: 1px solid var(--mm-border);
+        border-radius: 12px;
+        padding: 24px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+inject_custom_css()
+
+def tier_badge(tier_text):
+    """Render an MM Tier string as a colored pill badge."""
+    if not tier_text:
+        return "<span class='mm-badge mm-badge-neutral'>—</span>"
+    if "Best Bet" in tier_text:
+        cls = "mm-badge-best"
+    elif "Playable" in tier_text:
+        cls = "mm-badge-playable"
+    elif "Lean" in tier_text:
+        cls = "mm-badge-lean"
+    elif "Pass" in tier_text:
+        cls = "mm-badge-pass"
+    else:
+        cls = "mm-badge-neutral"
+    return f"<span class='mm-badge {cls}'>{tier_text}</span>"
+
 ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
 ADMIN_EMAIL = "austinwinkler6@icloud.com"
 
@@ -418,8 +586,8 @@ if 'user' not in st.session_state:
     st.markdown("""
         <div style='text-align: center; padding-top: 60px;'>
             <img src='https://raw.githubusercontent.com/austinwinkler6-ux/mlb_strikeout_model/main/ModelMetricsLogo.png' width='225'/>
-            <h2 style='margin-top: 20px;'>Welcome to Model Metrics</h2>
-            <p style='color: #64748B; margin-top: 8px;'>Projections • +EV • Confidence Scores</p>
+            <h2 style='margin-top: 20px; font-family: var(--mm-display);'>Welcome to Model Metrics</h2>
+            <p style='color: var(--mm-text-dim); margin-top: 8px; font-family: var(--mm-mono); font-size: 0.85rem; letter-spacing: 0.06em;'>PROJECTIONS · +EV · CONFIDENCE TIERS</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -1203,78 +1371,100 @@ with st.sidebar:
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
     st.markdown("""
-        <div style='text-align: center; padding: 40px 0 20px 0;'>
-            <h1 style='font-size: 2.5rem; margin-bottom: 8px;'>Sharp Data. Sharp Bets.</h1>
-            <p style='color: #64748B; font-size: 1.1rem;'>Projections • +EV • Confidence Scores</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("""
-        <div style='text-align: center; max-width: 700px; margin: 0 auto; padding-bottom: 30px;'>
-            <p style='font-size: 1.05rem; color: #CBD5E1;'>
-                Professional player prop projections powered by proprietary models and real-time +EV analysis.
-                Find bets where both the numbers and the market agree.
+        <div style='text-align: center; padding: 56px 0 8px 0;'>
+            <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;'>
+                Player Prop Analytics
+            </div>
+            <h1 style='font-size: 3rem; margin: 0 0 14px 0; line-height: 1.1;'>Sharp Data. Sharp Bets.</h1>
+            <p style='color: var(--mm-text-dim); font-size: 1.05rem; max-width: 620px; margin: 0 auto; line-height: 1.6;'>
+                Proprietary projections, real-time +EV analysis, and transparent confidence tiers —
+                built to find the props where the numbers and the market actually agree.
             </p>
         </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.markdown(f"""
+        <div style='display: flex; justify-content: center; gap: 10px; padding: 28px 0 48px 0; flex-wrap: wrap;'>
+            {tier_badge("🟢 Best Bet")}
+            {tier_badge("🔵 Playable")}
+            {tier_badge("🟡 Lean")}
+            {tier_badge("🔴 Pass")}
+        </div>
+    """, unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
-            <div style='text-align: center; padding: 20px;'>
-                <div style='font-size: 2rem;'>📈</div>
-                <h3>Proprietary Projection Models</h3>
-                <p style='color: #64748B;'>Accurate player projections built from advanced statistics, matchup data, pace, usage, workload, and betting market information.</p>
+            <div class='mm-card' style='height: 100%;'>
+                <div style='font-size: 1.6rem; margin-bottom: 10px;'>📈</div>
+                <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Proprietary Projection Models</h3>
+                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
+                    Built from advanced statistics, matchup data, pace, usage, workload, and live betting market information.
+                </p>
             </div>
         """, unsafe_allow_html=True)
     with col2:
         st.markdown("""
-            <div style='text-align: center; padding: 20px;'>
-                <div style='font-size: 2rem;'>💰</div>
-                <h3>Real-Time +EV Analysis</h3>
-                <p style='color: #64748B;'>Automatically remove sportsbook vig, compare our probabilities to fair market odds, and identify positive expected value opportunities.</p>
+            <div class='mm-card' style='height: 100%;'>
+                <div style='font-size: 1.6rem; margin-bottom: 10px;'>💰</div>
+                <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Real-Time +EV Analysis</h3>
+                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
+                    We strip sportsbook vig, compare our probabilities to fair market odds, and surface positive expected value.
+                </p>
             </div>
         """, unsafe_allow_html=True)
     with col3:
         st.markdown("""
-            <div style='text-align: center; padding: 20px;'>
-                <div style='font-size: 2rem;'>🎯</div>
-                <h3>Clear Bet Tiers</h3>
-                <p style='color: #64748B;'>Every prop is sorted into Best Bet, Playable, Lean, or Pass based on model edge, expected value, and confidence — no confusing scores to interpret.</p>
+            <div class='mm-card' style='height: 100%;'>
+                <div style='font-size: 1.6rem; margin-bottom: 10px;'>🎯</div>
+                <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Clear Bet Tiers</h3>
+                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
+                    Every prop sorts into Best Bet, Playable, Lean, or Pass based on edge, EV, and confidence — no scores to decode.
+                </p>
             </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.markdown("<div style='padding-top: 36px;'></div>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
     col1.metric("⚾ MLB Strikeouts", "Live", "Model Active")
     col2.metric("🏈 NFL Models", "Coming Soon", "Season Starting")
     col3.metric("🏀 NBA Models", "Live", "Points + Assists")
 
-    st.markdown("---")
-    st.subheader("📌 How to Use Model Metrics")
-    st.markdown("""
-    1. **Select your sport** from the sidebar to access the available models.
-    2. **Load today's props** to view live player prop lines from FanDuel and DraftKings.
-    3. **Run projections** to compare our model's projections against the sportsbooks and identify potential value opportunities.
-    4. **Check the tier** — 🟢 Best Bet, 🔵 Playable, 🟡 Lean, or 🔴 Pass — to see how strongly our model and the market agree there's value.
-    5. **Click 💡 Why this bet?** to see the full reasoning behind each recommendation.
-    6. **Click 📝 Log** on any row to auto-fill your bet tracker — no manual entry needed.
-    """)
+    st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
+    st.markdown("<h2 style='font-size: 1.4rem; margin-bottom: 20px;'>How It Works</h2>", unsafe_allow_html=True)
 
-    st.markdown("---")
+    steps = [
+        ("Select a sport", "Pick a model from the sidebar — MLB strikeouts, NBA points, or NBA assists."),
+        ("Load today's props", "Pull live prop lines from FanDuel and DraftKings for every game on the slate."),
+        ("Run the projections", "Compare our model's numbers against the sportsbooks to surface value."),
+        ("Read the tier", "🟢 Best Bet, 🔵 Playable, 🟡 Lean, or 🔴 Pass — how strongly the model and market agree."),
+        ("Check the reasoning", "Open 💡 Why this bet? for the full breakdown behind every recommendation."),
+        ("Log it in one click", "Hit 📝 Log to send the bet straight to your tracker — no manual entry."),
+    ]
+    for i, (title, desc) in enumerate(steps, 1):
+        st.markdown(f"""
+            <div style='display: flex; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--mm-border);'>
+                <div style='font-family: var(--mm-mono); color: var(--mm-accent); font-weight: 600; min-width: 28px;'>{i:02d}</div>
+                <div>
+                    <div style='font-weight: 600; margin-bottom: 2px;'>{title}</div>
+                    <div style='color: var(--mm-text-dim); font-size: 0.9rem;'>{desc}</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='padding-top: 36px;'></div>", unsafe_allow_html=True)
     st.markdown("""
-        <div style='background: #0F172A; border-radius: 12px; padding: 30px; margin-top: 10px;'>
-            <h3 style='margin-bottom: 12px;'>About Model Metrics</h3>
-            <p style='color: #94A3B8; line-height: 1.7;'>
+        <div class='mm-card'>
+            <h3 style='margin-bottom: 14px; font-size: 1.15rem;'>About Model Metrics</h3>
+            <p style='color: var(--mm-text-dim); line-height: 1.7; margin-bottom: 12px;'>
                 Winning long-term isn't about predicting every game correctly — it's about consistently betting when the odds are in your favor.
             </p>
-            <p style='color: #94A3B8; line-height: 1.7;'>
-                Model Metrics combines proprietary projection models with professional expected value (+EV) analysis to help bettors identify wagers with long-term mathematical value.
-                Every recommendation is backed by data, fair-odds pricing, and transparent confidence metrics.
+            <p style='color: var(--mm-text-dim); line-height: 1.7; margin-bottom: 18px;'>
+                Model Metrics combines proprietary projection models with professional expected value analysis to help bettors identify
+                wagers with long-term mathematical value. Every recommendation is backed by data, fair-odds pricing, and transparent confidence metrics.
             </p>
-            <p style='color: #64748B; font-size: 0.9rem; margin-top: 16px;'>
-                Proprietary Projection Models &nbsp;•&nbsp; No-Vig Pricing &nbsp;•&nbsp; +EV Analytics &nbsp;•&nbsp; Confidence Ratings
+            <p style='color: var(--mm-text-faint); font-size: 0.85rem; font-family: var(--mm-mono); margin: 0;'>
+                PROPRIETARY MODELS &nbsp;·&nbsp; NO-VIG PRICING &nbsp;·&nbsp; +EV ANALYTICS &nbsp;·&nbsp; CONFIDENCE RATINGS
             </p>
         </div>
     """, unsafe_allow_html=True)
@@ -1466,7 +1656,7 @@ elif nav == "⚾ MLB Models":
                 if info.get('Low Confidence'):
                     st.caption("⚠️ Low Confidence")
             with col9:
-                st.write(info.get('MM Tier') if info.get('MM Tier') else "—")
+                st.markdown(tier_badge(info.get('MM Tier')), unsafe_allow_html=True)
             with col10:
                 if st.button("▶️ Run", key=f"run_{pitcher}"):
                     with st.spinner(f"Running {pitcher}..."):
@@ -1785,7 +1975,7 @@ elif nav == "🏀 NBA Models":
                     if info.get('Low Confidence'):
                         st.caption("⚠️ Low Confidence")
                 with col9:
-                    st.write(info.get('MM Tier') if info.get('MM Tier') else "—")
+                    st.markdown(tier_badge(info.get('MM Tier')), unsafe_allow_html=True)
                 with col10:
                     if st.button("▶️ Run", key=f"{session_key}_run_{player}"):
                         with st.spinner(f"Running {player}..."):
