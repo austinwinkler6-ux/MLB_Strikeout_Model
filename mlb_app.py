@@ -301,6 +301,50 @@ def calculate_odds_clv(placed_odds, closing_odds):
     closing_prob = odds_to_implied_prob(closing_odds)
     return round((closing_prob - placed_prob) * 100, 2)
 
+def fmt_signed_num(v, decimals=1):
+    """Formats a number with an explicit + sign for positive values,
+    plain 0 for zero, and — for missing data. Used for CLV displays."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    if abs(v) < 10 ** (-decimals) / 2:
+        return f"{0:.{decimals}f}"
+    sign = "+" if v > 0 else ""
+    return f"{sign}{round(v, decimals)}"
+
+def clv_emoji(v):
+    """🟢/🔴/⚪ prefix based on CLV sign, for quick visual scanning."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    if v > 0:
+        return "🟢 "
+    elif v < 0:
+        return "🔴 "
+    return "⚪ "
+
+def fmt_odds_signed(v):
+    """Formats American odds with an explicit + sign for positive values, — if missing."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    v = int(round(v))
+    return f"+{v}" if v > 0 else str(v)
+
+def beat_close_label(clv_val, odds_clv_val):
+    """✅/❌/— verdict for whether a bet beat the closing line — line CLV is the
+    primary signal, falling back to odds CLV as a tiebreaker when the line didn't move."""
+    if clv_val is None or (isinstance(clv_val, float) and pd.isna(clv_val)):
+        return "—"
+    if clv_val > 0:
+        return "✅"
+    if clv_val < 0:
+        return "❌"
+    if odds_clv_val is None or (isinstance(odds_clv_val, float) and pd.isna(odds_clv_val)):
+        return "—"
+    if odds_clv_val > 0:
+        return "✅"
+    if odds_clv_val < 0:
+        return "❌"
+    return "—"
+
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
     ev_threshold = 15.0 if cv >= 0.35 else 10.0
@@ -2617,17 +2661,34 @@ elif nav == "📒 Bet Tracker":
 
         if 'clv' in bets_df.columns and bets_df['clv'].notna().any():
             clv_df = bets_df[bets_df['clv'].notna()]
-            avg_clv = round(clv_df['clv'].mean(), 3)
+            avg_clv = clv_df['clv'].mean()
             beat_close_pct = round((clv_df['clv'] > 0).mean() * 100, 1)
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Avg Line CLV", f"{avg_clv} pts")
+            col1, col2 = st.columns(2)
+            col1.metric("Avg Line CLV", f"{clv_emoji(avg_clv)}{fmt_signed_num(avg_clv, 2)} pts")
             col2.metric("Beat Closing Line", f"{beat_close_pct}%")
-            if 'odds_clv' in bets_df.columns and bets_df['odds_clv'].notna().any():
+
+            has_odds_clv = 'odds_clv' in bets_df.columns and bets_df['odds_clv'].notna().any()
+            if has_odds_clv:
                 odds_clv_df = bets_df[bets_df['odds_clv'].notna()]
-                avg_odds_clv = round(odds_clv_df['odds_clv'].mean(), 1)
+                avg_odds_clv = odds_clv_df['odds_clv'].mean()
                 beat_odds_pct = round((odds_clv_df['odds_clv'] > 0).mean() * 100, 1)
-                col3.metric("Avg Odds CLV", f"{avg_odds_clv}% implied")
+                col3, col4 = st.columns(2)
+                col3.metric("Avg Odds CLV", f"{clv_emoji(avg_odds_clv)}{fmt_signed_num(avg_odds_clv, 2)}")
+                with col3:
+                    st.caption("Implied probability movement (not % ROI)")
                 col4.metric("Beat Closing Odds", f"{beat_odds_pct}%")
+
+            beat_close_series = [
+                beat_close_label(c, o) for c, o in zip(
+                    bets_df.get('clv'),
+                    bets_df.get('odds_clv') if has_odds_clv else [None] * len(bets_df)
+                )
+            ]
+            decided = [x for x in beat_close_series if x in ('✅', '❌')]
+            if decided:
+                overall_beat_pct = round(sum(1 for x in decided if x == '✅') / len(decided) * 100, 1)
+                st.metric("Overall Beat Close %", f"{overall_beat_pct}%")
+                st.caption("Line CLV is the primary signal; falls back to odds CLV as a tiebreaker when the line didn't move")
 
         if 'ev_pct' in bets_df.columns and not settled.empty and settled['ev_pct'].notna().any():
             st.markdown("---")
@@ -2690,47 +2751,9 @@ elif nav == "📒 Bet Tracker":
         if 'model_prob' in display_df.columns:
             display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
 
-        def _fmt_signed_num(v, decimals=1):
-            if pd.isna(v):
-                return "—"
-            if abs(v) < 10 ** (-decimals) / 2:
-                return f"{0:.{decimals}f}"
-            sign = "+" if v > 0 else ""
-            return f"{sign}{round(v, decimals)}"
-
-        def _clv_emoji(v):
-            if pd.isna(v):
-                return ""
-            if v > 0:
-                return "🟢 "
-            elif v < 0:
-                return "🔴 "
-            return "⚪ "
-
-        def _fmt_odds_signed(v):
-            if pd.isna(v):
-                return "—"
-            v = int(round(v))
-            return f"+{v}" if v > 0 else str(v)
-
-        def _beat_close(clv_val, odds_clv_val):
-            if pd.isna(clv_val):
-                return "—"
-            if clv_val > 0:
-                return "✅"
-            if clv_val < 0:
-                return "❌"
-            if pd.isna(odds_clv_val):
-                return "—"
-            if odds_clv_val > 0:
-                return "✅"
-            if odds_clv_val < 0:
-                return "❌"
-            return "—"
-
         if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
             display_df['Beat Close'] = [
-                _beat_close(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
+                beat_close_label(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
             ]
             cols = display_df.columns.tolist()
             cols.remove('Beat Close')
@@ -2741,11 +2764,11 @@ elif nav == "📒 Bet Tracker":
         if 'closing_line' in display_df.columns:
             display_df['closing_line'] = bets_df['closing_line'].apply(lambda v: "—" if pd.isna(v) else v)
         if 'clv' in display_df.columns:
-            display_df['clv'] = bets_df['clv'].apply(lambda v: "—" if pd.isna(v) else f"{_clv_emoji(v)}{_fmt_signed_num(v, 1)}")
+            display_df['clv'] = bets_df['clv'].apply(lambda v: "—" if pd.isna(v) else f"{clv_emoji(v)}{fmt_signed_num(v, 1)}")
         if 'closing_odds' in display_df.columns:
-            display_df['closing_odds'] = bets_df['closing_odds'].apply(_fmt_odds_signed)
+            display_df['closing_odds'] = bets_df['closing_odds'].apply(fmt_odds_signed)
         if 'odds_clv' in display_df.columns:
-            display_df['odds_clv'] = bets_df['odds_clv'].apply(lambda v: "—" if pd.isna(v) else f"{_clv_emoji(v)}{_fmt_signed_num(v, 1)}")
+            display_df['odds_clv'] = bets_df['odds_clv'].apply(lambda v: "—" if pd.isna(v) else f"{clv_emoji(v)}{fmt_signed_num(v, 1)}")
 
         edited_df = st.data_editor(
             display_df, use_container_width=True, num_rows="dynamic",
