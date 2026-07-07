@@ -343,14 +343,14 @@ def market_result_label(clv_val, odds_clv_val):
     if clv_val > 0:
         return "🟢 Beat by Line"
     if clv_val < 0:
-        return "🔴 Missed Close"
+        return "🔴 Lost to Close"
     # clv_val == 0 — line didn't move, so price is the deciding factor
     if odds_clv_val is None or (isinstance(odds_clv_val, float) and pd.isna(odds_clv_val)):
         return "⚪ Push"
     if odds_clv_val > 0:
         return "🟢 Beat by Price"
     if odds_clv_val < 0:
-        return "🔴 Missed Close"
+        return "🔴 Lost to Close"
     return "⚪ Push"
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
@@ -2697,15 +2697,15 @@ elif nav == "📒 Bet Tracker":
                     bets_df.get('odds_clv') if has_odds_clv else [None] * len(bets_df)
                 )
             ]
-            decided = [x for x in market_result_series if x in ('🟢 Beat by Line', '🟢 Beat by Price', '🔴 Missed Close')]
+            decided = [x for x in market_result_series if x in ('🟢 Beat by Line', '🟢 Beat by Price', '🔴 Lost to Close')]
 
             if decided:
                 beat_by_line = sum(1 for x in decided if x == '🟢 Beat by Line')
                 beat_by_price = sum(1 for x in decided if x == '🟢 Beat by Price')
-                missed = sum(1 for x in decided if x == '🔴 Missed Close')
+                missed = sum(1 for x in decided if x == '🔴 Lost to Close')
                 overall_beat_pct = round((beat_by_line + beat_by_price) / len(decided) * 100, 1)
                 st.metric("📈 Beat Market", f"{overall_beat_pct}%")
-                st.caption(f"🟢 {beat_by_line} Beat by Line · 🟢 {beat_by_price} Beat by Price · 🔴 {missed} Missed Close")
+                st.caption(f"🟢 {beat_by_line} Beat by Line · 🟢 {beat_by_price} Beat by Price · 🔴 {missed} Lost to Close")
 
             col1, col2 = st.columns(2)
             col1.metric("🎯 Beat Closing Line", f"{beat_close_pct}%")
@@ -2716,7 +2716,7 @@ elif nav == "📒 Bet Tracker":
                 col3.metric("Beat Closing Odds", f"{beat_odds_pct}%")
                 col4.metric("💵 Avg Odds CLV", f"{clv_emoji(avg_odds_clv)}{fmt_signed_num(avg_odds_clv, 2)} implied pts")
                 with col4:
-                    st.caption("Implied probability movement, not % ROI")
+                    st.caption("Based on implied probability movement. (Not return on investment.)")
 
         if 'ev_pct' in bets_df.columns and not settled.empty and settled['ev_pct'].notna().any():
             st.markdown("---")
@@ -2818,7 +2818,7 @@ elif nav == "📒 Bet Tracker":
                 'clv': st.column_config.TextColumn('Line CLV', disabled=True, help="Positive = line moved in your favor after you bet"),
                 'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
                 'odds_clv': st.column_config.TextColumn('Odds CLV', disabled=True, help="Positive = odds moved in your favor after you bet (implied probability movement, not %ROI)"),
-                'Market Result': st.column_config.TextColumn('Market Result', disabled=True, help="Beat by Line = the number moved in your favor (the bigger win). Beat by Price = same line, better price. Missed Close = the market beat you."),
+                'Market Result': st.column_config.TextColumn('Market Result', disabled=True, help="Beat by Line = the number moved in your favor (the bigger win). Beat by Price = same line, better price. Lost to Close = the market beat you."),
             }
         )
 
