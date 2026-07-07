@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import date, timedelta, datetime
+from zoneinfo import ZoneInfo
 from io import StringIO
 from supabase import create_client, Client
 from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, leaguedashteamstats
@@ -1926,7 +1927,7 @@ elif nav == "🎯 Today's Card":
                     st.session_state['nba_ast_results'] = nba_ast_results
 
             st.session_state['today_card_auto_ran'] = True
-            st.session_state['today_card_updated_at'] = datetime.now().strftime('%I:%M %p').lstrip('0')
+            st.session_state['today_card_updated_at'] = datetime.now(ZoneInfo("America/New_York")).strftime('%I:%M %p ET').lstrip('0')
 
     if st.session_state.get('today_card_updated_at'):
         st.caption(f"🕐 Last updated at {st.session_state['today_card_updated_at']}")
