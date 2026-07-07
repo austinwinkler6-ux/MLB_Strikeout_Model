@@ -2127,6 +2127,18 @@ elif nav == "⚾ MLB Models":
             reverse=True
         )
 
+        hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
+        header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
+        for hcol, label in [
+            (hcol1, "Pitcher"), (hcol2, "FanDuel"), (hcol3, "DraftKings"),
+            (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
+            (hcol7, "Confidence"), (hcol8, "EV%"), (hcol9, "Tier"),
+            (hcol10, ""), (hcol11, ""),
+        ]:
+            with hcol:
+                st.markdown(f"<div style='{header_style}'>{label}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+
         for pitcher, info in sorted_pitchers:
             col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
             with col1:
@@ -2337,6 +2349,18 @@ elif nav == "🏀 NBA Models":
                 ),
                 reverse=True
             )
+
+            hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
+            header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
+            for hcol, label in [
+                (hcol1, "Player"), (hcol2, "FanDuel"), (hcol3, "DraftKings"),
+                (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
+                (hcol7, "Confidence"), (hcol8, "EV%"), (hcol9, "Tier"),
+                (hcol10, ""), (hcol11, ""),
+            ]:
+                with hcol:
+                    st.markdown(f"<div style='{header_style}'>{label}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
 
             for player, info in sorted_players:
                 col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
