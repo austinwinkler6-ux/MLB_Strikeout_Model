@@ -2151,7 +2151,7 @@ elif nav == "⚾ MLB Models":
             with col5:
                 st.write(f"Edge: **{info['Edge']}**" if info['Edge'] is not None else "Edge: —")
             with col6:
-                st.write(info['Play'] if info['Play'] else "—")
+                st.markdown(f"<div style='white-space: nowrap;'>{info['Play']}</div>" if info['Play'] else "—", unsafe_allow_html=True)
             with col7:
                 st.write(short_tier_label(info.get('Tier')))
             with col8:
@@ -2374,7 +2374,7 @@ elif nav == "🏀 NBA Models":
                 with col5:
                     st.write(f"Edge: **{info['Edge']}**" if info['Edge'] is not None else "Edge: —")
                 with col6:
-                    st.write(info['Play'] if info['Play'] else "—")
+                    st.markdown(f"<div style='white-space: nowrap;'>{info['Play']}</div>" if info['Play'] else "—", unsafe_allow_html=True)
                 with col7:
                     st.write(short_tier_label(info.get('Tier')))
                 with col8:
