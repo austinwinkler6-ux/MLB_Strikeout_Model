@@ -168,7 +168,7 @@ def tier_badge(tier_text):
         return "<span class='mm-badge mm-badge-neutral'>—</span>"
     if "Best Bet" in tier_text:
         cls = "mm-badge-best"
-    elif "Playable" in tier_text:
+    elif "Worth a Look" in tier_text:
         cls = "mm-badge-playable"
     elif "Lean" in tier_text:
         cls = "mm-badge-lean"
@@ -300,11 +300,60 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     if model_strong and ev_strong and low_variance:
         return "🟢 Best Bet"
     elif model_strong or ev_strong:
-        return "🔵 Playable"
+        return "🔵 Worth a Look"
     else:
         return "🟡 Lean"
 
-TIER_RANK = {"🟢 Best Bet": 3, "🔵 Playable": 2, "🟡 Lean": 1, "🔴 Pass": 0}
+TIER_RANK = {"🟢 Best Bet": 3, "🔵 Worth a Look": 2, "🟡 Lean": 1, "🔴 Pass": 0}
+
+def short_why(info, result, sport):
+    """Compact 1-2 phrase summary for ranked list views (e.g. 'Stable + Great Matchup'),
+    condensed from the same signals generate_why() uses in full."""
+    parts = []
+    tier = info.get('Tier')
+    if tier:
+        if "Stable" in tier:
+            parts.append("Stable")
+        elif "Volatile" in tier:
+            parts.append("Volatile")
+        elif "Uncertain Workload" in tier:
+            parts.append("Uncertain Workload")
+
+    matchup_label = None
+    if result:
+        if sport == 'mlb_strikeouts':
+            opp_factor = result.get('opp_factor')
+            if opp_factor:
+                if opp_factor >= 1.05:
+                    matchup_label = "Great Matchup"
+                elif opp_factor <= 0.95:
+                    matchup_label = "Tough Matchup"
+        elif sport == 'nba_points':
+            opp_def_rating = result.get('opp_def_rating')
+            if opp_def_rating:
+                if opp_def_rating >= league_avg_def_rating + 2:
+                    matchup_label = "Great Matchup"
+                elif opp_def_rating <= league_avg_def_rating - 2:
+                    matchup_label = "Tough Matchup"
+        elif sport == 'nba_assists':
+            opp_ast_allowed = result.get('opp_ast_allowed')
+            if opp_ast_allowed:
+                if opp_ast_allowed >= 27:
+                    matchup_label = "Great Matchup"
+                elif opp_ast_allowed <= 23:
+                    matchup_label = "Tough Matchup"
+
+    if matchup_label:
+        parts.append(matchup_label)
+    else:
+        edge = info.get('Edge')
+        threshold = EDGE_THRESHOLDS.get(sport, 0.75)
+        if edge is not None and abs(edge) >= threshold * 1.5:
+            parts.append("Strong Edge")
+        else:
+            parts.append("Line Value")
+
+    return " + ".join(parts[:2]) if parts else "—"
 
 def generate_why(info, result, direction, sport='mlb_strikeouts'):
     lines = []
@@ -1364,6 +1413,11 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
     except Exception as e:
         return None
 
+def nba_bet_sport_label(sport_key):
+    """Maps the internal NBA projection sport_key ('nba_points'/'nba_assists')
+    to the sport label used consistently across bets/predictions ('NBA'/'NBA_AST')."""
+    return 'NBA' if sport_key == 'nba_points' else 'NBA_AST'
+
 # ---- CLOSING LINE / CLV TRACKING ----
 def get_odds_api_sport_and_market(sport):
     if sport == 'MLB':
@@ -1429,6 +1483,263 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
     except:
         return None, None
 
+def load_mlb_props_data():
+    """Fetches today's MLB pitcher-strikeout props from FanDuel/DraftKings.
+    Returns an all_pitchers dict (empty on failure) — same shape used throughout the app."""
+    try:
+        events_data = requests.get("https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
+        all_pitchers = {}
+
+        for event in events_data:
+            home = event['home_team']
+            away = event['away_team']
+            event_id = event['id']
+            props_data = requests.get(
+                f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
+                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'pitcher_strikeouts', 'oddsFormat': 'american'}
+            ).json()
+
+            for bookmaker in props_data.get('bookmakers', []):
+                if bookmaker['key'] in ['fanduel', 'draftkings']:
+                    book_name = bookmaker['title']
+                    for market in bookmaker.get('markets', []):
+                        if market['key'] == 'pitcher_strikeouts':
+                            for outcome in market['outcomes']:
+                                pitcher = outcome['description']
+                                if pitcher not in all_pitchers:
+                                    all_pitchers[pitcher] = {
+                                        'home': home, 'away': away,
+                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Projection': None, 'Edge': None, 'Play': None,
+                                        'Tier': None,
+                                        'EV%': None, 'MM Tier': None,
+                                        'Model Prob': None, 'No Vig Prob': None,
+                                        'Model Edge': None, 'Odds': None, 'Direction': None,
+                                        'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
+                                    }
+                                if 'FanDuel' in book_name:
+                                    all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
+                                    if outcome['name'] == 'Over':
+                                        all_pitchers[pitcher]['FanDuel Over'] = outcome['price']
+                                    else:
+                                        all_pitchers[pitcher]['FanDuel Under'] = outcome['price']
+                                elif 'DraftKings' in book_name:
+                                    all_pitchers[pitcher]['DraftKings Line'] = outcome['point']
+                                    if outcome['name'] == 'Over':
+                                        all_pitchers[pitcher]['DraftKings Over'] = outcome['price']
+                                    else:
+                                        all_pitchers[pitcher]['DraftKings Under'] = outcome['price']
+        return all_pitchers
+    except Exception:
+        return {}
+
+def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
+    """Runs the projection + EV pipeline for every pitcher in all_pitchers (mutated in place),
+    saves each as a prediction, and returns the pitcher_results dict.
+    progress_callback(i, total, name), if given, is called before each pitcher runs —
+    lets callers render their own progress bar (MLB page) or run silently (Today's Card)."""
+    pitcher_results = {}
+    total = len(all_pitchers)
+    for i, (pitcher, info) in enumerate(all_pitchers.items()):
+        if progress_callback:
+            progress_callback(i, total, pitcher)
+
+        _, opp, h = get_pitcher_game_info(pitcher)
+        if not opp:
+            opp = info['away']
+            h = info['home']
+
+        result = run_projection(pitcher, opp, h, season)
+
+        if result:
+            proj = result['projection']
+            best_line = info['FanDuel Line'] or info['DraftKings Line']
+
+            if best_line:
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
+                direction = 'over' if edge > 0 else 'under'
+                over_odds = info['FanDuel Over'] or info['DraftKings Over']
+                under_odds = info['FanDuel Under'] or info['DraftKings Under']
+
+                ev_result = analyze_prop(
+                    projection=proj, line=best_line,
+                    std_dev=result['last10_k_std'], cv=result['cv'],
+                    over_odds=over_odds or -110, under_odds=under_odds or -110,
+                    direction=direction, sport='mlb_strikeouts'
+                )
+
+                all_pitchers[pitcher].update({
+                    'Projection': proj, 'Edge': edge, 'Play': play,
+                    'Tier': result['confidence_tier'],
+                    'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Model Prob': ev_result['model_prob'] if ev_result else None,
+                    'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'Model Edge': ev_result['model_edge'] if ev_result else None,
+                    'Odds': over_odds if direction == 'over' else under_odds,
+                    'Direction': direction,
+                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                })
+                pitcher_results[pitcher] = result
+
+                save_prediction({
+                    'date': date.today().strftime('%Y-%m-%d'),
+                    'pitcher': pitcher, 'opponent': opp, 'home_team': h,
+                    'projection': proj, 'base': result['base'], 'book_line': best_line,
+                    'edge': edge, 'opp_factor': result['opp_factor'],
+                    'park_factor': result['park_factor'], 'umpire_factor': result['umpire_factor'],
+                    'velo_factor': result['velo_factor'], 'total_factor': result['total_factor'],
+                    'pitch_count_factor': result['pitch_count_factor'],
+                    'lineup_factor': result['lineup_factor'],
+                    'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
+                    'actual': None, 'sport': 'MLB',
+                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                    'mm_tier': ev_result['tier'] if ev_result else None,
+                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'model_edge': ev_result['model_edge'] if ev_result else None,
+                })
+    return pitcher_results
+
+def load_nba_props_data(prop_market):
+    """Fetches today's NBA player props for the given market
+    ('player_points' or 'player_assists'). Returns an all_players dict."""
+    try:
+        events_data = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
+        all_players = {}
+
+        for event in events_data:
+            home = event['home_team']
+            away = event['away_team']
+            event_id = event['id']
+            props_data = requests.get(
+                f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds",
+                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': prop_market, 'oddsFormat': 'american'}
+            ).json()
+
+            for bookmaker in props_data.get('bookmakers', []):
+                if bookmaker['key'] in ['fanduel', 'draftkings']:
+                    book_name = bookmaker['title']
+                    for market in bookmaker.get('markets', []):
+                        if market['key'] == prop_market:
+                            for outcome in market['outcomes']:
+                                player = outcome['description']
+                                if player not in all_players:
+                                    all_players[player] = {
+                                        'home': home, 'away': away,
+                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Projection': None, 'Edge': None, 'Play': None,
+                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                        'Model Prob': None, 'No Vig Prob': None
+                                    }
+                                if 'FanDuel' in book_name:
+                                    all_players[player]['FanDuel Line'] = outcome['point']
+                                    if outcome['name'] == 'Over':
+                                        all_players[player]['FanDuel Over'] = outcome['price']
+                                    else:
+                                        all_players[player]['FanDuel Under'] = outcome['price']
+                                elif 'DraftKings' in book_name:
+                                    all_players[player]['DraftKings Line'] = outcome['point']
+                                    if outcome['name'] == 'Over':
+                                        all_players[player]['DraftKings Over'] = outcome['price']
+                                    else:
+                                        all_players[player]['DraftKings Under'] = outcome['price']
+        return all_players
+    except Exception:
+        return {}
+
+def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_callback=None):
+    """Runs the projection + EV pipeline for every player in all_players (mutated in place),
+    saves each as a prediction, and returns the results dict.
+    progress_callback(i, total, name), if given, is called before each player runs."""
+    results = {}
+    total = len(all_players)
+    for i, (player, info) in enumerate(all_players.items()):
+        if progress_callback:
+            progress_callback(i, total, player)
+
+        home_team = info['home']
+        away_team = info['away']
+        home_abbrev = nba_name_to_abbrev.get(home_team, '')
+        away_abbrev = nba_name_to_abbrev.get(away_team, '')
+
+        try:
+            player_list = nba_players.find_players_by_full_name(player)
+            if not player_list:
+                continue
+            player_id = player_list[0]['id']
+            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+            df_check = logs.get_data_frames()[0]
+            if df_check.empty:
+                continue
+            matchup = df_check['MATCHUP'].iloc[0]
+            home_or_away = 'home' if 'vs.' in matchup else 'away'
+            opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
+        except:
+            home_or_away = 'home'
+            opp_abbrev = away_abbrev
+
+        result = run_fn(player, opp_abbrev, home_team, away_team, home_or_away, season)
+
+        if result:
+            proj = result['projection']
+            best_line = info['FanDuel Line'] or info['DraftKings Line']
+            if best_line:
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
+                direction = 'over' if edge > 0 else 'under'
+                over_odds = info['FanDuel Over'] or info['DraftKings Over']
+                under_odds = info['FanDuel Under'] or info['DraftKings Under']
+                std_dev = result.get('last10_pts_std', result.get('last10_ast_std', 0))
+                ev_result = analyze_prop(
+                    projection=proj, line=best_line, std_dev=std_dev, cv=result['cv'],
+                    over_odds=over_odds or -110, under_odds=under_odds or -110,
+                    direction=direction, sport=sport_key
+                )
+                all_players[player].update({
+                    'Projection': proj, 'Edge': edge, 'Play': play,
+                    'Tier': result['confidence_tier'],
+                    'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                    'Direction': direction,
+                    'Odds': over_odds if direction == 'over' else under_odds,
+                    'Model Prob': ev_result['model_prob'] if ev_result else None,
+                    'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                })
+                results[player] = result
+                bet_sport_label = nba_bet_sport_label(sport_key)
+                save_prediction({
+                    'date': date.today().strftime('%Y-%m-%d'),
+                    'pitcher': player, 'opponent': opp_abbrev, 'home_team': home_team,
+                    'projection': proj, 'base': result['base'], 'book_line': best_line,
+                    'edge': edge,
+                    'opp_factor': result.get('def_adj', result.get('opp_ast_adj', 0)),
+                    'park_factor': 1.0, 'umpire_factor': 1.0,
+                    'velo_factor': result.get('fga_factor', result.get('ast_pct_adj', 0)),
+                    'total_factor': result.get('team_total_adj', result.get('total_adj', 0)),
+                    'pitch_count_factor': result['expected_minutes'],
+                    'lineup_factor': result.get('usage_rate', result.get('potential_ast_adj', 0)),
+                    'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
+                    'actual': None, 'sport': bet_sport_label,
+                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                    'mm_tier': ev_result['tier'] if ev_result else None,
+                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'model_edge': ev_result['model_edge'] if ev_result else None,
+                })
+    return results
+
 pitchers_list = get_all_pitchers()
 
 # ---- SIDEBAR ----
@@ -1441,9 +1752,15 @@ with st.sidebar:
 
     st.markdown("---")
     admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
+    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker"] + admin_nav + ["⚙️ Settings"]
+    default_index = 0
+    if st.session_state.get('nav_redirect') in nav_options:
+        default_index = nav_options.index(st.session_state['nav_redirect'])
+        del st.session_state['nav_redirect']
     nav = st.radio(
         "Navigation",
-        ["🏠 Home", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker"] + admin_nav + ["⚙️ Settings"],
+        nav_options,
+        index=default_index,
         label_visibility="collapsed"
     )
     st.markdown("---")
@@ -1468,13 +1785,20 @@ if nav == "🏠 Home":
     """, unsafe_allow_html=True)
 
     st.markdown(f"""
-        <div style='display: flex; justify-content: center; gap: 10px; padding: 28px 0 48px 0; flex-wrap: wrap;'>
+        <div style='display: flex; justify-content: center; gap: 10px; padding: 28px 0 20px 0; flex-wrap: wrap;'>
             {tier_badge("🟢 Best Bet")}
-            {tier_badge("🔵 Playable")}
+            {tier_badge("🔵 Worth a Look")}
             {tier_badge("🟡 Lean")}
             {tier_badge("🔴 Pass")}
         </div>
     """, unsafe_allow_html=True)
+
+    cta_col1, cta_col2, cta_col3 = st.columns([1, 1, 1])
+    with cta_col2:
+        if st.button("🎯 See Today's Best Bets", use_container_width=True, type="primary"):
+            st.session_state['nav_redirect'] = "🎯 Today's Card"
+            st.rerun()
+    st.markdown("<div style='padding-bottom: 28px;'></div>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -1503,7 +1827,7 @@ if nav == "🏠 Home":
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>🎯</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Clear Bet Tiers</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
-                    Every prop sorts into Best Bet, Playable, Lean, or Pass based on edge, EV, and confidence — no scores to decode.
+                    Every prop sorts into Best Bet, Worth a Look, Lean, or Pass based on edge, EV, and confidence — no scores to decode.
                 </p>
             </div>
         """, unsafe_allow_html=True)
@@ -1521,7 +1845,7 @@ if nav == "🏠 Home":
         ("Select a sport", "Pick a model from the sidebar — MLB strikeouts, NBA points, or NBA assists."),
         ("Load today's props", "Pull live prop lines from FanDuel and DraftKings for every game on the slate."),
         ("Run the projections", "Compare our model's numbers against the sportsbooks to surface value."),
-        ("Read the tier", "🟢 Best Bet, 🔵 Playable, 🟡 Lean, or 🔴 Pass — how strongly the model and market agree."),
+        ("Read the tier", "🟢 Best Bet, 🔵 Worth a Look, 🟡 Lean, or 🔴 Pass — how strongly the model and market agree."),
         ("Check the reasoning", "Open 💡 Why this bet? for the full breakdown behind every recommendation."),
         ("Log it in one click", "Hit 📝 Log to send the bet straight to your tracker — no manual entry."),
     ]
@@ -1553,6 +1877,175 @@ if nav == "🏠 Home":
         </div>
     """, unsafe_allow_html=True)
 
+# ---- TODAY'S CARD (Decision Engine) ----
+elif nav == "🎯 Today's Card":
+    st.title("🎯 Today's Card")
+    st.caption("Ranked, not listed. Loads and runs today's MLB + NBA models automatically.")
+
+    if not st.session_state.get('today_card_auto_ran'):
+        with st.spinner("Building today's card — loading and running today's models across MLB and NBA... this can take a minute."):
+            if 'all_pitchers' not in st.session_state:
+                mlb_props = load_mlb_props_data()
+                if mlb_props:
+                    mlb_results = run_all_mlb_projections(mlb_props, '2026')
+                    st.session_state['all_pitchers'] = mlb_props
+                    st.session_state['pitcher_results'] = mlb_results
+                    st.session_state['season'] = '2026'
+                    st.session_state.setdefault('manual_run_order', {})
+                    st.session_state.setdefault('manual_run_counter', 0)
+
+            if 'all_nba_players' not in st.session_state:
+                nba_pts_props = load_nba_props_data('player_points')
+                if nba_pts_props:
+                    nba_pts_results = run_all_nba_projections(nba_pts_props, run_nba_points_projection, 'nba_points', '2025-26')
+                    st.session_state['all_nba_players'] = nba_pts_props
+                    st.session_state['nba_pts_results'] = nba_pts_results
+                    st.session_state['nba_season'] = '2025-26'
+
+            if 'all_nba_assist_players' not in st.session_state:
+                nba_ast_props = load_nba_props_data('player_assists')
+                if nba_ast_props:
+                    nba_ast_results = run_all_nba_projections(nba_ast_props, run_nba_assists_projection, 'nba_assists', '2025-26')
+                    st.session_state['all_nba_assist_players'] = nba_ast_props
+                    st.session_state['nba_ast_results'] = nba_ast_results
+
+            st.session_state['today_card_auto_ran'] = True
+            st.session_state['today_card_updated_at'] = datetime.now().strftime('%I:%M %p').lstrip('0')
+
+    if st.session_state.get('today_card_updated_at'):
+        st.caption(f"🕐 Last updated at {st.session_state['today_card_updated_at']}")
+
+    card_entries = []
+
+    mlb_pitchers = st.session_state.get('all_pitchers', {})
+    mlb_results = st.session_state.get('pitcher_results', {})
+    for name, info in mlb_pitchers.items():
+        if info.get('Projection') is not None and info.get('MM Tier'):
+            card_entries.append({
+                'sport_label': '⚾ MLB', 'sport_key': 'mlb_strikeouts', 'name': name,
+                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': mlb_results.get(name),
+            })
+
+    nba_pts = st.session_state.get('all_nba_players', {})
+    nba_pts_results = st.session_state.get('nba_pts_results', {})
+    for name, info in nba_pts.items():
+        if info.get('Projection') is not None and info.get('MM Tier'):
+            card_entries.append({
+                'sport_label': '🏀 NBA Pts', 'sport_key': 'nba_points', 'name': name,
+                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': nba_pts_results.get(name),
+            })
+
+    nba_ast = st.session_state.get('all_nba_assist_players', {})
+    nba_ast_results = st.session_state.get('nba_ast_results', {})
+    for name, info in nba_ast.items():
+        if info.get('Projection') is not None and info.get('MM Tier'):
+            card_entries.append({
+                'sport_label': '🏀 NBA Ast', 'sport_key': 'nba_assists', 'name': name,
+                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': nba_ast_results.get(name),
+            })
+
+    if not card_entries:
+        st.markdown("""
+            <div class='mm-card' style='text-align: center; padding: 48px 24px;'>
+                <div style='font-size: 2rem; margin-bottom: 12px;'>🗓️</div>
+                <h3 style='margin-bottom: 8px;'>Nothing to show right now</h3>
+                <p style='color: var(--mm-text-dim); max-width: 480px; margin: 0 auto 20px auto;'>
+                    No games found for today, or the odds API didn't return props. Try refreshing,
+                    or check a model page directly.
+                </p>
+            </div>
+        """, unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⚾ Go to MLB Models", use_container_width=True):
+                st.session_state['nav_redirect'] = "⚾ MLB Models"
+                st.rerun()
+        with col2:
+            if st.button("🏀 Go to NBA Models", use_container_width=True):
+                st.session_state['nav_redirect'] = "🏀 NBA Models"
+                st.rerun()
+    else:
+        groups = {"🟢 Best Bet": [], "🔵 Worth a Look": [], "🟡 Lean": [], "🔴 Pass": []}
+        for e in card_entries:
+            if e['tier'] in groups:
+                groups[e['tier']].append(e)
+
+        for tier_name in groups:
+            groups[tier_name].sort(
+                key=lambda e: (
+                    e['ev_pct'] if e['ev_pct'] is not None else -999,
+                    abs(e['edge']) if e['edge'] is not None else -999
+                ),
+                reverse=True
+            )
+
+        if st.button("🔄 Refresh Card"):
+            for k in ['today_card_auto_ran', 'today_card_updated_at', 'all_pitchers', 'pitcher_results',
+                      'all_nba_players', 'nba_pts_results',
+                      'all_nba_assist_players', 'nba_ast_results']:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+        st.markdown(f"""
+            <div style='display: flex; gap: 24px; padding: 12px 0 28px 0; flex-wrap: wrap; align-items: center;'>
+                <div>{tier_badge("🟢 Best Bet")} <span style='font-family: var(--mm-mono); font-weight: 600;'>{len(groups["🟢 Best Bet"])}</span></div>
+                <div>{tier_badge("🔵 Worth a Look")} <span style='font-family: var(--mm-mono); font-weight: 600;'>{len(groups["🔵 Worth a Look"])}</span></div>
+                <div>{tier_badge("🟡 Lean")} <span style='font-family: var(--mm-mono); font-weight: 600;'>{len(groups["🟡 Lean"])}</span></div>
+                <div>{tier_badge("🔴 Pass")} <span style='font-family: var(--mm-mono); font-weight: 600;'>{len(groups["🔴 Pass"])}</span></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        def render_ranked_section(title, entries, show_why_expander=True):
+            if title:
+                st.markdown(f"### {title}")
+            if not entries:
+                st.caption("Nothing here right now.")
+                return
+            for i, e in enumerate(entries, 1):
+                col1, col2, col3, col4 = st.columns([0.5, 3.2, 1.1, 1.4])
+                with col1:
+                    st.markdown(f"<div style='font-family: var(--mm-mono); color: var(--mm-accent); font-weight: 600; padding-top: 4px;'>#{i}</div>", unsafe_allow_html=True)
+                with col2:
+                    play_short = (e['play'] or '').replace('⬆️ OVER', 'O').replace('⬇️ UNDER', 'U')
+                    line_str = f" {play_short}{e['line']}" if e['line'] is not None else ""
+                    st.markdown(f"**{e['name']}**{line_str} &nbsp; <span style='color: var(--mm-text-faint); font-size:0.78rem;'>{e['sport_label']}</span>", unsafe_allow_html=True)
+                    st.caption(short_why(e['info'], e['result'], e['sport_key']))
+                with col3:
+                    ev = e['ev_pct']
+                    if ev is not None:
+                        color = "var(--mm-success)" if ev > 0 else "var(--mm-danger)"
+                        st.markdown(f"<span style='font-family: var(--mm-mono); color: {color}; font-weight: 600;'>{'+' if ev > 0 else ''}{ev}%</span>", unsafe_allow_html=True)
+                    else:
+                        st.write("—")
+                with col4:
+                    st.markdown(tier_badge(e['tier']), unsafe_allow_html=True)
+                if show_why_expander and e['result']:
+                    direction = e['info'].get('Direction', 'over')
+                    why_lines = generate_why(e['info'], e['result'], direction, e['sport_key'])
+                    if why_lines:
+                        with st.expander("💡 Why this bet?"):
+                            for line in why_lines:
+                                st.markdown(line)
+                st.divider()
+
+        render_ranked_section("🟢 Today's Best Bets", groups["🟢 Best Bet"])
+        render_ranked_section("🔵 Worth a Look", groups["🔵 Worth a Look"])
+
+        with st.expander(f"🟡 Leans ({len(groups['🟡 Lean'])})"):
+            render_ranked_section("", groups["🟡 Lean"], show_why_expander=False)
+
+        with st.expander(f"🔴 Passes ({len(groups['🔴 Pass'])})"):
+            render_ranked_section("", groups["🔴 Pass"], show_why_expander=False)
+
 # ---- MLB PAGE ----
 elif nav == "⚾ MLB Models":
     st.title("⚾ MLB Strikeout Model")
@@ -1562,59 +2055,15 @@ elif nav == "⚾ MLB Models":
     with col_load:
         if st.button("📋 Load Today's Props", use_container_width=True):
             with st.spinner("Pulling today's props..."):
-                try:
-                    events_data = requests.get("https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
-                        params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
-                    all_pitchers = {}
-
-                    for event in events_data:
-                        home = event['home_team']
-                        away = event['away_team']
-                        event_id = event['id']
-                        props_data = requests.get(
-                            f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
-                            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'pitcher_strikeouts', 'oddsFormat': 'american'}
-                        ).json()
-
-                        for bookmaker in props_data.get('bookmakers', []):
-                            if bookmaker['key'] in ['fanduel', 'draftkings']:
-                                book_name = bookmaker['title']
-                                for market in bookmaker.get('markets', []):
-                                    if market['key'] == 'pitcher_strikeouts':
-                                        for outcome in market['outcomes']:
-                                            pitcher = outcome['description']
-                                            if pitcher not in all_pitchers:
-                                                all_pitchers[pitcher] = {
-                                                    'home': home, 'away': away,
-                                                    'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                                    'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                                    'Projection': None, 'Edge': None, 'Play': None,
-                                                    'Tier': None,
-                                                    'EV%': None, 'MM Tier': None,
-                                                    'Model Prob': None, 'No Vig Prob': None,
-                                                    'Model Edge': None, 'Odds': None, 'Direction': None,
-                                                    'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
-                                                }
-                                            if 'FanDuel' in book_name:
-                                                all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
-                                                if outcome['name'] == 'Over':
-                                                    all_pitchers[pitcher]['FanDuel Over'] = outcome['price']
-                                                else:
-                                                    all_pitchers[pitcher]['FanDuel Under'] = outcome['price']
-                                            elif 'DraftKings' in book_name:
-                                                all_pitchers[pitcher]['DraftKings Line'] = outcome['point']
-                                                if outcome['name'] == 'Over':
-                                                    all_pitchers[pitcher]['DraftKings Over'] = outcome['price']
-                                                else:
-                                                    all_pitchers[pitcher]['DraftKings Under'] = outcome['price']
-
+                all_pitchers = load_mlb_props_data()
+                if all_pitchers:
                     st.session_state['all_pitchers'] = all_pitchers
                     st.session_state['season'] = '2026'
                     st.session_state['pitcher_results'] = {}
                     st.session_state['manual_run_order'] = {}
                     st.session_state['manual_run_counter'] = 0
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                else:
+                    st.error("Couldn't load today's props — no games found or the odds API request failed.")
 
     with col_run_all:
         if st.button("🚀 Run All Projections", use_container_width=True):
@@ -1626,71 +2075,14 @@ elif nav == "⚾ MLB Models":
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 total = len(all_pitchers)
-                if 'pitcher_results' not in st.session_state:
-                    st.session_state['pitcher_results'] = {}
 
-                for i, (pitcher, info) in enumerate(all_pitchers.items()):
-                    status_text.text(f"Running {i+1} of {total}: {pitcher}")
-                    progress_bar.progress((i+1) / total)
+                def _update_progress(i, total, name):
+                    status_text.text(f"Running {i+1} of {total}: {name}")
+                    progress_bar.progress((i + 1) / total)
 
-                    _, opp, h = get_pitcher_game_info(pitcher)
-                    if not opp:
-                        opp = info['away']
-                        h = info['home']
-
-                    result = run_projection(pitcher, opp, h, season)
-
-                    if result:
-                        proj = result['projection']
-                        best_line = info['FanDuel Line'] or info['DraftKings Line']
-
-                        if best_line:
-                            edge = round(proj - best_line, 1)
-                            play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
-                            direction = 'over' if edge > 0 else 'under'
-                            over_odds = info['FanDuel Over'] or info['DraftKings Over']
-                            under_odds = info['FanDuel Under'] or info['DraftKings Under']
-
-                            ev_result = analyze_prop(
-                                projection=proj, line=best_line,
-                                std_dev=result['last10_k_std'], cv=result['cv'],
-                                over_odds=over_odds or -110, under_odds=under_odds or -110,
-                                direction=direction, sport='mlb_strikeouts'
-                            )
-
-                            st.session_state['all_pitchers'][pitcher].update({
-                                'Projection': proj, 'Edge': edge, 'Play': play,
-                                'Tier': result['confidence_tier'],
-                                'EV%': ev_result['ev_pct'] if ev_result else None,
-                                'MM Tier': ev_result['tier'] if ev_result else None,
-                                'Model Prob': ev_result['model_prob'] if ev_result else None,
-                                'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
-                                'Model Edge': ev_result['model_edge'] if ev_result else None,
-                                'Odds': over_odds if direction == 'over' else under_odds,
-                                'Direction': direction,
-                                'Fair Odds': ev_result['fair_odds'] if ev_result else None,
-                                'Edge Cents': ev_result['edge_cents'] if ev_result else None,
-                                'Low Confidence': ev_result['low_confidence'] if ev_result else None,
-                            })
-                            st.session_state['pitcher_results'][pitcher] = result
-
-                            save_prediction({
-                                'date': date.today().strftime('%Y-%m-%d'),
-                                'pitcher': pitcher, 'opponent': opp, 'home_team': h,
-                                'projection': proj, 'base': result['base'], 'book_line': best_line,
-                                'edge': edge, 'opp_factor': result['opp_factor'],
-                                'park_factor': result['park_factor'], 'umpire_factor': result['umpire_factor'],
-                                'velo_factor': result['velo_factor'], 'total_factor': result['total_factor'],
-                                'pitch_count_factor': result['pitch_count_factor'],
-                                'lineup_factor': result['lineup_factor'],
-                                'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
-                                'actual': None, 'sport': 'MLB',
-                                'ev_pct': ev_result['ev_pct'] if ev_result else None,
-                                'mm_tier': ev_result['tier'] if ev_result else None,
-                                'model_prob': ev_result['model_prob'] if ev_result else None,
-                                'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
-                                'model_edge': ev_result['model_edge'] if ev_result else None,
-                            })
+                pitcher_results = run_all_mlb_projections(all_pitchers, season, progress_callback=_update_progress)
+                st.session_state['all_pitchers'] = all_pitchers
+                st.session_state['pitcher_results'] = pitcher_results
 
                 status_text.text(f"✅ Done! All {total} projections complete.")
                 progress_bar.progress(1.0)
@@ -1874,56 +2266,15 @@ elif nav == "🏀 NBA Models":
             label = "NBA Points" if prop_market == 'player_points' else "Assist"
             if st.button(f"📋 Load Today's {label} Props", use_container_width=True, key=f"load_{session_key}"):
                 with st.spinner(f"Pulling {label} props..."):
-                    try:
-                        events_data = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/events",
-                            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
-                        all_players = {}
-
-                        for event in events_data:
-                            home = event['home_team']
-                            away = event['away_team']
-                            event_id = event['id']
-                            props_data = requests.get(
-                                f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds",
-                                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': prop_market, 'oddsFormat': 'american'}
-                            ).json()
-
-                            for bookmaker in props_data.get('bookmakers', []):
-                                if bookmaker['key'] in ['fanduel', 'draftkings']:
-                                    book_name = bookmaker['title']
-                                    for market in bookmaker.get('markets', []):
-                                        if market['key'] == prop_market:
-                                            for outcome in market['outcomes']:
-                                                player = outcome['description']
-                                                if player not in all_players:
-                                                    all_players[player] = {
-                                                        'home': home, 'away': away,
-                                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                                        'Projection': None, 'Edge': None, 'Play': None,
-                                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
-                                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None
-                                                    }
-                                                if 'FanDuel' in book_name:
-                                                    all_players[player]['FanDuel Line'] = outcome['point']
-                                                    if outcome['name'] == 'Over':
-                                                        all_players[player]['FanDuel Over'] = outcome['price']
-                                                    else:
-                                                        all_players[player]['FanDuel Under'] = outcome['price']
-                                                elif 'DraftKings' in book_name:
-                                                    all_players[player]['DraftKings Line'] = outcome['point']
-                                                    if outcome['name'] == 'Over':
-                                                        all_players[player]['DraftKings Over'] = outcome['price']
-                                                    else:
-                                                        all_players[player]['DraftKings Under'] = outcome['price']
-
+                    all_players = load_nba_props_data(prop_market)
+                    if all_players:
                         st.session_state[all_players_key] = all_players
                         st.session_state['nba_season'] = '2025-26'
                         st.session_state[f'{session_key}_results'] = {}
                         st.session_state[f'manual_run_order_{session_key}'] = {}
                         st.success(f"Loaded {len(all_players)} players!")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                    else:
+                        st.error("Couldn't load today's props — no games found or the odds API request failed.")
 
         with col_run_all:
             if st.button(f"🚀 Run All Projections", use_container_width=True, key=f"run_all_{session_key}"):
@@ -1936,81 +2287,14 @@ elif nav == "🏀 NBA Models":
                     status_text = st.empty()
                     total = len(all_players)
 
-                    for i, (player, info) in enumerate(all_players.items()):
-                        status_text.text(f"Running {i+1} of {total}: {player}")
-                        progress_bar.progress((i+1) / total)
+                    def _update_progress(i, total, name):
+                        status_text.text(f"Running {i+1} of {total}: {name}")
+                        progress_bar.progress((i + 1) / total)
 
-                        home_team = info['home']
-                        away_team = info['away']
-                        home_abbrev = nba_name_to_abbrev.get(home_team, '')
-                        away_abbrev = nba_name_to_abbrev.get(away_team, '')
-
-                        try:
-                            player_list = nba_players.find_players_by_full_name(player)
-                            if not player_list:
-                                continue
-                            player_id = player_list[0]['id']
-                            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
-                            df_check = logs.get_data_frames()[0]
-                            if df_check.empty:
-                                continue
-                            matchup = df_check['MATCHUP'].iloc[0]
-                            home_or_away = 'home' if 'vs.' in matchup else 'away'
-                            opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
-                        except:
-                            home_or_away = 'home'
-                            opp_abbrev = away_abbrev
-
-                        result = run_fn(player, opp_abbrev, home_team, away_team, home_or_away, season)
-
-                        if result:
-                            proj = result['projection']
-                            best_line = info['FanDuel Line'] or info['DraftKings Line']
-                            if best_line:
-                                edge = round(proj - best_line, 1)
-                                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
-                                direction = 'over' if edge > 0 else 'under'
-                                over_odds = info['FanDuel Over'] or info['DraftKings Over']
-                                under_odds = info['FanDuel Under'] or info['DraftKings Under']
-                                std_dev = result.get('last10_pts_std', result.get('last10_ast_std', 0))
-                                ev_result = analyze_prop(
-                                    projection=proj, line=best_line, std_dev=std_dev, cv=result['cv'],
-                                    over_odds=over_odds or -110, under_odds=under_odds or -110,
-                                    direction=direction, sport=sport_key
-                                )
-                                st.session_state[all_players_key][player].update({
-                                    'Projection': proj, 'Edge': edge, 'Play': play,
-                                    'Tier': result['confidence_tier'],
-                                    'EV%': ev_result['ev_pct'] if ev_result else None,
-                                    'MM Tier': ev_result['tier'] if ev_result else None,
-                                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
-                                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
-                                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
-                                    'Direction': direction,
-                                    'Odds': over_odds if direction == 'over' else under_odds,
-                                })
-                                st.session_state.setdefault(f'{session_key}_results', {})
-                                st.session_state[f'{session_key}_results'][player] = result
-                                bet_sport_label = 'NBA' if sport_key == 'nba_points' else 'NBA_AST'
-                                save_prediction({
-                                    'date': date.today().strftime('%Y-%m-%d'),
-                                    'pitcher': player, 'opponent': opp_abbrev, 'home_team': home_team,
-                                    'projection': proj, 'base': result['base'], 'book_line': best_line,
-                                    'edge': edge,
-                                    'opp_factor': result.get('def_adj', result.get('opp_ast_adj', 0)),
-                                    'park_factor': 1.0, 'umpire_factor': 1.0,
-                                    'velo_factor': result.get('fga_factor', result.get('ast_pct_adj', 0)),
-                                    'total_factor': result.get('team_total_adj', result.get('total_adj', 0)),
-                                    'pitch_count_factor': result['expected_minutes'],
-                                    'lineup_factor': result.get('usage_rate', result.get('potential_ast_adj', 0)),
-                                    'cv': result['cv'], 'confidence_tier': result['confidence_tier'],
-                                    'actual': None, 'sport': bet_sport_label,
-                                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
-                                    'mm_tier': ev_result['tier'] if ev_result else None,
-                                    'model_prob': ev_result['model_prob'] if ev_result else None,
-                                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
-                                    'model_edge': ev_result['model_edge'] if ev_result else None,
-                                })
+                    results = run_all_nba_projections(all_players, run_fn, sport_key, season, progress_callback=_update_progress)
+                    st.session_state[all_players_key] = all_players
+                    st.session_state.setdefault(f'{session_key}_results', {})
+                    st.session_state[f'{session_key}_results'].update(results)
 
                     status_text.text(f"✅ Done! All {total} projections complete.")
                     progress_bar.progress(1.0)
@@ -2108,6 +2392,8 @@ elif nav == "🏀 NBA Models":
                                         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                                         'Direction': direction,
                                         'Odds': over_odds if direction == 'over' else under_odds,
+                                        'Model Prob': ev_result['model_prob'] if ev_result else None,
+                                        'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
                                     })
                                     st.session_state.setdefault(f'{session_key}_results', {})
                                     st.session_state[f'{session_key}_results'][player] = result
@@ -2130,7 +2416,7 @@ elif nav == "🏀 NBA Models":
                                 st.markdown(line)
 
                 if st.session_state.get(f'{session_key}_log_modal_{player}'):
-                    bet_sport_label = 'NBA' if sport_key == 'nba_points' else 'NBA_AST'
+                    bet_sport_label = nba_bet_sport_label(sport_key)
                     with st.expander(f"📝 Log Bet — {player}", expanded=True):
                         col_a, col_b = st.columns(2)
                         with col_a:
@@ -2155,6 +2441,7 @@ elif nav == "🏀 NBA Models":
                                 'sport': bet_sport_label, 'ev_pct': info.get('EV%'),
                                 'mm_tier': info.get('MM Tier'),
                                 'model_edge': info.get('Edge'), 'confidence_tier': info.get('Tier'),
+                                'model_prob': info.get('Model Prob'), 'no_vig_prob': info.get('No Vig Prob'),
                             })
                             st.session_state[f'{session_key}_log_modal_{player}'] = False
                             st.success(f"✅ Bet logged for {player}!")
@@ -2357,7 +2644,7 @@ elif nav == "📒 Bet Tracker":
 
         st.markdown("---")
         st.subheader("📝 All Bets")
-        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id', 'closing_line', 'clv', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
+        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id', 'closing_line', 'clv', 'closing_odds', 'odds_clv', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
         if 'no_vig_prob' in display_df.columns:
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
