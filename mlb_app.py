@@ -2685,7 +2685,7 @@ elif nav == "📒 Bet Tracker":
 
         st.markdown("---")
         st.subheader("📝 All Bets")
-        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id', 'closing_line', 'clv', 'closing_odds', 'odds_clv', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
+        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
         if 'no_vig_prob' in display_df.columns:
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
@@ -2706,6 +2706,10 @@ elif nav == "📒 Bet Tracker":
                 'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'confidence_tier': st.column_config.SelectboxColumn('Reliability', options=['🟢 Reliable', '🟠 Volatile', '🔴 Uncertain Workload']),
+                'closing_line': st.column_config.NumberColumn('Closing Line', step=0.5, disabled=True),
+                'clv': st.column_config.NumberColumn('Line CLV', step=0.1, disabled=True, help="Positive = line moved in your favor after you bet"),
+                'closing_odds': st.column_config.NumberColumn('Closing Odds', disabled=True),
+                'odds_clv': st.column_config.NumberColumn('Odds CLV (%)', step=0.1, disabled=True, help="Positive = odds moved in your favor after you bet"),
             }
         )
 
