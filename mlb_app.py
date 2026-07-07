@@ -200,6 +200,44 @@ def short_tier_label(tier_text):
         return "🔴 Uncertain"
     return tier_text
 
+def workload_evidence_line(result):
+    """Builds the strongest available one-line workload explanation from real
+    numbers, instead of just describing which rule fired. Deliberately does NOT
+    guess at a cause (injury, demotion, call-up, workload management, etc.) —
+    we have no data on why a workload changed, only that it did, so the wording
+    stays descriptive rather than diagnostic."""
+    if not result:
+        return None
+    workload_tier = result.get('workload_tier')
+    if not workload_tier:
+        return None
+
+    season_avg_ip = result.get('season_avg_ip')
+    last5_avg_ip = result.get('last5_avg_ip')
+    expected_innings = result.get('expected_innings')
+    streak = result.get('consecutive_5ip_starts')
+
+    if "Stable" in workload_tier:
+        if streak is not None and streak >= 3 and last5_avg_ip is not None and season_avg_ip is not None:
+            return f"✅ {streak} straight starts of 5+ IP — averaging **{last5_avg_ip} IP** over that stretch, in line with his **{season_avg_ip} IP** season average"
+        elif season_avg_ip is not None:
+            return f"✅ Workhorse role — averaging **{season_avg_ip} IP** across the season"
+    elif "Changing" in workload_tier:
+        if last5_avg_ip is not None and season_avg_ip is not None and last5_avg_ip < season_avg_ip - 0.5:
+            gap = round(season_avg_ip - last5_avg_ip, 1)
+            return f"⚠️ Workload running below season norm — averaging **{last5_avg_ip} IP** over his last 5 starts vs **{season_avg_ip} IP** season average ({gap} IP short)"
+        elif expected_innings is not None:
+            return f"⚠️ Workload trending inconsistent — model expects **{expected_innings} IP** tonight"
+    else:
+        if last5_avg_ip is not None and season_avg_ip is not None:
+            gap = round(abs(season_avg_ip - last5_avg_ip), 1)
+            direction = "below" if last5_avg_ip < season_avg_ip else "above"
+            return f"❌ Role remains unsettled — last 5 starts averaging **{last5_avg_ip} IP**, {gap} IP {direction} his season norm"
+        elif expected_innings is not None:
+            return f"❌ Role remains unsettled — model expects only **{expected_innings} IP** tonight"
+
+    return None
+
 ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
 ADMIN_EMAIL = "austinwinkler6@icloud.com"
 
@@ -514,12 +552,9 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 workload_note = ""
             lines.append(f"{icon} Role Stability: **{workload_tier}**{workload_note}")
 
-        streak = result.get('consecutive_5ip_starts')
-        if streak is not None and streak >= 2:
-            if streak >= 3:
-                lines.append(f"✅ **{streak} consecutive starts of 5+ IP** — model now treats him as a confirmed starter and weights season/role baseline more heavily")
-            else:
-                lines.append(f"⚠️ **{streak} consecutive starts of 5+ IP** — possible role change underway, model is leaning harder on recent workload")
+        evidence_line = workload_evidence_line(result)
+        if evidence_line:
+            lines.append(evidence_line)
 
         opp_factor = result.get('opp_factor')
         if opp_factor:
@@ -1185,6 +1220,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'pitcher_hand': pitcher_hand, 'lineup_k_pct': final_opp_k_pct,
             'pitcher_skill': pitcher_skill, 'expected_bf': expected_bf,
             'expected_innings': expected_innings, 'expected_pitch_count': expected_pitch_count,
+            'last5_avg_ip': last5_avg_ip,
             'umpire_name': umpire_name, 'umpire_factor': umpire_factor,
             'opp_factor': opp_factor, 'park_factor': park_factor,
             'velo_factor': velo_factor, 'total_factor': total_factor,
