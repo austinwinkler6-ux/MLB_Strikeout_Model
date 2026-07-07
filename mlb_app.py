@@ -2617,20 +2617,29 @@ elif nav == "📒 Bet Tracker":
         st.markdown("---")
         st.subheader("🎯 Closing Line Tracker")
         today_str = date.today().strftime('%Y-%m-%d')
-        missing_closing = [
+        all_settled_for_closing = [
             b for b in bets
-            if not b.get('closing_line') and b.get('date') and b['date'] < today_str
-            and b.get('sport') in ('MLB', 'NBA', 'NBA_AST')
+            if b.get('date') and b['date'] < today_str and b.get('sport') in ('MLB', 'NBA', 'NBA_AST')
         ]
-        if missing_closing:
-            st.caption(f"{len(missing_closing)} settled bet(s) missing closing line data.")
+        missing_closing = [b for b in all_settled_for_closing if not b.get('closing_line')]
+
+        force_refetch = st.checkbox(
+            "Re-fetch all closing lines (use this if old values look wrong, e.g. odds shorter than 3 digits)"
+        )
+        bets_to_update = all_settled_for_closing if force_refetch else missing_closing
+
+        if bets_to_update:
+            if force_refetch:
+                st.caption(f"Will re-fetch and overwrite closing data for all {len(bets_to_update)} settled bet(s).")
+            else:
+                st.caption(f"{len(bets_to_update)} settled bet(s) missing closing line data.")
             if st.button("🔄 Update Closing Lines", use_container_width=True):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 updated = 0
-                for i, bet in enumerate(missing_closing):
-                    status_text.text(f"Fetching closing line {i+1} of {len(missing_closing)}: {bet.get('pitcher')}")
-                    progress_bar.progress((i + 1) / len(missing_closing))
+                for i, bet in enumerate(bets_to_update):
+                    status_text.text(f"Fetching closing line {i+1} of {len(bets_to_update)}: {bet.get('pitcher')}")
+                    progress_bar.progress((i + 1) / len(bets_to_update))
                     closing_line, closing_odds = fetch_closing_line(
                         bet.get('sport'), bet.get('pitcher'), bet.get('over_under'), bet.get('date')
                     )
@@ -2653,7 +2662,7 @@ elif nav == "📒 Bet Tracker":
                             'odds_clv': odds_clv,
                         })
                         updated += 1
-                status_text.text(f"✅ Done! Found closing lines for {updated} of {len(missing_closing)} bets.")
+                status_text.text(f"✅ Done! Found closing lines for {updated} of {len(bets_to_update)} bets.")
                 progress_bar.progress(1.0)
                 st.rerun()
         else:
