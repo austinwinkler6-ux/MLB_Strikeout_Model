@@ -332,8 +332,8 @@ def short_why(info, result, sport):
     parts = []
     tier = info.get('Tier')
     if tier:
-        if "Stable" in tier:
-            parts.append("Stable")
+        if "Reliable" in tier:
+            parts.append("Reliable")
         elif "Volatile" in tier:
             parts.append("Volatile")
         elif "Uncertain Workload" in tier:
@@ -436,14 +436,13 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         lines.append("⚠️ **Low Confidence** — this projection carries very high variance. The EV above is calculated the same as any other prop, but treat it with caution and consider passing.")
 
     if tier:
-        if "Stable" in tier:
-            lines.append(f"✅ Performance Variance: **{tier}** — highly consistent pitcher, low variance")
-        elif "Normal" in tier:
-            lines.append(f"✅ Performance Variance: **{tier}** — reasonable consistency")
+        reliability_label = "Pitcher Reliability" if sport == 'mlb_strikeouts' else "Player Reliability"
+        if "Reliable" in tier:
+            lines.append(f"✅ {reliability_label}: **{tier}** — consistent performer, low variance")
         elif "Volatile" in tier:
-            lines.append(f"⚠️ Performance Variance: **{tier}** — results vary significantly game to game")
+            lines.append(f"⚠️ {reliability_label}: **{tier}** — results vary significantly game to game")
         elif "Uncertain Workload" in tier:
-            lines.append(f"❌ Performance Variance: **{tier}** — extremely high variance, use caution")
+            lines.append(f"❌ {reliability_label}: **{tier}** — extremely high variance, use caution")
 
     if result:
         workload_tier = result.get('workload_tier')
@@ -985,8 +984,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         last10_k_std = round(last10_strikeouts.std(), 2) if len(last10_strikeouts) > 1 else 0.0
         cv = round(last10_k_std / last10_k_avg, 3) if last10_k_avg > 0 else 1.0
 
-        if cv < 0.20: confidence_tier = "🟢 Stable"
-        elif cv < 0.35: confidence_tier = "🟡 Normal"
+        if cv < 0.35: confidence_tier = "🟢 Reliable"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
@@ -1185,8 +1183,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         last10_pts_std = round(last10_pts.std(), 2) if len(last10_pts) > 1 else 0.0
         cv = round(last10_pts_std / round(last10_pts.mean(), 2), 3) if round(last10_pts.mean(), 2) > 0 else 1.0
 
-        if cv < 0.20: confidence_tier = "🟢 Stable"
-        elif cv < 0.35: confidence_tier = "🟡 Normal"
+        if cv < 0.35: confidence_tier = "🟢 Reliable"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
@@ -1315,8 +1312,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         last10_ast_std = round(last10_ast.std(), 2) if len(last10_ast) > 1 else 0.0
         cv = round(last10_ast_std / last10_ast_avg, 3) if last10_ast_avg > 0 else 1.0
 
-        if cv < 0.20: confidence_tier = "🟢 Stable"
-        elif cv < 0.35: confidence_tier = "🟡 Normal"
+        if cv < 0.35: confidence_tier = "🟢 Reliable"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
@@ -2132,7 +2128,7 @@ elif nav == "⚾ MLB Models":
         for hcol, label in [
             (hcol1, "Pitcher"), (hcol2, "FanDuel"), (hcol3, "DraftKings"),
             (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
-            (hcol7, "Confidence"), (hcol8, "EV%"), (hcol9, "Tier"),
+            (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
             (hcol10, ""), (hcol11, ""),
         ]:
             with hcol:
@@ -2355,7 +2351,7 @@ elif nav == "🏀 NBA Models":
             for hcol, label in [
                 (hcol1, "Player"), (hcol2, "FanDuel"), (hcol3, "DraftKings"),
                 (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
-                (hcol7, "Confidence"), (hcol8, "EV%"), (hcol9, "Tier"),
+                (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
                 (hcol10, ""), (hcol11, ""),
             ]:
                 with hcol:
@@ -2528,7 +2524,7 @@ elif nav == "📒 Bet Tracker":
         bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
     with col3:
         bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
-        bt_confidence_tier = st.selectbox("Confidence Tier", ["", "🟢 Stable", "🟡 Normal", "🟠 Volatile", "🔴 Uncertain Workload"])
+        bt_confidence_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
         bt_no_vig_prob = st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
         bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
 
@@ -2708,7 +2704,7 @@ elif nav == "📒 Bet Tracker":
                 'ev_pct': st.column_config.NumberColumn('EV%'),
                 'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
-                'confidence_tier': st.column_config.SelectboxColumn('Conf Tier', options=['🟢 Stable', '🟡 Normal', '🟠 Volatile', '🔴 Uncertain Workload']),
+                'confidence_tier': st.column_config.SelectboxColumn('Reliability', options=['🟢 Reliable', '🟠 Volatile', '🔴 Uncertain Workload']),
             }
         )
 
