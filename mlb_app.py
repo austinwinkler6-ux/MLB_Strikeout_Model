@@ -329,22 +329,29 @@ def fmt_odds_signed(v):
     v = int(round(v))
     return f"+{v}" if v > 0 else str(v)
 
-def beat_close_label(clv_val, odds_clv_val):
-    """Verdict for whether a bet beat the closing line. Line CLV always takes
-    priority — if the line moved in your favor, that's a win regardless of price,
-    since a moved line means the closing odds aren't even comparable to yours
-    (Over 6.5 -120 vs. closing Over 7.5 +115 isn't an apples-to-apples price
-    comparison). Odds CLV only breaks the tie when the line didn't move at all."""
+def market_result_label(clv_val, odds_clv_val):
+    """Classifies how a bet did against the closing market, distinguishing *why*:
+    - Line CLV is the primary signal. If the line moved in your favor, that's the
+      whole story (Over 6.5 -120 closing Over 7.5 +115 is a crushed line — the
+      price at that point isn't even a fair comparison to your price).
+    - Only when the line didn't move at all does price become the deciding factor.
+    - A line that moved against you is a miss regardless of price.
+    This avoids collapsing two different kinds of market-beating (a better number
+    vs. a better price) into one number that can look misleadingly bad."""
     if clv_val is None or (isinstance(clv_val, float) and pd.isna(clv_val)):
         return "—"
     if clv_val > 0:
-        return "🟢 Beat Close"
+        return "🟢 Beat by Line"
     if clv_val < 0:
-        return "🔴 Lost Close"
-    # clv_val == 0 (line didn't move) — use odds CLV as tiebreaker
-    if odds_clv_val is not None and not (isinstance(odds_clv_val, float) and pd.isna(odds_clv_val)) and odds_clv_val > 0:
-        return "🟢 Beat Close"
-    return "⚪ Same Line"
+        return "🔴 Missed Close"
+    # clv_val == 0 — line didn't move, so price is the deciding factor
+    if odds_clv_val is None or (isinstance(odds_clv_val, float) and pd.isna(odds_clv_val)):
+        return "⚪ Push"
+    if odds_clv_val > 0:
+        return "🟢 Beat by Price"
+    if odds_clv_val < 0:
+        return "🔴 Missed Close"
+    return "⚪ Push"
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
@@ -2684,18 +2691,21 @@ elif nav == "📒 Bet Tracker":
                 avg_odds_clv = odds_clv_df['odds_clv'].mean()
                 beat_odds_pct = round((odds_clv_df['odds_clv'] > 0).mean() * 100, 1)
 
-            beat_close_series = [
-                beat_close_label(c, o) for c, o in zip(
+            market_result_series = [
+                market_result_label(c, o) for c, o in zip(
                     bets_df.get('clv'),
                     bets_df.get('odds_clv') if has_odds_clv else [None] * len(bets_df)
                 )
             ]
-            decided = [x for x in beat_close_series if x in ('🟢 Beat Close', '🔴 Lost Close')]
+            decided = [x for x in market_result_series if x in ('🟢 Beat by Line', '🟢 Beat by Price', '🔴 Missed Close')]
 
             if decided:
-                overall_beat_pct = round(sum(1 for x in decided if x == '🟢 Beat Close') / len(decided) * 100, 1)
+                beat_by_line = sum(1 for x in decided if x == '🟢 Beat by Line')
+                beat_by_price = sum(1 for x in decided if x == '🟢 Beat by Price')
+                missed = sum(1 for x in decided if x == '🔴 Missed Close')
+                overall_beat_pct = round((beat_by_line + beat_by_price) / len(decided) * 100, 1)
                 st.metric("📈 Beat Market", f"{overall_beat_pct}%")
-                st.caption("Line CLV is the primary signal; falls back to odds CLV as a tiebreaker when the line didn't move")
+                st.caption(f"🟢 {beat_by_line} Beat by Line · 🟢 {beat_by_price} Beat by Price · 🔴 {missed} Missed Close")
 
             col1, col2 = st.columns(2)
             col1.metric("🎯 Beat Closing Line", f"{beat_close_pct}%")
@@ -2770,13 +2780,13 @@ elif nav == "📒 Bet Tracker":
             display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
 
         if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
-            display_df['Beat Close'] = [
-                beat_close_label(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
+            display_df['Market Result'] = [
+                market_result_label(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
             ]
             cols = display_df.columns.tolist()
-            cols.remove('Beat Close')
+            cols.remove('Market Result')
             insert_at = cols.index('odds_clv') + 1 if 'odds_clv' in cols else len(cols)
-            cols.insert(insert_at, 'Beat Close')
+            cols.insert(insert_at, 'Market Result')
             display_df = display_df[cols]
 
         if 'closing_line' in display_df.columns:
@@ -2808,7 +2818,7 @@ elif nav == "📒 Bet Tracker":
                 'clv': st.column_config.TextColumn('Line CLV', disabled=True, help="Positive = line moved in your favor after you bet"),
                 'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
                 'odds_clv': st.column_config.TextColumn('Odds CLV', disabled=True, help="Positive = odds moved in your favor after you bet (implied probability movement, not %ROI)"),
-                'Beat Close': st.column_config.TextColumn('Beat Close', disabled=True),
+                'Market Result': st.column_config.TextColumn('Market Result', disabled=True, help="Beat by Line = the number moved in your favor (the bigger win). Beat by Price = same line, better price. Missed Close = the market beat you."),
             }
         )
 
