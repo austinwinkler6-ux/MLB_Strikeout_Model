@@ -263,6 +263,25 @@ def calculate_odds_edge_cents(market_odds, fair_odds):
         return None
     return round(fair_cents - market_cents, 1)
 
+def calculate_odds_clv(placed_odds, closing_odds):
+    """Compares the odds a bet was placed at against the closing odds, via
+    implied probability rather than the cents-based market-vs-fair formula
+    (that formula is for a different comparison and gives wrong signs here).
+    Positive = the closing price implied a higher probability than what you
+    got, i.e. the market moved in your favor after you bet (good CLV)."""
+    if placed_odds is None or closing_odds is None:
+        return None
+
+    def implied_prob(odds):
+        if odds > 0:
+            return 100 / (odds + 100)
+        return abs(odds) / (abs(odds) + 100)
+
+    placed_prob = implied_prob(placed_odds)
+    closing_prob = implied_prob(closing_odds)
+
+    return round((closing_prob - placed_prob) * 100, 2)
+
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
     ev_threshold = 15.0 if cv >= 0.35 else 10.0
@@ -1345,6 +1364,71 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
     except Exception as e:
         return None
 
+# ---- CLOSING LINE / CLV TRACKING ----
+def get_odds_api_sport_and_market(sport):
+    if sport == 'MLB':
+        return 'baseball_mlb', 'pitcher_strikeouts'
+    elif sport == 'NBA':
+        return 'basketball_nba', 'player_points'
+    elif sport == 'NBA_AST':
+        return 'basketball_nba', 'player_assists'
+    return None, None
+
+@st.cache_data(ttl=604800)
+def get_historical_events_cached(api_sport, snapshot_time):
+    try:
+        resp = requests.get(
+            f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events",
+            params={'apiKey': ODDS_API_KEY, 'date': snapshot_time}
+        ).json()
+        return resp.get('data', [])
+    except:
+        return []
+
+@st.cache_data(ttl=604800)
+def get_historical_event_odds_cached(api_sport, event_id, market, commence_time):
+    try:
+        resp = requests.get(
+            f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events/{event_id}/odds",
+            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': market, 'oddsFormat': 'american', 'date': commence_time}
+        ).json()
+        return resp.get('data', {}) or {}
+    except:
+        return {}
+
+def fetch_closing_line(sport, player_name, direction, game_date_str):
+    """Finds the closing (last available pre-game) line AND odds for a player prop,
+    filtered to the specific Over/Under side the bet was placed on (line CLV and
+    odds CLV are different things — a book can move the number, the price, or both).
+    Caches events-per-day and odds-per-event so multiple bets on the same
+    date/sport reuse the same API calls instead of re-fetching.
+    Returns (closing_line, closing_odds), either of which may be None if not found."""
+    api_sport, market = get_odds_api_sport_and_market(sport)
+    if not api_sport:
+        return None, None
+    try:
+        snapshot_time = f"{game_date_str}T12:00:00Z"
+        events = get_historical_events_cached(api_sport, snapshot_time)
+        for event in events:
+            commence_time = event['commence_time']
+            event_id = event['id']
+            data = get_historical_event_odds_cached(api_sport, event_id, market, commence_time)
+            points = []
+            for bookmaker in data.get('bookmakers', []):
+                for mkt in bookmaker.get('markets', []):
+                    if mkt['key'] == market:
+                        for outcome in mkt['outcomes']:
+                            if (outcome.get('description', '').lower() == player_name.lower()
+                                    and outcome.get('name', '').lower() == direction.lower()):
+                                points.append({'line': outcome['point'], 'odds': outcome['price']})
+            if points:
+                avg_line = round(sum(p['line'] for p in points) / len(points), 1)
+                avg_odds = round(sum(p['odds'] for p in points) / len(points))
+                return avg_line, avg_odds
+        return None, None
+    except:
+        return None, None
+
 pitchers_list = get_all_pitchers()
 
 # ---- SIDEBAR ----
@@ -2158,6 +2242,65 @@ elif nav == "📒 Bet Tracker":
 
             if 'ev_pct' in bets_df.columns and bets_df['ev_pct'].notna().any():
                 st.metric("Avg EV%", f"{round(bets_df['ev_pct'].dropna().mean(), 2)}%")
+
+        st.markdown("---")
+        st.subheader("🎯 Closing Line Tracker")
+        today_str = date.today().strftime('%Y-%m-%d')
+        missing_closing = [
+            b for b in bets
+            if not b.get('closing_line') and b.get('date') and b['date'] < today_str
+            and b.get('sport') in ('MLB', 'NBA', 'NBA_AST')
+        ]
+        if missing_closing:
+            st.caption(f"{len(missing_closing)} settled bet(s) missing closing line data.")
+            if st.button("🔄 Update Closing Lines", use_container_width=True):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                updated = 0
+                for i, bet in enumerate(missing_closing):
+                    status_text.text(f"Fetching closing line {i+1} of {len(missing_closing)}: {bet.get('pitcher')}")
+                    progress_bar.progress((i + 1) / len(missing_closing))
+                    closing_line, closing_odds = fetch_closing_line(
+                        bet.get('sport'), bet.get('pitcher'), bet.get('over_under'), bet.get('date')
+                    )
+                    if closing_line is not None:
+                        placed_line = bet.get('opening_line') or 0
+                        if bet.get('over_under') == 'Over':
+                            clv = round(closing_line - placed_line, 2)
+                        else:
+                            clv = round(placed_line - closing_line, 2)
+
+                        odds_clv = None
+                        placed_odds = bet.get('odds')
+                        if closing_odds is not None and placed_odds:
+                            odds_clv = calculate_odds_clv(placed_odds, closing_odds)
+
+                        update_bet(bet['id'], {
+                            'closing_line': closing_line,
+                            'closing_odds': closing_odds,
+                            'clv': clv,
+                            'odds_clv': odds_clv,
+                        })
+                        updated += 1
+                status_text.text(f"✅ Done! Found closing lines for {updated} of {len(missing_closing)} bets.")
+                progress_bar.progress(1.0)
+                st.rerun()
+        else:
+            st.caption("✅ All settled bets have closing line data.")
+
+        if 'clv' in bets_df.columns and bets_df['clv'].notna().any():
+            clv_df = bets_df[bets_df['clv'].notna()]
+            avg_clv = round(clv_df['clv'].mean(), 3)
+            beat_close_pct = round((clv_df['clv'] > 0).mean() * 100, 1)
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Avg Line CLV", f"{avg_clv} pts")
+            col2.metric("Beat Closing Line", f"{beat_close_pct}%")
+            if 'odds_clv' in bets_df.columns and bets_df['odds_clv'].notna().any():
+                odds_clv_df = bets_df[bets_df['odds_clv'].notna()]
+                avg_odds_clv = round(odds_clv_df['odds_clv'].mean(), 1)
+                beat_odds_pct = round((odds_clv_df['odds_clv'] > 0).mean() * 100, 1)
+                col3.metric("Avg Odds CLV", f"{avg_odds_clv}% implied")
+                col4.metric("Beat Closing Odds", f"{beat_odds_pct}%")
 
         if 'ev_pct' in bets_df.columns and not settled.empty and settled['ev_pct'].notna().any():
             st.markdown("---")
