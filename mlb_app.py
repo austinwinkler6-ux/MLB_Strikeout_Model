@@ -330,21 +330,21 @@ def fmt_odds_signed(v):
     return f"+{v}" if v > 0 else str(v)
 
 def beat_close_label(clv_val, odds_clv_val):
-    """✅/❌/— verdict for whether a bet beat the closing line — line CLV is the
-    primary signal, falling back to odds CLV as a tiebreaker when the line didn't move."""
+    """Verdict for whether a bet beat the closing line. Line CLV always takes
+    priority — if the line moved in your favor, that's a win regardless of price,
+    since a moved line means the closing odds aren't even comparable to yours
+    (Over 6.5 -120 vs. closing Over 7.5 +115 isn't an apples-to-apples price
+    comparison). Odds CLV only breaks the tie when the line didn't move at all."""
     if clv_val is None or (isinstance(clv_val, float) and pd.isna(clv_val)):
         return "—"
     if clv_val > 0:
-        return "✅"
+        return "🟢 Beat Close"
     if clv_val < 0:
-        return "❌"
-    if odds_clv_val is None or (isinstance(odds_clv_val, float) and pd.isna(odds_clv_val)):
-        return "—"
-    if odds_clv_val > 0:
-        return "✅"
-    if odds_clv_val < 0:
-        return "❌"
-    return "—"
+        return "🔴 Lost Close"
+    # clv_val == 0 (line didn't move) — use odds CLV as tiebreaker
+    if odds_clv_val is not None and not (isinstance(odds_clv_val, float) and pd.isna(odds_clv_val)) and odds_clv_val > 0:
+        return "🟢 Beat Close"
+    return "⚪ Same Line"
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
@@ -2655,7 +2655,7 @@ elif nav == "📒 Bet Tracker":
 
                         odds_clv = None
                         placed_odds = bet.get('odds')
-                        if closing_odds is not None and placed_odds:
+                        if closing_odds is not None and placed_odds and closing_line == placed_line:
                             odds_clv = calculate_odds_clv(placed_odds, closing_odds)
 
                         update_bet(bet['id'], {
@@ -2690,10 +2690,10 @@ elif nav == "📒 Bet Tracker":
                     bets_df.get('odds_clv') if has_odds_clv else [None] * len(bets_df)
                 )
             ]
-            decided = [x for x in beat_close_series if x in ('✅', '❌')]
+            decided = [x for x in beat_close_series if x in ('🟢 Beat Close', '🔴 Lost Close')]
 
             if decided:
-                overall_beat_pct = round(sum(1 for x in decided if x == '✅') / len(decided) * 100, 1)
+                overall_beat_pct = round(sum(1 for x in decided if x == '🟢 Beat Close') / len(decided) * 100, 1)
                 st.metric("📈 Beat Market", f"{overall_beat_pct}%")
                 st.caption("Line CLV is the primary signal; falls back to odds CLV as a tiebreaker when the line didn't move")
 
