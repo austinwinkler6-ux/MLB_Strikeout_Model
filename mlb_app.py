@@ -812,7 +812,8 @@ def load_bets(sport=None):
         if sport:
             query = query.eq("sport", sport)
         return query.order("created_at", desc=True).execute().data or []
-    except:
+    except Exception as e:
+        st.error(f"Error loading bets: {e}")
         return []
 
 def save_bet(bet):
@@ -840,7 +841,8 @@ def load_predictions(sport=None):
         if sport:
             query = query.eq("sport", sport)
         return query.order("created_at", desc=True).execute().data or []
-    except:
+    except Exception as e:
+        st.error(f"Error loading predictions: {e}")
         return []
 
 def save_prediction(pred):
