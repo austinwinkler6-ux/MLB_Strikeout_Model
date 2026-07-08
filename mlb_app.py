@@ -921,6 +921,166 @@ def upsert_cached_projection(cache_date_str, sport, player_name, projection_data
     except Exception:
         pass
 
+def store_ai_insight(cache_date_str, sport, player_name, insight_text, thesis_label):
+    """Saves a generated Model Insight onto the existing shared cache row, so
+    it's computed once per pitcher/day and reused by every user after that."""
+    try:
+        supabase.table("daily_cache").update({
+            "ai_insight": insight_text,
+            "thesis_label": thesis_label,
+        }).eq("cache_date", cache_date_str).eq("sport", sport).eq("player_name", player_name).execute()
+    except Exception:
+        pass
+
+# ---- THESIS CLASSIFICATION (rule-based, no AI call — free) ----
+def classify_thesis(info, result, sport):
+    """Labels the *kind* of edge a prop represents, using only signals the model
+    already computes (trend gaps, workload, EV, direction). Heuristic, not
+    guaranteed — a best-effort categorization to help users understand the
+    shape of the edge, not a certainty claim."""
+    if not result or not info:
+        return None
+    edge = info.get('Edge')
+    ev = info.get('EV%')
+    direction = info.get('Direction', 'over')
+    if edge is None or ev is None:
+        return None
+
+    if sport == 'mlb_strikeouts':
+        season_k_pct = result.get('season_k_pct')
+        last5_k = result.get('last5_k')
+        last10_k = result.get('last10_k')
+        expected_bf = result.get('expected_bf')
+        consecutive = result.get('consecutive_5ip_starts')
+        last5_avg_ip = result.get('last5_avg_ip')
+        season_avg_ip = result.get('season_avg_ip')
+
+        season_implied_k_per_start = (season_k_pct * expected_bf) if (season_k_pct and expected_bf) else None
+        workload_recovering = (
+            consecutive is not None and consecutive >= 2 and
+            last5_avg_ip is not None and season_avg_ip is not None and
+            last5_avg_ip >= season_avg_ip * 0.85
+        )
+
+        if (direction == 'over' and edge > 0 and workload_recovering and
+                last5_k is not None and season_implied_k_per_start and
+                last5_k < season_implied_k_per_start * 0.80):
+            return "🟢 Bounce-Back Spot"
+
+        if direction == 'over' and edge > 0 and last5_k is not None and last10_k is not None and last5_k > last10_k * 1.15:
+            return "🔥 Breakout Opportunity"
+
+        if direction == 'under' and last5_k is not None and last10_k is not None and last5_k > last10_k * 1.20:
+            return "⚠️ Regression Risk"
+
+        if (direction == 'over' and edge and edge > 1.0 and
+                last5_avg_ip is not None and season_avg_ip is not None and
+                last5_avg_ip < season_avg_ip * 0.70 and
+                (consecutive is None or consecutive <= 1)):
+            return "💰 Market Overreaction"
+
+    return None
+
+# ---- AI MODEL INSIGHT (Claude API call — costs money, cached per pitcher/day) ----
+ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY")
+# Using Haiku since this task (facts -> plain sentences) doesn't need Sonnet-level
+# reasoning — roughly 3x cheaper. Verify this is still a current model string in
+# Anthropic's docs (docs.claude.com) before relying on it long-term — model names
+# get retired/updated over time.
+AI_INSIGHT_MODEL = "claude-haiku-4-5-20251001"
+
+def build_insight_facts(pitcher_name, info, result, sport):
+    """Assembles ONLY verified facts already computed by the model into a plain
+    list — this is what gets handed to the AI, so it can't reference anything
+    beyond what's actually true and in the data."""
+    facts = []
+    if sport == 'mlb_strikeouts':
+        if result.get('season_k_pct') is not None:
+            facts.append(f"Season K%: {round(result['season_k_pct']*100,1)}%")
+        if result.get('last5_k') is not None:
+            facts.append(f"Strikeouts in last 5 starts (avg): {result['last5_k']}")
+        if result.get('last10_k') is not None:
+            facts.append(f"Strikeouts in last 10 starts (avg): {result['last10_k']}")
+        if result.get('last5_avg_ip') is not None:
+            facts.append(f"Innings pitched, last 5 starts (avg): {result['last5_avg_ip']}")
+        if result.get('season_avg_ip') is not None:
+            facts.append(f"Innings pitched, season average: {result['season_avg_ip']}")
+        if result.get('consecutive_5ip_starts') is not None:
+            facts.append(f"Consecutive starts of 5+ IP (most recent streak): {result['consecutive_5ip_starts']}")
+        if result.get('workload_tier'):
+            facts.append(f"Workload/role stability tier: {result['workload_tier']}")
+        if result.get('confidence_tier'):
+            facts.append(f"Performance-variance tier: {result['confidence_tier']}")
+        if result.get('opp_factor') is not None:
+            facts.append(f"Opponent strikeout-rate factor vs league average: {result['opp_factor']}")
+    facts.append(f"Model projection: {info.get('Projection')}")
+    facts.append(f"Book line: {info.get('FanDuel Line') or info.get('DraftKings Line')}")
+    facts.append(f"Model edge: {info.get('Edge')}")
+    facts.append(f"Expected value: {info.get('EV%')}%")
+    facts.append(f"Direction: {info.get('Direction')}")
+    return facts
+
+def generate_ai_insight(pitcher_name, info, result, sport, thesis_label):
+    """Calls Claude to turn the model's own facts into a short, evidence-only
+    explanation. Explicitly instructed to never invent context (injury status,
+    health, certainty) that isn't in the supplied facts."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    facts = build_insight_facts(pitcher_name, info, result, sport)
+    facts_text = "\n".join(f"- {f}" for f in facts)
+    thesis_note = f"\nThe model has tagged this as: {thesis_label}" if thesis_label else ""
+
+    prompt = f"""You are writing a short "Model Insight" note for a sports betting analytics app, explaining why a statistical model's projection may differ from the sportsbook's line for {pitcher_name}.
+
+Here are the ONLY facts you may use. Do not use any outside knowledge about this player, their health, or their team:
+{facts_text}
+{thesis_note}
+
+Write 2-4 sentences explaining the baseball reasoning behind the projection, using ONLY the facts above. 
+
+Strict rules:
+- Never state or imply anything about the player's health, injury status, or certainty of future performance unless a fact explicitly says so.
+- Never invent context not present in the facts (no assumptions about why a trend exists).
+- Stick to describing the factual pattern (e.g. "his innings have increased from X to Y over his last two starts") rather than diagnosing a cause.
+- Do not use hedge phrases like "presumably" or "likely due to" for anything not directly supported by the facts.
+- Write in plain, confident, analytical language — like a sharp bettor explaining their read, not a disclaimer-heavy legal notice.
+- No preamble, no "Based on the facts provided" — just the explanation itself."""
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": AI_INSIGHT_MODEL,
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text_blocks = [b['text'] for b in data.get('content', []) if b.get('type') == 'text']
+        return "".join(text_blocks).strip() if text_blocks else None
+    except Exception:
+        return None
+
+def get_or_generate_ai_insight(cache_date_str, sport, player_name, info, result):
+    """Reads the AI insight off the shared cache if already generated today;
+    otherwise generates it once and saves it for every other user to reuse."""
+    cached = get_cached_projection(cache_date_str, sport, player_name)
+    if cached and cached.get('ai_insight'):
+        return cached['ai_insight'], cached.get('thesis_label')
+
+    thesis_label = classify_thesis(info, result, 'mlb_strikeouts' if sport == 'MLB' else ('nba_points' if sport == 'NBA' else 'nba_assists'))
+    insight = generate_ai_insight(player_name, info, result, 'mlb_strikeouts' if sport == 'MLB' else ('nba_points' if sport == 'NBA' else 'nba_assists'), thesis_label)
+    if insight:
+        store_ai_insight(cache_date_str, sport, player_name, insight, thesis_label)
+    return insight, thesis_label
+
 def _cache_is_stale_provisional(cached_row):
     """A provisional (no-lineup) MLB cache entry is worth re-checking once
     enough time has passed that a lineup might have posted since."""
@@ -2245,6 +2405,19 @@ if nav == "🏠 Home":
                 with st.expander("💡 View Full Analysis"):
                     for line in why_lines:
                         st.markdown(line)
+                    if ANTHROPIC_API_KEY:
+                        cache_sport_label = 'MLB' if top_entry['sport_key'] == 'mlb_strikeouts' else nba_bet_sport_label(top_entry['sport_key'])
+                        with st.spinner("🧠 Generating model insight..."):
+                            insight, thesis_label = get_or_generate_ai_insight(
+                                mm_today_str(), cache_sport_label, top_entry['name'], top_entry['info'], top_entry['result']
+                            )
+                        if insight:
+                            st.markdown("---")
+                            if thesis_label:
+                                st.markdown(f"**{thesis_label}**")
+                            st.markdown("🧠 **Model Insight**")
+                            st.markdown(insight)
+
     else:
         st.markdown("""
             <div class='mm-card' style='max-width: 640px; margin: 0 auto 16px auto; text-align: center;'>
@@ -2409,7 +2582,7 @@ elif nav == "🎯 Today's Card":
             </div>
         """, unsafe_allow_html=True)
 
-        def render_ranked_section(title, entries, show_why_expander=True):
+        def render_ranked_section(title, entries, show_why_expander=True, auto_insight=False):
             if title:
                 st.markdown(f"### {title}")
             if not entries:
@@ -2440,10 +2613,22 @@ elif nav == "🎯 Today's Card":
                         with st.expander("💡 Why this bet?"):
                             for line in why_lines:
                                 st.markdown(line)
+                            if auto_insight and ANTHROPIC_API_KEY:
+                                cache_sport_label = 'MLB' if e['sport_key'] == 'mlb_strikeouts' else nba_bet_sport_label(e['sport_key'])
+                                with st.spinner("🧠 Generating model insight..."):
+                                    insight, thesis_label = get_or_generate_ai_insight(
+                                        mm_today_str(), cache_sport_label, e['name'], e['info'], e['result']
+                                    )
+                                if insight:
+                                    st.markdown("---")
+                                    if thesis_label:
+                                        st.markdown(f"**{thesis_label}**")
+                                    st.markdown(f"🧠 **Model Insight**")
+                                    st.markdown(insight)
                 st.divider()
 
-        render_ranked_section("🟢 Today's Best Bets", groups["🟢 Best Bet"])
-        render_ranked_section("🔵 Worth a Look", groups["🔵 Worth a Look"])
+        render_ranked_section("🟢 Today's Best Bets", groups["🟢 Best Bet"], auto_insight=True)
+        render_ranked_section("🔵 Worth a Look", groups["🔵 Worth a Look"], auto_insight=True)
 
         with st.expander(f"🟡 Leans ({len(groups['🟡 Lean'])})"):
             render_ranked_section("", groups["🟡 Lean"], show_why_expander=False)
@@ -2623,6 +2808,20 @@ elif nav == "⚾ MLB Models":
                     with st.expander(f"💡 Why this bet? — {pitcher}"):
                         for line in why_lines:
                             st.markdown(line)
+                        if ANTHROPIC_API_KEY:
+                            st.markdown("---")
+                            if st.button("🧠 Generate Model Insight", key=f"insight_btn_{pitcher}"):
+                                with st.spinner("🧠 Generating model insight..."):
+                                    insight, thesis_label = get_or_generate_ai_insight(
+                                        mm_today_str(), 'MLB', pitcher, info, result
+                                    )
+                                if insight:
+                                    if thesis_label:
+                                        st.markdown(f"**{thesis_label}**")
+                                    st.markdown("🧠 **Model Insight**")
+                                    st.markdown(insight)
+                                else:
+                                    st.caption("Couldn't generate an insight right now.")
 
             if st.session_state.get(f'log_modal_{pitcher}'):
                 with st.expander(f"📝 Log Bet — {pitcher}", expanded=True):
@@ -2846,6 +3045,20 @@ elif nav == "🏀 NBA Models":
                         with st.expander(f"💡 Why this bet? — {player}"):
                             for line in why_lines:
                                 st.markdown(line)
+                            if ANTHROPIC_API_KEY:
+                                st.markdown("---")
+                                if st.button("🧠 Generate Model Insight", key=f"{session_key}_insight_btn_{player}"):
+                                    with st.spinner("🧠 Generating model insight..."):
+                                        insight, thesis_label = get_or_generate_ai_insight(
+                                            mm_today_str(), nba_bet_sport_label(sport_key), player, info, result
+                                        )
+                                    if insight:
+                                        if thesis_label:
+                                            st.markdown(f"**{thesis_label}**")
+                                        st.markdown("🧠 **Model Insight**")
+                                        st.markdown(insight)
+                                    else:
+                                        st.caption("Couldn't generate an insight right now.")
 
                 if st.session_state.get(f'{session_key}_log_modal_{player}'):
                     bet_sport_label = nba_bet_sport_label(sport_key)
