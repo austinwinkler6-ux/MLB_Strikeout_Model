@@ -812,8 +812,7 @@ def load_bets(sport=None):
         if sport:
             query = query.eq("sport", sport)
         return query.order("created_at", desc=True).execute().data or []
-    except Exception as e:
-        st.error(f"Error loading bets: {e}")
+    except:
         return []
 
 def save_bet(bet):
@@ -841,8 +840,7 @@ def load_predictions(sport=None):
         if sport:
             query = query.eq("sport", sport)
         return query.order("created_at", desc=True).execute().data or []
-    except Exception as e:
-        st.error(f"Error loading predictions: {e}")
+    except:
         return []
 
 def save_prediction(pred):
@@ -936,66 +934,6 @@ def _cache_is_stale_provisional(cached_row):
     except Exception:
         return True
 
-# ---- PUBLIC MODEL PERFORMANCE STATS ----
-# Admin-curated trust page data. Predictions/bets are per-user by design (RLS),
-# so instead of trying to aggregate live across every user's private history,
-# admin publishes a snapshot of their own tracked results to a public table that
-# any user can read — same pattern as a "verified track record" page.
-def publish_model_performance(sport_key):
-    """Computes current MAE (from admin's predictions) and ROI/beat-close (from
-    admin's bets) for a sport, and publishes the snapshot to the public stats table."""
-    try:
-        preds = load_predictions(sport_key)
-        preds_with_actual = [p for p in preds if p.get('actual') is not None]
-        total_projections = len(preds_with_actual)
-        mae = None
-        if preds_with_actual:
-            errors = [abs(p['projection'] - p['actual']) for p in preds_with_actual]
-            mae = round(sum(errors) / len(errors), 2)
-
-        bets = load_bets(sport_key)
-        settled = [b for b in bets if b.get('result') != 'Pending']
-        total_bets = len(settled)
-        roi = None
-        profit_series = []
-        if settled:
-            total_wagered = sum(b.get('bet_amount', 0) or 0 for b in settled)
-            total_profit = sum(b.get('profit', 0) or 0 for b in settled)
-            roi = round(total_profit / total_wagered * 100, 1) if total_wagered else None
-            cumulative = 0
-            for b in sorted(settled, key=lambda b: b.get('date', '')):
-                cumulative += b.get('profit', 0) or 0
-                profit_series.append({'date': b.get('date'), 'cumulative_profit': round(cumulative, 2)})
-
-        clv_bets = [b for b in settled if b.get('clv') is not None]
-        beat_close_pct = None
-        if clv_bets:
-            beat_close_pct = round(sum(1 for b in clv_bets if (b.get('clv') or 0) > 0) / len(clv_bets) * 100, 1)
-
-        supabase.table("model_performance_stats").upsert({
-            "sport": sport_key,
-            "total_projections": total_projections,
-            "mae": mae,
-            "total_bets": total_bets,
-            "roi": roi,
-            "beat_close_pct": beat_close_pct,
-            "profit_series": _json_safe(profit_series),
-            "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-        }, on_conflict="sport").execute()
-        return True
-    except Exception as e:
-        st.error(f"Error publishing stats: {e}")
-        return False
-
-def get_published_model_performance(sport_key):
-    try:
-        res = supabase.table("model_performance_stats").select("*").eq("sport", sport_key).execute()
-        if res.data:
-            return res.data[0]
-    except Exception:
-        pass
-    return None
-
 def cached_run_projection(pitcher_name, opponent_team, home_team, season, cache_date_str):
     """Shared-cache wrapper around run_projection(). Reuses a cached result unless
     it's a provisional (pre-lineup) MLB entry old enough to be worth re-checking."""
@@ -1039,64 +977,6 @@ def force_run_and_cache_nba(run_fn, sport_label, player_name, opp_abbrev, home_t
     if result:
         upsert_cached_projection(cache_date_str, sport_label, player_name, result, has_lineup_data=True)
     return result
-
-def build_todays_card_entries():
-    """Pulls together whatever's currently loaded in session state (MLB + both NBA
-    prop types) into one unified, ranked list. Shared by Today's Card and the Home
-    page 'Today's Highest Rated Bet' section so they never show different data."""
-    card_entries = []
-
-    mlb_pitchers = st.session_state.get('all_pitchers', {})
-    mlb_results = st.session_state.get('pitcher_results', {})
-    for name, info in mlb_pitchers.items():
-        if info.get('Projection') is not None and info.get('MM Tier'):
-            card_entries.append({
-                'sport_label': '⚾ MLB', 'sport_key': 'mlb_strikeouts', 'name': name,
-                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
-                'play': info.get('Play'), 'edge': info.get('Edge'),
-                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
-                'info': info, 'result': mlb_results.get(name),
-            })
-
-    nba_pts = st.session_state.get('all_nba_players', {})
-    nba_pts_results = st.session_state.get('nba_pts_results', {})
-    for name, info in nba_pts.items():
-        if info.get('Projection') is not None and info.get('MM Tier'):
-            card_entries.append({
-                'sport_label': '🏀 NBA Pts', 'sport_key': 'nba_points', 'name': name,
-                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
-                'play': info.get('Play'), 'edge': info.get('Edge'),
-                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
-                'info': info, 'result': nba_pts_results.get(name),
-            })
-
-    nba_ast = st.session_state.get('all_nba_assist_players', {})
-    nba_ast_results = st.session_state.get('nba_ast_results', {})
-    for name, info in nba_ast.items():
-        if info.get('Projection') is not None and info.get('MM Tier'):
-            card_entries.append({
-                'sport_label': '🏀 NBA Ast', 'sport_key': 'nba_assists', 'name': name,
-                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
-                'play': info.get('Play'), 'edge': info.get('Edge'),
-                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
-                'info': info, 'result': nba_ast_results.get(name),
-            })
-    return card_entries
-
-def top_ranked_entry(card_entries):
-    """Returns the single highest-ranked entry (tier, then EV%, then edge) or None."""
-    if not card_entries:
-        return None
-    ranked = sorted(
-        card_entries,
-        key=lambda e: (
-            TIER_RANK.get(e['tier'], -1),
-            e['ev_pct'] if e['ev_pct'] is not None else -999,
-            abs(e['edge']) if e['edge'] is not None else -999
-        ),
-        reverse=True
-    )
-    return ranked[0]
 
 # ---- PARK FACTORS ----
 park_factors = {
@@ -2081,89 +1961,6 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                 })
     return results
 
-def run_todays_card_auto_run():
-    """Loads and runs today's MLB + NBA models if not already done this session.
-    Shows a progress checklist (rather than one static spinner) since the full
-    run across 3 model types can take a while."""
-    if st.session_state.get('today_card_auto_ran'):
-        return
-
-    steps = [
-        "Loading MLB props", "Running MLB projections",
-        "Loading NBA points props", "Running NBA points projections",
-        "Loading NBA assists props", "Running NBA assists projections",
-    ]
-    status_box = st.empty()
-    completed = []
-
-    def render(current=None):
-        lines = []
-        for s in steps:
-            if s in completed:
-                lines.append(f"✅ {s}")
-            elif s == current:
-                lines.append(f"⏳ {s}...")
-            else:
-                lines.append(f"◻️ {s}")
-        status_box.markdown("  \n".join(lines))
-
-    render()
-
-    if 'all_pitchers' not in st.session_state:
-        render("Loading MLB props")
-        mlb_props = load_mlb_props_data()
-        completed.append("Loading MLB props")
-        if mlb_props:
-            render("Running MLB projections")
-            mlb_results = run_all_mlb_projections(mlb_props, '2026')
-            completed.append("Running MLB projections")
-            st.session_state['all_pitchers'] = mlb_props
-            st.session_state['pitcher_results'] = mlb_results
-            st.session_state['season'] = '2026'
-            st.session_state.setdefault('manual_run_order', {})
-            st.session_state.setdefault('manual_run_counter', 0)
-        else:
-            completed.append("Running MLB projections")
-    else:
-        completed.extend(["Loading MLB props", "Running MLB projections"])
-
-    if 'all_nba_players' not in st.session_state:
-        render("Loading NBA points props")
-        nba_pts_props = load_nba_props_data('player_points')
-        completed.append("Loading NBA points props")
-        if nba_pts_props:
-            render("Running NBA points projections")
-            nba_pts_results = run_all_nba_projections(nba_pts_props, run_nba_points_projection, 'nba_points', '2025-26')
-            completed.append("Running NBA points projections")
-            st.session_state['all_nba_players'] = nba_pts_props
-            st.session_state['nba_pts_results'] = nba_pts_results
-            st.session_state['nba_season'] = '2025-26'
-        else:
-            completed.append("Running NBA points projections")
-    else:
-        completed.extend(["Loading NBA points props", "Running NBA points projections"])
-
-    if 'all_nba_assist_players' not in st.session_state:
-        render("Loading NBA assists props")
-        nba_ast_props = load_nba_props_data('player_assists')
-        completed.append("Loading NBA assists props")
-        if nba_ast_props:
-            render("Running NBA assists projections")
-            nba_ast_results = run_all_nba_projections(nba_ast_props, run_nba_assists_projection, 'nba_assists', '2025-26')
-            completed.append("Running NBA assists projections")
-            st.session_state['all_nba_assist_players'] = nba_ast_props
-            st.session_state['nba_ast_results'] = nba_ast_results
-        else:
-            completed.append("Running NBA assists projections")
-    else:
-        completed.extend(["Loading NBA assists props", "Running NBA assists projections"])
-
-    render()
-    status_box.empty()
-
-    st.session_state['today_card_auto_ran'] = True
-    st.session_state['today_card_updated_at'] = datetime.now(ZoneInfo("America/New_York")).strftime('%I:%M %p ET').lstrip('0')
-
 pitchers_list = get_all_pitchers()
 
 # ---- SIDEBAR ----
@@ -2176,7 +1973,7 @@ with st.sidebar:
 
     st.markdown("---")
     admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
-    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📊 Model Performance", "📒 Bet Tracker"] + admin_nav + ["⚙️ Settings"]
+    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker"] + admin_nav + ["⚙️ Settings"]
     default_index = 0
     if st.session_state.get('nav_redirect') in nav_options:
         default_index = nav_options.index(st.session_state['nav_redirect'])
@@ -2208,53 +2005,8 @@ if nav == "🏠 Home":
         </div>
     """, unsafe_allow_html=True)
 
-    run_todays_card_auto_run()
-    top_entry = top_ranked_entry(build_todays_card_entries())
-
-    if top_entry:
-        tier_word = "Bet" if "Best Bet" in top_entry['tier'] else "Pick"
-        play_short = (top_entry['play'] or '').replace('⬆️ OVER', 'Over').replace('⬇️ UNDER', 'Under')
-        line_str = f" {play_short} {top_entry['line']}" if top_entry['line'] is not None else ""
-        ev = top_entry['ev_pct']
-        ev_str = f"{'+' if ev and ev > 0 else ''}{ev}%" if ev is not None else "—"
-        st.markdown(f"""
-            <div class='mm-card' style='max-width: 640px; margin: 0 auto 16px auto; text-align: center; border-color: var(--mm-accent);'>
-                <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px;'>
-                    🔥 Today's Highest Rated {tier_word} &nbsp;·&nbsp; {top_entry['sport_label']}
-                </div>
-                <h2 style='margin: 0 0 4px 0; font-size: 1.7rem;'>{top_entry['name']}</h2>
-                <div style='color: var(--mm-text-dim); font-size: 1.15rem; margin-bottom: 16px;'>{line_str.strip()}</div>
-                <div style='display: flex; justify-content: center; gap: 28px; margin-bottom: 18px;'>
-                    <div>
-                        <div style='font-family: var(--mm-mono); font-size: 1.4rem; font-weight: 600;'>{top_entry['info'].get('Projection')}</div>
-                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Projection</div>
-                    </div>
-                    <div>
-                        <div style='font-family: var(--mm-mono); font-size: 1.4rem; font-weight: 600; color: var(--mm-success);'>{ev_str}</div>
-                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Expected Value</div>
-                    </div>
-                </div>
-                {tier_badge(top_entry['tier'])}
-            </div>
-        """, unsafe_allow_html=True)
-
-        if top_entry['result']:
-            direction = top_entry['info'].get('Direction', 'over')
-            why_lines = generate_why(top_entry['info'], top_entry['result'], direction, top_entry['sport_key'])
-            if why_lines:
-                with st.expander("💡 View Full Analysis"):
-                    for line in why_lines:
-                        st.markdown(line)
-    else:
-        st.markdown("""
-            <div class='mm-card' style='max-width: 640px; margin: 0 auto 16px auto; text-align: center;'>
-                <div style='font-size: 1.5rem; margin-bottom: 8px;'>🗓️</div>
-                <p style='color: var(--mm-text-dim); margin: 0;'>No games on the board right now — check back once today's slate is up.</p>
-            </div>
-        """, unsafe_allow_html=True)
-
     st.markdown(f"""
-        <div style='display: flex; justify-content: center; gap: 10px; padding: 12px 0 20px 0; flex-wrap: wrap;'>
+        <div style='display: flex; justify-content: center; gap: 10px; padding: 28px 0 20px 0; flex-wrap: wrap;'>
             {tier_badge("🟢 Best Bet")}
             {tier_badge("🔵 Worth a Look")}
             {tier_badge("🟡 Lean")}
@@ -2264,7 +2016,7 @@ if nav == "🏠 Home":
 
     cta_col1, cta_col2, cta_col3 = st.columns([1, 1, 1])
     with cta_col2:
-        if st.button("🎯 See Full Today's Card", use_container_width=True, type="primary"):
+        if st.button("🎯 See Today's Best Bets", use_container_width=True, type="primary"):
             st.session_state['nav_redirect'] = "🎯 Today's Card"
             st.rerun()
     st.markdown("<div style='padding-bottom: 28px;'></div>", unsafe_allow_html=True)
@@ -2351,12 +2103,76 @@ elif nav == "🎯 Today's Card":
     st.title("🎯 Today's Card")
     st.caption("Ranked, not listed. Loads and runs today's MLB + NBA models automatically.")
 
-    run_todays_card_auto_run()
+    if not st.session_state.get('today_card_auto_ran'):
+        with st.spinner("Building today's card — loading and running today's models across MLB and NBA... this can take a minute."):
+            if 'all_pitchers' not in st.session_state:
+                mlb_props = load_mlb_props_data()
+                if mlb_props:
+                    mlb_results = run_all_mlb_projections(mlb_props, '2026')
+                    st.session_state['all_pitchers'] = mlb_props
+                    st.session_state['pitcher_results'] = mlb_results
+                    st.session_state['season'] = '2026'
+                    st.session_state.setdefault('manual_run_order', {})
+                    st.session_state.setdefault('manual_run_counter', 0)
+
+            if 'all_nba_players' not in st.session_state:
+                nba_pts_props = load_nba_props_data('player_points')
+                if nba_pts_props:
+                    nba_pts_results = run_all_nba_projections(nba_pts_props, run_nba_points_projection, 'nba_points', '2025-26')
+                    st.session_state['all_nba_players'] = nba_pts_props
+                    st.session_state['nba_pts_results'] = nba_pts_results
+                    st.session_state['nba_season'] = '2025-26'
+
+            if 'all_nba_assist_players' not in st.session_state:
+                nba_ast_props = load_nba_props_data('player_assists')
+                if nba_ast_props:
+                    nba_ast_results = run_all_nba_projections(nba_ast_props, run_nba_assists_projection, 'nba_assists', '2025-26')
+                    st.session_state['all_nba_assist_players'] = nba_ast_props
+                    st.session_state['nba_ast_results'] = nba_ast_results
+
+            st.session_state['today_card_auto_ran'] = True
+            st.session_state['today_card_updated_at'] = datetime.now(ZoneInfo("America/New_York")).strftime('%I:%M %p ET').lstrip('0')
 
     if st.session_state.get('today_card_updated_at'):
         st.caption(f"🕐 Last updated at {st.session_state['today_card_updated_at']}")
 
-    card_entries = build_todays_card_entries()
+    card_entries = []
+
+    mlb_pitchers = st.session_state.get('all_pitchers', {})
+    mlb_results = st.session_state.get('pitcher_results', {})
+    for name, info in mlb_pitchers.items():
+        if info.get('Projection') is not None and info.get('MM Tier'):
+            card_entries.append({
+                'sport_label': '⚾ MLB', 'sport_key': 'mlb_strikeouts', 'name': name,
+                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': mlb_results.get(name),
+            })
+
+    nba_pts = st.session_state.get('all_nba_players', {})
+    nba_pts_results = st.session_state.get('nba_pts_results', {})
+    for name, info in nba_pts.items():
+        if info.get('Projection') is not None and info.get('MM Tier'):
+            card_entries.append({
+                'sport_label': '🏀 NBA Pts', 'sport_key': 'nba_points', 'name': name,
+                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': nba_pts_results.get(name),
+            })
+
+    nba_ast = st.session_state.get('all_nba_assist_players', {})
+    nba_ast_results = st.session_state.get('nba_ast_results', {})
+    for name, info in nba_ast.items():
+        if info.get('Projection') is not None and info.get('MM Tier'):
+            card_entries.append({
+                'sport_label': '🏀 NBA Ast', 'sport_key': 'nba_assists', 'name': name,
+                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': nba_ast_results.get(name),
+            })
 
     if not card_entries:
         st.markdown("""
@@ -2886,54 +2702,6 @@ elif nav == "🏀 NBA Models":
     else:
         run_nba_display('all_nba_assist_players', run_nba_assists_projection, 'nba_assists', 'player_assists', 'nba_ast')
 
-# ---- MODEL PERFORMANCE (PUBLIC TRUST PAGE) ----
-elif nav == "📊 Model Performance":
-    st.title("📊 Model Performance")
-    st.markdown("""
-        <p style='color: var(--mm-text-dim); max-width: 640px; margin-bottom: 24px;'>
-            Every number below is a real, tracked record — not a backtest run once and forgotten.
-            Updated whenever new results come in.
-        </p>
-    """, unsafe_allow_html=True)
-
-    perf_sports = [("MLB", "⚾ MLB Strikeout Model"), ("NBA", "🏀 NBA Points Model"), ("NBA_AST", "🏀 NBA Assists Model")]
-    any_published = False
-
-    for sport_key, label in perf_sports:
-        stats = get_published_model_performance(sport_key)
-        if not stats:
-            continue
-        any_published = True
-
-        st.markdown(f"### {label}")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Projections Tracked", stats.get('total_projections') or "—")
-        col2.metric("MAE", stats.get('mae') if stats.get('mae') is not None else "—")
-        roi = stats.get('roi')
-        col3.metric("ROI", f"{'+' if roi and roi > 0 else ''}{roi}%" if roi is not None else "—")
-        beat_close = stats.get('beat_close_pct')
-        col4.metric("Beat Closing Line", f"{beat_close}%" if beat_close is not None else "—")
-
-        profit_series = stats.get('profit_series')
-        if profit_series:
-            profit_df = pd.DataFrame(profit_series)
-            if not profit_df.empty and 'date' in profit_df.columns:
-                profit_df = profit_df.set_index('date')
-                st.line_chart(profit_df['cumulative_profit'])
-
-        updated_at = stats.get('updated_at')
-        if updated_at:
-            try:
-                updated_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-                updated_et = updated_dt.astimezone(ZoneInfo("America/New_York")).strftime('%b %d, %Y at %I:%M %p ET').replace(' 0', ' ')
-                st.caption(f"Last updated {updated_et} · Sample size: {stats.get('total_bets') or 0} settled bets")
-            except Exception:
-                pass
-        st.markdown("---")
-
-    if not any_published:
-        st.info("Model performance stats haven't been published yet — check back soon.")
-
 # ---- BET TRACKER PAGE ----
 elif nav == "📒 Bet Tracker":
     st.title("📒 Bet Tracker")
@@ -3342,13 +3110,6 @@ elif nav == "🔬 Model Lab" and is_admin:
         col1.metric("Overall MAE", f"{round(full_df['error'].mean(), 2)}")
         col2.metric("Total Predictions", len(full_df))
         col3.metric("Best Prediction", f"{full_df['error'].min()} error")
-
-        st.markdown("---")
-        st.subheader("📢 Public Model Performance Page")
-        st.caption("Publishes a snapshot of these stats (plus ROI/Beat Close from your Bet Tracker) to the public Model Performance page every user can see.")
-        if st.button(f"📢 Publish {lab_sport} Stats"):
-            if publish_model_performance(sport_key):
-                st.success(f"✅ Published {lab_sport} stats to the public Model Performance page.")
 
 # ---- BACKTEST (ADMIN ONLY) ----
 elif nav == "🧪 Backtest" and is_admin:
