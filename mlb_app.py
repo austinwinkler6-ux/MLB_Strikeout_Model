@@ -2974,7 +2974,8 @@ elif nav == "📒 Bet Tracker":
                 'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
                 'odds_clv': st.column_config.TextColumn('Odds CLV', disabled=True, help="Positive = odds moved in your favor after you bet (implied probability movement, not %ROI)"),
                 'Market Result': st.column_config.TextColumn('Market Result', disabled=True, help="Beat by Line = the number moved in your favor (the bigger win). Beat by Price = same line, better price. Lost to Close = the market beat you."),
-            }
+            },
+            column_order=[c for c in display_df.columns if c != 'id']
         )
 
         col_save, col_clear = st.columns(2)
