@@ -2927,7 +2927,7 @@ elif nav == "📒 Bet Tracker":
 
         st.markdown("---")
         st.subheader("📝 All Bets")
-        display_df = bets_df.drop(columns=[c for c in ['id', 'created_at', 'user_id', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
+        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
         if 'no_vig_prob' in display_df.columns:
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
@@ -2955,6 +2955,7 @@ elif nav == "📒 Bet Tracker":
         edited_df = st.data_editor(
             display_df, use_container_width=True, num_rows="dynamic",
             column_config={
+                'id': st.column_config.NumberColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
                 'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
                 'actual': st.column_config.NumberColumn('Actual', min_value=0),
                 'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
@@ -2980,23 +2981,25 @@ elif nav == "📒 Bet Tracker":
         with col_save:
             if st.button("💾 Save Table Changes", use_container_width=True):
                 updated_bets = edited_df.to_dict('records')
-                for i, b in enumerate(updated_bets):
+                for b in updated_bets:
+                    row_id = b.get('id')
+                    if row_id is None or pd.isna(row_id):
+                        continue  # a newly added row from the dynamic table — no id yet, nothing to update
                     b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
-                    if i < len(bets) and bets[i].get('id'):
-                        no_vig_val = b.get('no_vig_prob')
-                        model_prob_val = b.get('model_prob')
-                        update_bet(bets[i]['id'], {
-                            'actual': b.get('actual'), 'result': b.get('result'),
-                            'odds': b.get('odds'), 'bet_amount': b.get('bet_amount'),
-                            'opening_line': b.get('opening_line'),
-                            'projection': b.get('projection'), 'over_under': b.get('over_under'),
-                            'profit': b['profit'], 'sport': b.get('sport', 'MLB'),
-                            'ev_pct': b.get('ev_pct'),
-                            'model_edge': b.get('model_edge'),
-                            'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
-                            'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
-                            'confidence_tier': b.get('confidence_tier')
-                        })
+                    no_vig_val = b.get('no_vig_prob')
+                    model_prob_val = b.get('model_prob')
+                    update_bet(int(row_id), {
+                        'actual': b.get('actual'), 'result': b.get('result'),
+                        'odds': b.get('odds'), 'bet_amount': b.get('bet_amount'),
+                        'opening_line': b.get('opening_line'),
+                        'projection': b.get('projection'), 'over_under': b.get('over_under'),
+                        'profit': b['profit'], 'sport': b.get('sport', 'MLB'),
+                        'ev_pct': b.get('ev_pct'),
+                        'model_edge': b.get('model_edge'),
+                        'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
+                        'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
+                        'confidence_tier': b.get('confidence_tier')
+                    })
                 st.rerun()
         with col_clear:
             if st.button("🗑️ Clear All Bets", use_container_width=True):
