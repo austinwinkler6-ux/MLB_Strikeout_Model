@@ -2955,7 +2955,7 @@ elif nav == "📒 Bet Tracker":
         edited_df = st.data_editor(
             display_df, use_container_width=True, num_rows="dynamic",
             column_config={
-                'id': st.column_config.NumberColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
+                'id': st.column_config.TextColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
                 'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
                 'actual': st.column_config.NumberColumn('Actual', min_value=0),
                 'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
@@ -2984,12 +2984,12 @@ elif nav == "📒 Bet Tracker":
                 updated_bets = edited_df.to_dict('records')
                 for b in updated_bets:
                     row_id = b.get('id')
-                    if row_id is None or pd.isna(row_id):
+                    if row_id is None or (isinstance(row_id, float) and pd.isna(row_id)) or str(row_id).strip() == '':
                         continue  # a newly added row from the dynamic table — no id yet, nothing to update
                     b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
                     no_vig_val = b.get('no_vig_prob')
                     model_prob_val = b.get('model_prob')
-                    update_bet(int(row_id), {
+                    update_bet(row_id, {
                         'actual': b.get('actual'), 'result': b.get('result'),
                         'odds': b.get('odds'), 'bet_amount': b.get('bet_amount'),
                         'opening_line': b.get('opening_line'),
