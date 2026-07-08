@@ -556,51 +556,60 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         if evidence_line:
             lines.append(evidence_line)
 
+        def _dir_icon(factor_boosts_stat):
+            """✅ if this factor works in favor of the bet's actual direction, ⚠️ if against it."""
+            if direction == 'over':
+                return "✅" if factor_boosts_stat else "⚠️"
+            else:
+                return "⚠️" if factor_boosts_stat else "✅"
+
         opp_factor = result.get('opp_factor')
         if opp_factor:
             if opp_factor >= 1.05:
-                lines.append(f"✅ Opponent K% is **above average** — favorable matchup")
+                matchup_word = "favorable" if direction == 'over' else "tougher"
+                lines.append(f"{_dir_icon(True)} Opponent K% is **above average** — {matchup_word} matchup")
             elif opp_factor <= 0.95:
-                lines.append(f"⚠️ Opponent K% is **below average** — tougher matchup")
+                matchup_word = "tougher" if direction == 'over' else "favorable"
+                lines.append(f"{_dir_icon(False)} Opponent K% is **below average** — {matchup_word} matchup")
             else:
                 lines.append(f"➖ Opponent K% is near league average")
 
         park_factor = result.get('park_factor')
         if park_factor:
             if park_factor >= 1.03:
-                lines.append(f"✅ Park factor **{park_factor}** — pitcher-friendly park")
+                lines.append(f"{_dir_icon(True)} Park factor **{park_factor}** — pitcher-friendly park")
             elif park_factor <= 0.97:
-                lines.append(f"⚠️ Park factor **{park_factor}** — hitter-friendly park")
+                lines.append(f"{_dir_icon(False)} Park factor **{park_factor}** — hitter-friendly park")
 
         umpire_factor = result.get('umpire_factor')
         umpire_name = result.get('umpire_name')
         if umpire_factor and umpire_name:
             if umpire_factor >= 1.02:
-                lines.append(f"✅ Umpire **{umpire_name}** has a larger strike zone — boosts K rate")
+                lines.append(f"{_dir_icon(True)} Umpire **{umpire_name}** has a larger strike zone — boosts K rate")
             elif umpire_factor <= 0.98:
-                lines.append(f"⚠️ Umpire **{umpire_name}** has a tighter strike zone — hurts K rate")
+                lines.append(f"{_dir_icon(False)} Umpire **{umpire_name}** has a tighter strike zone — hurts K rate")
 
         lineup_factor = result.get('lineup_factor')
         if lineup_factor:
             if lineup_factor >= 0.24:
-                lines.append(f"✅ Today's lineup K% is **above average** — favorable")
+                lines.append(f"{_dir_icon(True)} Today's lineup K% is **above average** — {'favorable' if direction == 'over' else 'tougher'}")
             elif lineup_factor <= 0.20:
-                lines.append(f"⚠️ Today's lineup K% is **below average** — tougher")
+                lines.append(f"{_dir_icon(False)} Today's lineup K% is **below average** — {'tougher' if direction == 'over' else 'favorable'}")
 
         if sport in ('nba_points', 'nba_assists'):
             opp_pace = result.get('opp_pace')
             if opp_pace:
                 if opp_pace >= league_avg_pace + 2:
-                    lines.append(f"✅ Opponent pace **{opp_pace}** — faster pace, more possessions")
+                    lines.append(f"{_dir_icon(True)} Opponent pace **{opp_pace}** — faster pace, more possessions")
                 elif opp_pace <= league_avg_pace - 2:
-                    lines.append(f"⚠️ Opponent pace **{opp_pace}** — slower pace, fewer possessions")
+                    lines.append(f"{_dir_icon(False)} Opponent pace **{opp_pace}** — slower pace, fewer possessions")
                 else:
                     lines.append(f"➖ Opponent pace **{opp_pace}** — near league average")
 
             rest_adj = result.get('rest_adj')
             days_rest = result.get('days_rest')
             if rest_adj:
-                icon = "✅" if rest_adj > 0 else "⚠️"
+                icon = _dir_icon(rest_adj > 0)
                 rest_note = f" ({days_rest} days rest)" if days_rest is not None else ""
                 lines.append(f"{icon} Rest adjustment **{rest_adj:+}**{rest_note}")
 
@@ -608,29 +617,29 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 opp_def_rating = result.get('opp_def_rating')
                 if opp_def_rating:
                     if opp_def_rating >= league_avg_def_rating + 2:
-                        lines.append(f"✅ Opponent defensive rating **{opp_def_rating}** — weaker defense, favorable matchup")
+                        lines.append(f"{_dir_icon(True)} Opponent defensive rating **{opp_def_rating}** — weaker defense, {'favorable' if direction == 'over' else 'tougher'} matchup")
                     elif opp_def_rating <= league_avg_def_rating - 2:
-                        lines.append(f"⚠️ Opponent defensive rating **{opp_def_rating}** — stronger defense, tougher matchup")
+                        lines.append(f"{_dir_icon(False)} Opponent defensive rating **{opp_def_rating}** — stronger defense, {'tougher' if direction == 'over' else 'favorable'} matchup")
 
                 usage_adj = result.get('usage_adj')
                 if usage_adj:
-                    icon = "✅" if usage_adj > 0 else "⚠️"
+                    icon = _dir_icon(usage_adj > 0)
                     lines.append(f"{icon} Usage adjustment **{usage_adj:+}** based on recent shot volume")
 
             elif sport == 'nba_assists':
                 ast_pct_adj = result.get('ast_pct_adj')
                 if ast_pct_adj:
-                    icon = "✅" if ast_pct_adj > 0 else "⚠️"
+                    icon = _dir_icon(ast_pct_adj > 0)
                     lines.append(f"{icon} Assist rate adjustment **{ast_pct_adj:+}** based on playmaking usage")
 
                 potential_ast_adj = result.get('potential_ast_adj')
                 if potential_ast_adj:
-                    icon = "✅" if potential_ast_adj > 0 else "⚠️"
+                    icon = _dir_icon(potential_ast_adj > 0)
                     lines.append(f"{icon} Potential-assists tracking adjustment **{potential_ast_adj:+}**")
 
                 opp_ast_adj = result.get('opp_ast_adj')
                 if opp_ast_adj:
-                    icon = "✅" if opp_ast_adj > 0 else "⚠️"
+                    icon = _dir_icon(opp_ast_adj > 0)
                     lines.append(f"{icon} Opponent assists-allowed adjustment **{opp_ast_adj:+}**")
 
     return lines
@@ -2336,7 +2345,7 @@ with st.sidebar:
 
     st.markdown("---")
     admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
-    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📊 Model Performance", "📒 Bet Tracker"] + admin_nav + ["⚙️ Settings"]
+    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
     default_index = 0
     if st.session_state.get('nav_redirect') in nav_options:
         default_index = nav_options.index(st.session_state['nav_redirect'])
@@ -2476,9 +2485,27 @@ if nav == "🏠 Home":
 
     st.markdown("<div style='padding-top: 36px;'></div>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
-    col1.metric("⚾ MLB Strikeouts", "Live", "Model Active")
-    col2.metric("🏈 NFL Models", "Coming Soon", "Season Starting")
-    col3.metric("🏀 NBA Models", "Live", "Points + Assists")
+    with col1:
+        st.markdown("""
+            <div class='mm-card' style='height: 100%;'>
+                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>⚾ MLB</div>
+                <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Strikeouts</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown("""
+            <div class='mm-card' style='height: 100%;'>
+                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🏀 NBA</div>
+                <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Points · Assists</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown("""
+            <div class='mm-card' style='height: 100%;'>
+                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🏈 NFL</div>
+                <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Pass Attempts · Pass Completions · Receptions</div>
+            </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
     st.markdown("<h2 style='font-size: 1.4rem; margin-bottom: 20px;'>How It Works</h2>", unsafe_allow_html=True)
