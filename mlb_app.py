@@ -866,6 +866,118 @@ def calc_profit(bet_amount, odds, result):
         return -bet_amount
     return 0.0
 
+# ---- SHARED DAILY PROJECTION CACHE ----
+# One computed projection per (date, sport, player) is shared across ALL users,
+# instead of every visitor re-running the full model pipeline (and re-hitting
+# every external API) for identical results. MLB gets special handling: a
+# projection computed before lineups are posted is only "provisional" and gets
+# re-checked periodically until a real lineup is found.
+LINEUP_RECHECK_MINUTES = 60
+
+def mm_today_str():
+    """'Today' in Eastern Time, not the server's clock (likely UTC) — matters for
+    cache date keys since MLB's day rolls over on Eastern time, not UTC."""
+    return datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d')
+
+def get_cached_projection(cache_date_str, sport, player_name):
+    try:
+        res = supabase.table("daily_cache").select("*") \
+            .eq("cache_date", cache_date_str).eq("sport", sport).eq("player_name", player_name) \
+            .execute()
+        if res.data:
+            return res.data[0]
+    except Exception:
+        pass
+    return None
+
+def _json_safe(value):
+    """Recursively converts numpy/pandas scalar types (returned by things like
+    .mean()/.std() inside the projection engines) into native Python types,
+    since Supabase's JSON encoder can't serialize numpy types directly and
+    would silently fail every cache write otherwise."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, 'item') and callable(getattr(value, 'item', None)):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+def upsert_cached_projection(cache_date_str, sport, player_name, projection_data, has_lineup_data=True):
+    try:
+        supabase.table("daily_cache").upsert({
+            "cache_date": cache_date_str,
+            "sport": sport,
+            "player_name": player_name,
+            "projection_data": _json_safe(projection_data),
+            "has_lineup_data": has_lineup_data,
+            "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        }, on_conflict="cache_date,sport,player_name").execute()
+    except Exception:
+        pass
+
+def _cache_is_stale_provisional(cached_row):
+    """A provisional (no-lineup) MLB cache entry is worth re-checking once
+    enough time has passed that a lineup might have posted since."""
+    if cached_row.get('has_lineup_data'):
+        return False
+    updated_at = cached_row.get('updated_at')
+    if not updated_at:
+        return True
+    try:
+        updated_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+        age_minutes = (datetime.now(ZoneInfo("UTC")) - updated_dt).total_seconds() / 60
+        return age_minutes >= LINEUP_RECHECK_MINUTES
+    except Exception:
+        return True
+
+def cached_run_projection(pitcher_name, opponent_team, home_team, season, cache_date_str):
+    """Shared-cache wrapper around run_projection(). Reuses a cached result unless
+    it's a provisional (pre-lineup) MLB entry old enough to be worth re-checking."""
+    cached = get_cached_projection(cache_date_str, 'MLB', pitcher_name)
+    if cached and not _cache_is_stale_provisional(cached):
+        return cached['projection_data']
+
+    result = run_projection(pitcher_name, opponent_team, home_team, season)
+    if result:
+        has_lineup = result.get('lineup_factor') is not None
+        upsert_cached_projection(cache_date_str, 'MLB', pitcher_name, result, has_lineup_data=has_lineup)
+        return result
+    # Model run failed — fall back to the stale cached version rather than nothing
+    return cached['projection_data'] if cached else None
+
+def cached_run_nba_projection(run_fn, sport_label, player_name, opp_abbrev, home_team, away_team, home_or_away, season, cache_date_str):
+    """Shared-cache wrapper for NBA projections. No lineup-reveal dynamic like MLB,
+    so once cached for the day it's trusted for the rest of the day."""
+    cached = get_cached_projection(cache_date_str, sport_label, player_name)
+    if cached:
+        return cached['projection_data']
+
+    result = run_fn(player_name, opp_abbrev, home_team, away_team, home_or_away, season)
+    if result:
+        upsert_cached_projection(cache_date_str, sport_label, player_name, result, has_lineup_data=True)
+    return result
+
+def force_run_and_cache_mlb(pitcher_name, opponent_team, home_team, season, cache_date_str):
+    """Always computes fresh (used by the manual ▶️ Run button, which exists
+    specifically to force a recompute) but still updates the shared cache
+    afterward so every other user benefits from the fresh result too."""
+    result = run_projection(pitcher_name, opponent_team, home_team, season)
+    if result:
+        has_lineup = result.get('lineup_factor') is not None
+        upsert_cached_projection(cache_date_str, 'MLB', pitcher_name, result, has_lineup_data=has_lineup)
+    return result
+
+def force_run_and_cache_nba(run_fn, sport_label, player_name, opp_abbrev, home_team, away_team, home_or_away, season, cache_date_str):
+    """Always computes fresh (manual ▶️ Run button) but still updates the shared cache."""
+    result = run_fn(player_name, opp_abbrev, home_team, away_team, home_or_away, season)
+    if result:
+        upsert_cached_projection(cache_date_str, sport_label, player_name, result, has_lineup_data=True)
+    return result
+
 # ---- PARK FACTORS ----
 park_factors = {
     'Los Angeles Angels': 0.97, 'Baltimore Orioles': 1.02, 'Boston Red Sox': 0.95,
@@ -1657,7 +1769,7 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
             opp = info['away']
             h = info['home']
 
-        result = run_projection(pitcher, opp, h, season)
+        result = cached_run_projection(pitcher, opp, h, season, mm_today_str())
 
         if result:
             proj = result['projection']
@@ -1793,7 +1905,10 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
             home_or_away = 'home'
             opp_abbrev = away_abbrev
 
-        result = run_fn(player, opp_abbrev, home_team, away_team, home_or_away, season)
+        result = cached_run_nba_projection(
+            run_fn, nba_bet_sport_label(sport_key), player, opp_abbrev, home_team, away_team,
+            home_or_away, season, mm_today_str()
+        )
 
         if result:
             proj = result['projection']
@@ -2258,7 +2373,7 @@ elif nav == "⚾ MLB Models":
                         if not opp:
                             opp = info['away']
                             h = info['home']
-                        result = run_projection(pitcher, opp, h, season)
+                        result = force_run_and_cache_mlb(pitcher, opp, h, season, mm_today_str())
                         if result:
                             proj = result['projection']
                             best_line = info['FanDuel Line'] or info['DraftKings Line']
@@ -2496,7 +2611,10 @@ elif nav == "🏀 NBA Models":
                             except:
                                 home_or_away = 'home'
                                 opp_abbrev = away_abbrev
-                            result = run_fn(player, opp_abbrev, home_team, away_team, home_or_away, season)
+                            result = force_run_and_cache_nba(
+                                run_fn, nba_bet_sport_label(sport_key), player, opp_abbrev, home_team, away_team,
+                                home_or_away, season, mm_today_str()
+                            )
                             if result:
                                 proj = result['projection']
                                 best_line = info['FanDuel Line'] or info['DraftKings Line']
