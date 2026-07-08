@@ -2331,7 +2331,7 @@ elif nav == "⚾ MLB Models":
         hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
         header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
         for hcol, label in [
-            (hcol1, "Pitcher"), (hcol2, "FanDuel"), (hcol3, "DraftKings"),
+            (hcol1, "Pitcher"), (hcol2, "FD"), (hcol3, "DK"),
             (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
             (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
             (hcol10, ""), (hcol11, ""),
@@ -2554,7 +2554,7 @@ elif nav == "🏀 NBA Models":
             hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
             header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
             for hcol, label in [
-                (hcol1, "Player"), (hcol2, "FanDuel"), (hcol3, "DraftKings"),
+                (hcol1, "Player"), (hcol2, "FD"), (hcol3, "DK"),
                 (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
                 (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
                 (hcol10, ""), (hcol11, ""),
