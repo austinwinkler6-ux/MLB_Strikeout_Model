@@ -3151,7 +3151,7 @@ elif nav == "🎯 Today's Card":
     st.title("🎯 Today's Card")
     st.caption("Ranked, not listed. Loads and runs today's MLB + NBA models automatically.")
 
-    run_todays_card_auto_run()
+    run_todays_card_auto_run(minimal_ui=True)
 
     if st.session_state.get('today_card_updated_at'):
         st.caption(f"🕐 Last updated at {st.session_state['today_card_updated_at']}")
