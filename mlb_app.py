@@ -2994,10 +2994,6 @@ if nav == "🏠 Home":
                 Player Prop Analytics
             </div>
             <h1 style='font-size: 3rem; margin: 0 0 14px 0; line-height: 1.1;'>Sharp Data. Sharp Bets.</h1>
-            <p style='color: var(--mm-text-dim); font-size: 1.05rem; max-width: 620px; margin: 0 auto; line-height: 1.6;'>
-                Proprietary projections, real-time +EV analysis, and transparent confidence tiers —
-                built to find the props where the numbers and the market actually agree.
-            </p>
         </div>
     """, unsafe_allow_html=True)
 
