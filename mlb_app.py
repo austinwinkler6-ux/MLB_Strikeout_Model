@@ -167,6 +167,21 @@ def inject_custom_css():
         border: 1px solid var(--mm-border);
         border-radius: 12px;
         padding: 24px;
+        height: 100%;
+        box-sizing: border-box;
+    }
+
+    /* Make columns in a row stretch to match the tallest sibling, so cards
+       placed side-by-side via st.columns() render at equal height instead of
+       each shrinking to its own content. */
+    [data-testid="stHorizontalBlock"] {
+        align-items: stretch;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+        display: flex;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="column"] > div {
+        width: 100%;
     }
     </style>
     """, unsafe_allow_html=True)
