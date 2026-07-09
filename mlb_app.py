@@ -3770,47 +3770,48 @@ elif nav == "📒 Bet Tracker":
     sport_query = None if sport_filter == "All" else sport_filter
 
     st.markdown("---")
-    st.subheader("Log a New Bet")
+    with st.expander("➕ Log a Bet Manually", expanded=False):
+        st.caption("For bets outside today's model run (backfilling, or a prop not pulled from MLB/NBA Models). For anything you ran through the models, use the 📝 Log button on that row instead — it auto-fills everything and includes your MM Stake recommendation.")
 
-    bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST"], key="new_bet_sport")
+        bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST"], key="new_bet_sport")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if bet_sport == "MLB":
-            bt_player = st.selectbox("Pitcher", pitchers_list, index=0)
-        else:
-            bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
-        bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
-        bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
-        bt_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f")
-        bt_model_edge = st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
-    with col2:
-        bt_date = st.date_input("Date")
-        bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
-        bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
-        bt_actual = st.number_input("Actual Result", value=None, placeholder="e.g. 7")
-        bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
-    with col3:
-        bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
-        bt_confidence_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
-        bt_no_vig_prob = st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
-        bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if bet_sport == "MLB":
+                bt_player = st.selectbox("Pitcher", pitchers_list, index=0)
+            else:
+                bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
+            bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
+            bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
+            bt_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f")
+            bt_model_edge = st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
+        with col2:
+            bt_date = st.date_input("Date")
+            bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
+            bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
+            bt_actual = st.number_input("Actual Result", value=None, placeholder="e.g. 7")
+            bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
+        with col3:
+            bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
+            bt_confidence_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
+            bt_no_vig_prob = st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
+            bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
 
-    if st.button("Log Bet"):
-        odds_val = bt_odds or -110
-        bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
-        profit = calc_profit(bet_val, odds_val, bt_result)
-        save_bet({
-            'date': str(bt_date), 'pitcher': bt_player,
-            'projection': bt_projection or 0, 'opening_line': bt_opening_line or 0,
-            'over_under': bt_over_under, 'odds': odds_val,
-            'bet_amount': bet_val, 'result': bt_result,
-            'actual': bt_actual or 0, 'profit': profit,
-            'sport': bet_sport, 'ev_pct': bt_ev_pct,
-            'model_edge': bt_model_edge, 'no_vig_prob': bt_no_vig_prob,
-            'model_prob': bt_model_prob, 'confidence_tier': bt_confidence_tier or None,
-        })
-        st.rerun()
+        if st.button("Log Bet"):
+            odds_val = bt_odds or -110
+            bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
+            profit = calc_profit(bet_val, odds_val, bt_result)
+            save_bet({
+                'date': str(bt_date), 'pitcher': bt_player,
+                'projection': bt_projection or 0, 'opening_line': bt_opening_line or 0,
+                'over_under': bt_over_under, 'odds': odds_val,
+                'bet_amount': bet_val, 'result': bt_result,
+                'actual': bt_actual or 0, 'profit': profit,
+                'sport': bet_sport, 'ev_pct': bt_ev_pct,
+                'model_edge': bt_model_edge, 'no_vig_prob': bt_no_vig_prob,
+                'model_prob': bt_model_prob, 'confidence_tier': bt_confidence_tier or None,
+            })
+            st.rerun()
 
     bets = load_bets(sport_query)
 
