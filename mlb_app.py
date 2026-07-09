@@ -516,8 +516,11 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         icon = "✅" if prob_diff > 3 else ("⚠️" if prob_diff > 0 else "❌")
         lines.append(f"{icon} No-vig probability: **{no_vig_pct}%** → Model probability: **{model_pct}%** ({'+'if prob_diff>0 else ''}{prob_diff}% edge)")
 
+    raw_ev_pct = info.get('Raw EV%')
     if ev_pct is not None:
-        if ev_pct >= 15:
+        if raw_ev_pct is not None and abs(raw_ev_pct - ev_pct) >= 3:
+            lines.append(f"⚠️ Raw EV: **+{raw_ev_pct}%** → Confidence-Adjusted EV: **{'+' if ev_pct >= 0 else ''}{ev_pct}%** — the price may be good, but the model doesn't trust the workload enough to fully credit it")
+        elif ev_pct >= 15:
             lines.append(f"✅ EV: **+{ev_pct}%** — exceptional value")
         elif ev_pct >= 10:
             lines.append(f"✅ EV: **+{ev_pct}%** — strong value")
@@ -704,42 +707,47 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         else:
             model_prob = max(0.25, min(0.72, model_prob))
 
+        # This is the probability before any workload/role-stability
+        # suppression — used to compute Raw EV, i.e. what the price/edge alone
+        # would imply if the model fully trusted the workload situation.
+        raw_model_prob = model_prob
+
         # Workload/role instability is a separate signal from cv (K-rate
         # variance) — a pitcher can look consistent on cv while his innings
         # or role is genuinely unsettled, and that risk isn't captured above.
         highly_volatile_workload = bool(workload_tier and "Highly Volatile" in workload_tier)
-        also_volatile_reliability = bool(confidence_tier and "Volatile" in confidence_tier)
         if highly_volatile_workload:
-            if also_volatile_reliability:
-                model_prob = min(model_prob, 0.52)
-            else:
-                model_prob = min(model_prob, 0.53)
+            model_prob = min(model_prob, 0.55)
 
         model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
         low_confidence = cv >= 0.50 or highly_volatile_workload
 
         odds = over_odds if direction == 'over' else under_odds
-        ev_dollar = calculate_ev(model_prob, odds)
-        ev_pct = calculate_ev_pct(model_prob, odds)
 
-        # Penalize EV on small edges so a 0.2 edge can't show double-digit EV
-        if abs(model_edge) < 0.5:
-            ev_pct *= 0.35
-            ev_dollar *= 0.35
-        elif abs(model_edge) < 0.75:
-            ev_pct *= 0.60
-            ev_dollar *= 0.60
+        # Penalize EV as the projection edge shrinks — a near-zero edge
+        # shouldn't be able to show meaningful EV regardless of odds.
+        edge_mag = abs(model_edge)
+        if edge_mag < 0.3:
+            edge_penalty = 0.25
+        elif edge_mag < 0.5:
+            edge_penalty = 0.35
+        elif edge_mag < 0.75:
+            edge_penalty = 0.60
+        else:
+            edge_penalty = 1.0
 
-        # Further penalize EV when workload/role is genuinely unsettled —
-        # the explanation panel already flags this as high uncertainty, and
-        # the EV/tier shouldn't be able to override that with raw math alone.
+        # Raw EV: what the price/edge alone implies, ignoring workload
+        # confidence — shown alongside the adjusted number so a user can see
+        # "the price might be good, but the model doesn't trust the workload
+        # enough to recommend it" instead of the number just disappearing.
+        raw_ev_dollar = round(calculate_ev(raw_model_prob, odds) * edge_penalty, 2)
+        raw_ev_pct = round(calculate_ev_pct(raw_model_prob, odds) * edge_penalty, 2)
+
+        ev_dollar = calculate_ev(model_prob, odds) * edge_penalty
+        ev_pct = calculate_ev_pct(model_prob, odds) * edge_penalty
         if highly_volatile_workload:
-            if also_volatile_reliability:
-                ev_pct *= 0.25
-                ev_dollar *= 0.25
-            else:
-                ev_pct *= 0.35
-                ev_dollar *= 0.35
+            ev_pct *= 0.55
+            ev_dollar *= 0.55
 
         ev_pct = round(ev_pct, 2)
         ev_dollar = round(ev_dollar, 2)
@@ -753,6 +761,8 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'prob_edge': prob_edge,
             'ev_dollar': ev_dollar,
             'ev_pct': ev_pct,
+            'raw_ev_pct': raw_ev_pct,
+            'raw_ev_dollar': raw_ev_dollar,
             'model_edge': model_edge,
             'fair_odds': fair_odds,
             'edge_cents': edge_cents,
@@ -2558,6 +2568,7 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'Projection': proj, 'Edge': edge, 'Play': play,
                     'Tier': result['confidence_tier'],
                     'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                     'MM Tier': ev_result['tier'] if ev_result else None,
                     'Model Prob': ev_result['model_prob'] if ev_result else None,
                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
@@ -2695,6 +2706,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                     'Projection': proj, 'Edge': edge, 'Play': play,
                     'Tier': result['confidence_tier'],
                     'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                     'MM Tier': ev_result['tier'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
@@ -3390,6 +3402,7 @@ elif nav == "⚾ MLB Models":
                                     'Projection': proj, 'Edge': edge, 'Play': play,
                                     'Tier': result['confidence_tier'],
                                     'EV%': ev_result['ev_pct'] if ev_result else None,
+                                    'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                                     'MM Tier': ev_result['tier'] if ev_result else None,
                                     'Model Prob': ev_result['model_prob'] if ev_result else None,
                                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
@@ -3656,6 +3669,7 @@ elif nav == "🏀 NBA Models":
                                         'Projection': proj, 'Edge': edge, 'Play': play,
                                         'Tier': result['confidence_tier'],
                                         'EV%': ev_result['ev_pct'] if ev_result else None,
+                                        'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                                         'MM Tier': ev_result['tier'] if ev_result else None,
                                         'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                                         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
