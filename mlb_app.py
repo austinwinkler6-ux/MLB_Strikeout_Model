@@ -3424,7 +3424,7 @@ elif nav == "⚾ MLB Models":
                         log_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"log_bet_{pitcher}")
                         log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"log_odds_{pitcher}")
                     with col_b:
-                        log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 7", key=f"log_actual_{pitcher}")
+                        log_actual = st.number_input("Actual Strikeouts (fill after game)", value=None, placeholder="e.g. 7", key=f"log_actual_{pitcher}")
                         log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"log_result_{pitcher}")
 
                     log_mm_stake_dollars = None
@@ -3672,7 +3672,8 @@ elif nav == "🏀 NBA Models":
                             log_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"{session_key}_log_bet_{player}")
                             log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"{session_key}_log_odds_{player}")
                         with col_b:
-                            log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 25", key=f"{session_key}_log_actual_{player}")
+                            _nba_actual_label = "Actual Points (fill after game)" if sport_key == 'nba_points' else "Actual Assists (fill after game)"
+                            log_actual = st.number_input(_nba_actual_label, value=None, placeholder="e.g. 25", key=f"{session_key}_log_actual_{player}")
                             log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"{session_key}_log_result_{player}")
 
                         log_mm_stake_dollars = None
@@ -3789,7 +3790,8 @@ elif nav == "📒 Bet Tracker":
             bt_date = st.date_input("Date")
             bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
             bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
-            bt_actual = st.number_input("Actual Result", value=None, placeholder="e.g. 7")
+            _actual_label = "Actual Strikeouts" if bet_sport == "MLB" else ("Actual Points" if bet_sport == "NBA" else "Actual Assists")
+            bt_actual = st.number_input(_actual_label, value=None, placeholder="e.g. 7")
             bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
         with col3:
             bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
@@ -4073,7 +4075,7 @@ elif nav == "📒 Bet Tracker":
             column_config={
                 'id': st.column_config.TextColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
                 'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
-                'actual': st.column_config.NumberColumn('Actual', min_value=0),
+                'actual': st.column_config.NumberColumn('Actual (K/Pts/Ast)', min_value=0),
                 'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
                 'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
                 'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
