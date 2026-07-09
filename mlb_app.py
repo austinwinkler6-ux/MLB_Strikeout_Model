@@ -3094,7 +3094,7 @@ if nav == "🏠 Home":
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
-            <div class='mm-card' style='height: 235px; overflow: hidden;'>
+            <div class='mm-card' style='height: 240px; overflow: hidden;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>📈</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Proprietary Projection Models</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
@@ -3104,7 +3104,7 @@ if nav == "🏠 Home":
         """, unsafe_allow_html=True)
     with col2:
         st.markdown("""
-            <div class='mm-card' style='height: 235px; overflow: hidden;'>
+            <div class='mm-card' style='height: 240px; overflow: hidden;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>💰</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Real-Time +EV Analysis</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
@@ -3114,7 +3114,7 @@ if nav == "🏠 Home":
         """, unsafe_allow_html=True)
     with col3:
         st.markdown("""
-            <div class='mm-card' style='height: 235px; overflow: hidden;'>
+            <div class='mm-card' style='height: 240px; overflow: hidden;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>🎯</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Clear Bet Tiers</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
