@@ -3069,6 +3069,53 @@ if nav == "🏠 Home":
             st.rerun()
     st.markdown("<div style='padding-bottom: 28px;'></div>", unsafe_allow_html=True)
 
+    if not _has_bankroll:
+        st.markdown("""
+            <div class='mm-card' style='border-color: var(--mm-accent);'>
+                <div style='font-size: 1.6rem; margin-bottom: 10px;'>💰</div>
+                <h2 style='margin: 0 0 8px 0; font-size: 1.3rem;'>Built Around Your Bankroll</h2>
+                <p style='color: var(--mm-text-dim); font-size: 1rem; line-height: 1.55; margin-bottom: 16px;'>
+                    Unlike generic betting tools, Model Metrics personalizes every recommendation to your bankroll.
+                </p>
+                <div style='color: var(--mm-text-dim); font-size: 0.95rem; line-height: 2;'>
+                    📊 Personalized MM Stake for every bet<br>
+                    🎯 Dynamic sizing based on EV and model confidence<br>
+                    📈 Automatic bankroll tracking as bets settle<br>
+                    🛡️ Helps prevent overbetting during hot and cold streaks
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        bankroll_cta_col1, bankroll_cta_col2, bankroll_cta_col3 = st.columns([1, 1, 1])
+        with bankroll_cta_col2:
+            st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
+            if st.button("Set Your Bankroll →", use_container_width=True, type="primary"):
+                st.session_state['nav_redirect'] = "⚙️ Settings"
+                st.rerun()
+    else:
+        _profile_bankroll, _profile_risk_style = get_bankroll_context()
+        _max_single_bet = _profile_bankroll * RISK_STYLE_CAPS.get(_profile_risk_style, 0.02)
+        st.markdown(f"""
+            <div class='mm-card' style='border-color: var(--mm-accent);'>
+                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px;'>💰 Your Bankroll Profile</div>
+                <div style='display: flex; gap: 40px; flex-wrap: wrap;'>
+                    <div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>${_profile_bankroll:,.2f}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Current Bankroll</div>
+                    </div>
+                    <div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>{_profile_risk_style}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Risk Style</div>
+                    </div>
+                    <div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>${_max_single_bet:,.2f}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Max Single Bet</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
@@ -3148,52 +3195,6 @@ if nav == "🏠 Home":
             </div>
         </div>
     """, unsafe_allow_html=True)
-
-    st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
-    if not _has_bankroll:
-        st.markdown("""
-            <div class='mm-card' style='border-color: var(--mm-accent);'>
-                <div style='font-size: 1.6rem; margin-bottom: 10px;'>💰</div>
-                <h2 style='margin: 0 0 8px 0; font-size: 1.3rem;'>Built Around Your Bankroll</h2>
-                <p style='color: var(--mm-text-dim); font-size: 1rem; line-height: 1.55; margin-bottom: 16px;'>
-                    Unlike generic betting tools, Model Metrics personalizes every recommendation to your bankroll.
-                </p>
-                <div style='color: var(--mm-text-dim); font-size: 0.95rem; line-height: 2;'>
-                    📊 Personalized MM Stake for every bet<br>
-                    🎯 Dynamic sizing based on EV and model confidence<br>
-                    📈 Automatic bankroll tracking as bets settle<br>
-                    🛡️ Helps prevent overbetting during hot and cold streaks
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        bankroll_cta_col1, bankroll_cta_col2, bankroll_cta_col3 = st.columns([1, 1, 1])
-        with bankroll_cta_col2:
-            st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
-            if st.button("Set Your Bankroll →", use_container_width=True, type="primary"):
-                st.session_state['nav_redirect'] = "⚙️ Settings"
-                st.rerun()
-    else:
-        _profile_bankroll, _profile_risk_style = get_bankroll_context()
-        _max_single_bet = _profile_bankroll * RISK_STYLE_CAPS.get(_profile_risk_style, 0.02)
-        st.markdown(f"""
-            <div class='mm-card' style='border-color: var(--mm-accent);'>
-                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px;'>💰 Your Bankroll Profile</div>
-                <div style='display: flex; gap: 40px; flex-wrap: wrap;'>
-                    <div>
-                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>${_profile_bankroll:,.2f}</div>
-                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Current Bankroll</div>
-                    </div>
-                    <div>
-                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>{_profile_risk_style}</div>
-                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Risk Style</div>
-                    </div>
-                    <div>
-                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>${_max_single_bet:,.2f}</div>
-                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Max Single Bet</div>
-                    </div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
 
     st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
     st.markdown("<h2 style='font-size: 1.4rem; margin-bottom: 20px;'>How It Works</h2>", unsafe_allow_html=True)
