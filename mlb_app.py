@@ -506,7 +506,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
     confidence_level = info.get('Confidence Level')
     if mm_tier == "🔴 Pass" and pass_reason:
         lines.append(f"🔴 **Pass** — Reason: **{pass_reason}**")
-    elif mm_tier and confidence_level:
+    elif mm_tier and confidence_level == "🔴 Low":
         lines.append(f"{mm_tier} · Confidence: **{confidence_level}**")
 
     if proj and line:
@@ -3292,8 +3292,8 @@ elif nav == "🎯 Today's Card":
                         st.write("—")
                 with col4:
                     st.markdown(tier_badge(e['tier']), unsafe_allow_html=True)
-                    if e['tier'] != "🔴 Pass" and e['info'].get('Confidence Level'):
-                        st.caption(f"Confidence: {e['info'].get('Confidence Level')}")
+                    if e['tier'] != "🔴 Pass" and e['info'].get('Confidence Level') == "🔴 Low":
+                        st.caption("Confidence: Low")
                 if show_why_expander and e['result']:
                     direction = e['info'].get('Direction', 'over')
                     why_lines = generate_why(e['info'], e['result'], direction, e['sport_key'])
@@ -3423,8 +3423,8 @@ elif nav == "⚾ MLB Models":
                 st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
                 if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
                     st.caption(info.get('Pass Reason'))
-                elif info.get('Confidence Level'):
-                    st.caption(f"Confidence: {info.get('Confidence Level')}")
+                elif info.get('Confidence Level') == "🔴 Low":
+                    st.caption("Confidence: Low")
             with col10:
                 if st.button("▶️ Run", key=f"run_{pitcher}"):
                     with st.spinner(f"Running {pitcher}..."):
@@ -3678,8 +3678,8 @@ elif nav == "🏀 NBA Models":
                     st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
                     if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
                         st.caption(info.get('Pass Reason'))
-                    elif info.get('Confidence Level'):
-                        st.caption(f"Confidence: {info.get('Confidence Level')}")
+                    elif info.get('Confidence Level') == "🔴 Low":
+                        st.caption("Confidence: Low")
                 with col10:
                     if st.button("▶️ Run", key=f"{session_key}_run_{player}"):
                         with st.spinner(f"Running {player}..."):
