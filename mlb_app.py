@@ -3142,7 +3142,7 @@ if nav == "🏠 Home":
         st.markdown("""
             <div class='mm-card' style='height: 100%;'>
                 <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🏈 NFL</div>
-                <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Pass Attempts · Pass Completions · Receptions</div>
+                <div style='font-family: var(--mm-mono); font-size: 0.95rem; font-weight: 600;'>Pass Attempts · Pass Completions · Receptions</div>
             </div>
         """, unsafe_allow_html=True)
 
