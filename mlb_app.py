@@ -2993,7 +2993,7 @@ if nav == "🏠 Home":
             <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;'>
                 Player Prop Analytics
             </div>
-            <h1 style='font-size: 3rem; margin: 0 0 14px 0; line-height: 1.1;'>Sharp Data. Sharp Bets.</h1>
+            <h1 style='font-size: 3rem; margin: 0 0 14px 0; line-height: 1.1; color: var(--mm-accent);'>Sharp Data. Sharp Bets.</h1>
         </div>
     """, unsafe_allow_html=True)
 
