@@ -2677,7 +2677,7 @@ if nav == "🏠 Home":
     _bankroll_settings = get_user_settings()
     _has_bankroll = bool(_bankroll_settings and _bankroll_settings.get('starting_bankroll') is not None)
 
-    if st.session_state.get('just_signed_up') and not _has_bankroll:
+    if (st.session_state.get('just_signed_up') and not _has_bankroll) or st.session_state.get('preview_welcome_screen'):
         st.markdown("""
             <div style='text-align: center; padding: 60px 0 24px 0;'>
                 <h1 style='font-size: 2.1rem; margin-bottom: 10px;'>Welcome to Model Metrics</h1>
@@ -2702,11 +2702,13 @@ if nav == "🏠 Home":
                     if welcome_bankroll is not None:
                         if save_user_settings(round(float(welcome_bankroll), 2), 'Standard'):
                             st.session_state['just_signed_up'] = False
+                            st.session_state['preview_welcome_screen'] = False
                             st.rerun()
                     else:
                         st.warning("Enter a starting bankroll to continue.")
             if st.button("Skip for now", use_container_width=True):
                 st.session_state['just_signed_up'] = False
+                st.session_state['preview_welcome_screen'] = False
                 st.rerun()
         st.stop()
 
@@ -4175,6 +4177,12 @@ elif nav == "⚙️ Settings":
     st.subheader("Account Information")
     st.write(f"**Email:** {user.email}")
     st.write(f"**Account Type:** {'Admin' if is_admin else 'Standard'}")
+    if is_admin:
+        st.caption("🧪 Admin/dev tool — temporary, safe to remove once welcome screen testing is done.")
+        if st.button("🧪 Preview Welcome Screen"):
+            st.session_state['preview_welcome_screen'] = True
+            st.session_state['nav_redirect'] = "🏠 Home"
+            st.rerun()
     st.markdown("---")
 
     st.subheader("💰 Build Your Bankroll Profile")
