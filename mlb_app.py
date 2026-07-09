@@ -3456,8 +3456,6 @@ elif nav == "⚾ MLB Models":
             with col8:
                 ev = info.get('EV%')
                 st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
-                if info.get('Low Confidence'):
-                    st.caption("⚠️ Low Conf.")
             with col9:
                 st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
                 if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
@@ -3714,8 +3712,6 @@ elif nav == "🏀 NBA Models":
                 with col8:
                     ev = info.get('EV%')
                     st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
-                    if info.get('Low Confidence'):
-                        st.caption("⚠️ Low Conf.")
                 with col9:
                     st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
                     if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
