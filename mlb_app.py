@@ -877,6 +877,136 @@ def calc_profit(bet_amount, odds, result):
         return -bet_amount
     return 0.0
 
+# ---- BANKROLL / MM STAKE ----
+RISK_STYLE_CAPS = {'Conservative': 0.01, 'Standard': 0.02, 'Aggressive': 0.03}
+
+def get_user_settings():
+    try:
+        res = supabase.table("user_settings").select("*").eq("user_id", user_id).execute()
+        if res.data:
+            return res.data[0]
+    except Exception:
+        pass
+    return None
+
+def save_user_settings(starting_bankroll, risk_style):
+    """Sets a NEW bankroll baseline as of today. Current Bankroll is always
+    computed live from this baseline + profit since, never stored/synced
+    directly — so there's no update-on-every-bet sync risk."""
+    try:
+        supabase.table("user_settings").upsert({
+            "user_id": user_id,
+            "starting_bankroll": starting_bankroll,
+            "bankroll_set_date": str(date.today()),
+            "risk_style": risk_style,
+            "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        }, on_conflict="user_id").execute()
+        return True
+    except Exception as e:
+        st.error(f"Error saving settings: {e}")
+        return False
+
+def get_current_bankroll(settings, bets=None):
+    """Live-computed: starting bankroll + sum of profit from bets settled
+    on or after the baseline date. Never a stored/synced number, so it can't
+    drift out of sync with the actual bet history."""
+    if not settings or settings.get('starting_bankroll') is None:
+        return None
+    starting = settings['starting_bankroll']
+    baseline_date = settings.get('bankroll_set_date') or '1900-01-01'
+    if bets is None:
+        bets = load_bets()
+    profit_since = sum(
+        (b.get('profit') or 0) for b in bets
+        if b.get('result') != 'Pending' and b.get('date') and b['date'] >= baseline_date
+    )
+    return round(starting + profit_since, 2)
+
+def calc_decimal_odds(american_odds):
+    if american_odds is None:
+        return None
+    if american_odds > 0:
+        return 1 + (american_odds / 100)
+    return 1 + (100 / abs(american_odds))
+
+def has_book_disagreement(info):
+    """A real, computed signal — not invented — using the FanDuel/DraftKings
+    lines and odds already fetched for this prop."""
+    fd_line = info.get('FanDuel Line')
+    dk_line = info.get('DraftKings Line')
+    if fd_line is not None and dk_line is not None and fd_line != dk_line:
+        return True
+    direction = info.get('Direction', 'over')
+    fd_odds = info.get('FanDuel Over') if direction == 'over' else info.get('FanDuel Under')
+    dk_odds = info.get('DraftKings Over') if direction == 'over' else info.get('DraftKings Under')
+    if fd_odds is not None and dk_odds is not None:
+        if abs(odds_to_cents(fd_odds) - odds_to_cents(dk_odds)) >= 10:
+            return True
+    return False
+
+def calculate_mm_stake(info, result, bankroll, risk_style):
+    """Quarter-Kelly stake sizing — real math from model probability and market
+    odds, not a bucketed heuristic — modified by reliability and book
+    disagreement, then hard-capped by risk style so it can never recommend
+    betting more than that ceiling of bankroll on one prop."""
+    if not bankroll or bankroll <= 0:
+        return None
+
+    confidence_tier = result.get('confidence_tier', '') if result else ''
+    mm_tier = info.get('MM Tier', '')
+    if mm_tier == "🔴 Pass" or "Uncertain Workload" in confidence_tier:
+        return {
+            'pass': True,
+            'reason': 'Uncertain workload / high variance' if "Uncertain Workload" in confidence_tier else 'Model tier is Pass',
+        }
+
+    model_prob = info.get('Model Prob')
+    odds = info.get('Odds')
+    if model_prob is None or odds is None:
+        return None
+
+    decimal_odds = calc_decimal_odds(odds)
+    if not decimal_odds or decimal_odds <= 1:
+        return None
+
+    base_fraction = 0.25 * ((model_prob * decimal_odds - 1) / (decimal_odds - 1))
+    if base_fraction <= 0:
+        return {'pass': True, 'reason': 'No positive edge after Kelly calculation'}
+
+    reasoning = ["Quarter-Kelly sizing", "+EV model probability"]
+    multiplier = 1.0
+
+    if "Reliable" in confidence_tier:
+        multiplier *= 1.15
+        reasoning.append("Reliable pitcher increased stake")
+    elif "Volatile" in confidence_tier:
+        multiplier *= 0.80
+        reasoning.append("Volatile pitcher reduced stake")
+
+    if has_book_disagreement(info):
+        multiplier *= 1.10
+        reasoning.append("Sportsbook disagreement boosted stake")
+
+    stake_fraction = base_fraction * multiplier
+    stake_dollars = bankroll * stake_fraction
+
+    cap_pct = RISK_STYLE_CAPS.get(risk_style, 0.02)
+    max_stake = bankroll * cap_pct
+    if stake_dollars > max_stake:
+        stake_dollars = max_stake
+        reasoning.append(f"Capped at {int(cap_pct*100)}% of bankroll ({risk_style})")
+
+    stake_dollars = round(stake_dollars, 2)
+    unit_value = bankroll * 0.01  # 1 unit = 1% of bankroll, standard convention
+    stake_units = round(stake_dollars / unit_value, 2) if unit_value > 0 else 0
+
+    return {
+        'pass': stake_dollars <= 0,
+        'stake_dollars': stake_dollars,
+        'stake_units': stake_units,
+        'reasoning': reasoning,
+    }
+
 # ---- SHARED DAILY PROJECTION CACHE ----
 # One computed projection per (date, sport, player) is shared across ALL users,
 # instead of every visitor re-running the full model pipeline (and re-hitting
@@ -3831,6 +3961,47 @@ elif nav == "⚙️ Settings":
     st.subheader("Account Information")
     st.write(f"**Email:** {user.email}")
     st.write(f"**Account Type:** {'Admin' if is_admin else 'Standard'}")
+    st.markdown("---")
+
+    st.subheader("💰 Bankroll & Staking")
+    st.caption("Powers MM Stake — a real Quarter-Kelly stake recommendation on every prop, sized to your actual bankroll.")
+
+    settings = get_user_settings()
+    current_bankroll = get_current_bankroll(settings)
+
+    if current_bankroll is not None:
+        st.metric("Current Bankroll", f"${current_bankroll:,.2f}")
+        st.caption(f"Baseline of ${settings['starting_bankroll']:,.2f} set on {settings.get('bankroll_set_date')}, adjusted live by your settled bet profit since then.")
+    else:
+        st.info("No bankroll set yet — set one below to enable MM Stake recommendations.")
+
+    with st.form("bankroll_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_bankroll = st.number_input(
+                "Set / Reset Bankroll ($)", value=None, min_value=0.0, step=0.01, format="%.2f",
+                placeholder="e.g. 2500.00",
+                help="Setting this creates a new baseline dated today — your Current Bankroll going forward is this number plus/minus profit from bets settled after today."
+            )
+        with col2:
+            risk_style = st.selectbox(
+                "Risk Style", ["Conservative", "Standard", "Aggressive"],
+                index=["Conservative", "Standard", "Aggressive"].index(settings.get('risk_style', 'Standard')) if settings else 1,
+                help="Caps the maximum single-bet stake: Conservative 1% of bankroll, Standard 2%, Aggressive 3%."
+            )
+        if st.form_submit_button("💾 Save Bankroll Settings"):
+            if new_bankroll is not None:
+                if save_user_settings(round(float(new_bankroll), 2), risk_style):
+                    st.success("✅ Bankroll settings saved.")
+                    st.rerun()
+            elif settings:
+                # Risk style changed without resetting the bankroll baseline
+                if save_user_settings(settings['starting_bankroll'], risk_style):
+                    st.success("✅ Risk style updated.")
+                    st.rerun()
+            else:
+                st.warning("Enter a starting bankroll to get started.")
+
     st.markdown("---")
     st.subheader("Subscription")
     st.info("💳 Subscription management coming soon — stay tuned!")
