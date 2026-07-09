@@ -2855,7 +2855,7 @@ elif nav == "⚾ MLB Models":
                     col_a, col_b = st.columns(2)
                     with col_a:
                         log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"log_ou_{pitcher}")
-                        log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"log_bet_{pitcher}")
+                        log_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"log_bet_{pitcher}")
                         log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"log_odds_{pitcher}")
                     with col_b:
                         log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 7", key=f"log_actual_{pitcher}")
@@ -2863,7 +2863,7 @@ elif nav == "⚾ MLB Models":
 
                     if st.button(f"✅ Confirm Log Bet", key=f"log_confirm_{pitcher}", use_container_width=True):
                         odds = int(log_odds) if log_odds else -110
-                        bet_val = log_bet or 0
+                        bet_val = round(float(log_bet), 2) if log_bet else 0.0
                         profit = calc_profit(bet_val, odds, log_result)
                         save_bet({
                             'date': str(date.today()), 'pitcher': pitcher,
@@ -3093,7 +3093,7 @@ elif nav == "🏀 NBA Models":
                         col_a, col_b = st.columns(2)
                         with col_a:
                             log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"{session_key}_log_ou_{player}")
-                            log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"{session_key}_log_bet_{player}")
+                            log_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"{session_key}_log_bet_{player}")
                             log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"{session_key}_log_odds_{player}")
                         with col_b:
                             log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 25", key=f"{session_key}_log_actual_{player}")
@@ -3101,7 +3101,7 @@ elif nav == "🏀 NBA Models":
 
                         if st.button("✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player}", use_container_width=True):
                             odds = int(log_odds) if log_odds else -110
-                            bet_val = log_bet or 0
+                            bet_val = round(float(log_bet), 2) if log_bet else 0.0
                             profit = calc_profit(bet_val, odds, log_result)
                             save_bet({
                                 'date': str(date.today()), 'pitcher': player,
@@ -3194,7 +3194,7 @@ elif nav == "📒 Bet Tracker":
             bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
         bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
         bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
-        bt_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100.50", step=0.01, format="%.2f")
+        bt_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f")
         bt_model_edge = st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
     with col2:
         bt_date = st.date_input("Date")
@@ -3210,7 +3210,7 @@ elif nav == "📒 Bet Tracker":
 
     if st.button("Log Bet"):
         odds_val = bt_odds or -110
-        bet_val = bt_bet or 0
+        bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
         profit = calc_profit(bet_val, odds_val, bt_result)
         save_bet({
             'date': str(bt_date), 'pitcher': bt_player,
