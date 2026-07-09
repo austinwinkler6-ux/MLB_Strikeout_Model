@@ -805,6 +805,7 @@ if 'user' not in st.session_state:
                     if not error2:
                         st.session_state['user'] = user2
                         st.session_state['session'] = session
+                        st.session_state['just_signed_up'] = True
                         st.rerun()
     st.stop()
 
@@ -2663,6 +2664,9 @@ with st.sidebar:
         label_visibility="collapsed"
     )
     st.markdown("---")
+    _sidebar_bankroll, _ = get_bankroll_context()
+    if _sidebar_bankroll:
+        st.caption(f"💰 Bankroll: ${_sidebar_bankroll:,.2f}")
     st.caption(f"Logged in as {user.email}")
     if st.button("Logout", use_container_width=True):
         sign_out()
@@ -2670,6 +2674,42 @@ with st.sidebar:
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
+    _bankroll_settings = get_user_settings()
+    _has_bankroll = bool(_bankroll_settings and _bankroll_settings.get('starting_bankroll') is not None)
+
+    if st.session_state.get('just_signed_up') and not _has_bankroll:
+        st.markdown("""
+            <div style='text-align: center; padding: 60px 0 24px 0;'>
+                <h1 style='font-size: 2.1rem; margin-bottom: 10px;'>Welcome to Model Metrics</h1>
+                <p style='color: var(--mm-text-dim); font-size: 1.05rem;'>One last step before today's card...</p>
+            </div>
+        """, unsafe_allow_html=True)
+        gate_col1, gate_col2, gate_col3 = st.columns([1, 1.4, 1])
+        with gate_col2:
+            st.markdown("""
+                <div class='mm-card' style='text-align: center; margin-bottom: 16px;'>
+                    <h3 style='margin-bottom: 8px; font-size: 1.15rem;'>What's your starting bankroll?</h3>
+                    <p style='color: var(--mm-text-dim); font-size: 0.9rem; margin: 0;'>
+                        We'll use it to personalize a suggested stake — MM Stake — on every projection.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+            with st.form("welcome_bankroll_form"):
+                welcome_bankroll = st.number_input(
+                    "Starting Bankroll ($)", value=None, min_value=0.0, step=0.01, format="%.2f", placeholder="e.g. 2500.00"
+                )
+                if st.form_submit_button("Save & Continue", use_container_width=True):
+                    if welcome_bankroll is not None:
+                        if save_user_settings(round(float(welcome_bankroll), 2), 'Standard'):
+                            st.session_state['just_signed_up'] = False
+                            st.rerun()
+                    else:
+                        st.warning("Enter a starting bankroll to continue.")
+            if st.button("Skip for now", use_container_width=True):
+                st.session_state['just_signed_up'] = False
+                st.rerun()
+        st.stop()
+
     st.markdown("""
         <div style='text-align: center; padding: 56px 0 8px 0;'>
             <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;'>
@@ -2830,6 +2870,58 @@ if nav == "🏠 Home":
             </div>
         </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
+    if not _has_bankroll:
+        st.markdown("""
+            <div class='mm-card' style='border-color: var(--mm-accent);'>
+                <div style='font-size: 1.6rem; margin-bottom: 10px;'>💰</div>
+                <h2 style='margin: 0 0 8px 0; font-size: 1.3rem;'>Built Around Your Bankroll</h2>
+                <p style='color: var(--mm-text-dim); font-size: 1rem; line-height: 1.55; margin-bottom: 16px;'>
+                    Unlike generic betting tools, Model Metrics personalizes every recommendation to your bankroll.
+                </p>
+                <div style='color: var(--mm-text-dim); font-size: 0.95rem; line-height: 2;'>
+                    📊 Personalized MM Stake for every bet<br>
+                    🎯 Dynamic sizing based on EV and model confidence<br>
+                    📈 Automatic bankroll tracking as bets settle<br>
+                    🛡️ Helps prevent overbetting during hot and cold streaks
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        bankroll_cta_col1, bankroll_cta_col2, bankroll_cta_col3 = st.columns([1, 1, 1])
+        with bankroll_cta_col2:
+            st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
+            if st.button("Set Your Bankroll →", use_container_width=True, type="primary"):
+                st.session_state['nav_redirect'] = "⚙️ Settings"
+                st.rerun()
+    else:
+        _profile_bankroll, _profile_risk_style = get_bankroll_context()
+        _profile_stake_str = "—"
+        if top_entry:
+            _stake = calculate_mm_stake(top_entry['info'], top_entry['result'], _profile_bankroll, _profile_risk_style)
+            if _stake and not _stake.get('pass'):
+                _profile_stake_str = f"${_stake['stake_dollars']:,.2f}"
+            elif _stake and _stake.get('pass'):
+                _profile_stake_str = "Pass"
+        st.markdown(f"""
+            <div class='mm-card' style='border-color: var(--mm-accent);'>
+                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px;'>💰 Your Bankroll Profile</div>
+                <div style='display: flex; gap: 40px; flex-wrap: wrap;'>
+                    <div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>${_profile_bankroll:,.2f}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Current Bankroll</div>
+                    </div>
+                    <div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>{_profile_risk_style}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Risk Style</div>
+                    </div>
+                    <div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>{_profile_stake_str}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Recommended Stake Today</div>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
     st.markdown("<h2 style='font-size: 1.4rem; margin-bottom: 20px;'>How It Works</h2>", unsafe_allow_html=True)
@@ -4085,7 +4177,7 @@ elif nav == "⚙️ Settings":
     st.write(f"**Account Type:** {'Admin' if is_admin else 'Standard'}")
     st.markdown("---")
 
-    st.subheader("💰 Bankroll & Staking")
+    st.subheader("💰 Build Your Bankroll Profile")
     st.caption("Powers MM Stake — a real Quarter-Kelly stake recommendation on every prop, sized to your actual bankroll.")
 
     settings = get_user_settings()
