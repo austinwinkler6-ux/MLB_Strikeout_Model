@@ -1165,6 +1165,87 @@ def render_mm_stake_block(info, result, bankroll, risk_style):
                 st.markdown(f"{icon} {r}")
         st.caption("*Suggested stake is guidance based on bankroll, EV, odds, and model confidence — not a guarantee.*")
 
+# ---- STAKE DISCIPLINE ----
+# Tracks whether a user actually bet what MM Stake recommended, using the
+# recommendation captured at the moment each bet was logged — not recomputed
+# later, since odds/tiers can shift and that wouldn't be a fair comparison.
+STAKE_DEVIATION_FOLLOWED_THRESHOLD = 25  # within ±25% of recommended = "followed"
+STAKE_DEVIATION_PERFECT_THRESHOLD = 10   # within ±10% = "perfect sizing"
+
+def get_stake_deviation_pct(recommended, actual):
+    if not recommended or recommended <= 0 or actual is None:
+        return None
+    return round((actual - recommended) / recommended * 100, 1)
+
+def format_stake_deviation_message(recommended, actual):
+    """The per-bet feedback shown right after logging — 'Perfect sizing' or
+    a plain '% above/below recommendation' callout."""
+    deviation = get_stake_deviation_pct(recommended, actual)
+    if deviation is None:
+        return None
+    if abs(deviation) <= STAKE_DEVIATION_PERFECT_THRESHOLD:
+        return f"✅ Perfect sizing — MM Stake ${recommended:,.2f}, your stake ${actual:,.2f}"
+    elif deviation > 0:
+        return f"⚠️ {abs(deviation):.0f}% above recommendation — MM Stake ${recommended:,.2f}, your stake ${actual:,.2f}"
+    else:
+        return f"⚠️ {abs(deviation):.0f}% below recommendation — MM Stake ${recommended:,.2f}, your stake ${actual:,.2f}"
+
+def calc_stake_discipline_stats(bets):
+    """Computes Stake Discipline % and Avg Deviation across all bets that have
+    a captured MM Stake recommendation, plus ROI split by whether the user
+    followed the recommendation (within threshold) or exceeded it."""
+    tracked = [
+        b for b in bets
+        if b.get('mm_stake_recommended') is not None and b.get('bet_amount') is not None
+    ]
+    if not tracked:
+        return None
+
+    deviations = []
+    followed_bets = []
+    exceeded_bets = []
+    for b in tracked:
+        dev = get_stake_deviation_pct(b['mm_stake_recommended'], b['bet_amount'])
+        if dev is None:
+            continue
+        deviations.append(dev)
+        if abs(dev) <= STAKE_DEVIATION_FOLLOWED_THRESHOLD:
+            followed_bets.append(b)
+        else:
+            exceeded_bets.append(b)
+
+    if not deviations:
+        return None
+
+    discipline_pct = round(len(followed_bets) / len(deviations) * 100, 1)
+    avg_deviation = round(sum(deviations) / len(deviations), 1)
+
+    def _roi(bet_list):
+        settled = [b for b in bet_list if b.get('result') != 'Pending']
+        if not settled:
+            return None
+        wagered = sum(b.get('bet_amount', 0) or 0 for b in settled)
+        profit = sum(b.get('profit', 0) or 0 for b in settled)
+        return round(profit / wagered * 100, 1) if wagered > 0 else None
+
+    today_str = mm_today_str()
+    today_tracked = [b for b in tracked if (b.get('date') or '') == today_str]
+    today_followed = [
+        b for b in today_tracked
+        if abs(get_stake_deviation_pct(b['mm_stake_recommended'], b['bet_amount']) or 999) <= STAKE_DEVIATION_FOLLOWED_THRESHOLD
+    ]
+
+    return {
+        'total_tracked': len(deviations),
+        'bets_following': len(followed_bets),
+        'discipline_pct': discipline_pct,
+        'avg_deviation_pct': avg_deviation,
+        'roi_following': _roi(followed_bets),
+        'roi_exceeding': _roi(exceeded_bets),
+        'today_followed': len(today_followed),
+        'today_total': len(today_tracked),
+    }
+
 # ---- SHARED DAILY PROJECTION CACHE ----
 # One computed projection per (date, sport, player) is shared across ALL users,
 # instead of every visitor re-running the full model pipeline (and re-hitting
@@ -3346,6 +3427,17 @@ elif nav == "⚾ MLB Models":
                         log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 7", key=f"log_actual_{pitcher}")
                         log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"log_result_{pitcher}")
 
+                    log_mm_stake_dollars = None
+                    _log_result_data = pitcher_results.get(pitcher)
+                    if bankroll and _log_result_data:
+                        _log_stake = calculate_mm_stake(info, _log_result_data, bankroll, risk_style)
+                        if _log_stake and not _log_stake.get('pass'):
+                            log_mm_stake_dollars = _log_stake['stake_dollars']
+                            if log_bet:
+                                st.caption(format_stake_deviation_message(log_mm_stake_dollars, log_bet))
+                            else:
+                                st.caption(f"💰 MM Stake recommendation: ${log_mm_stake_dollars:,.2f}")
+
                     if st.button(f"✅ Confirm Log Bet", key=f"log_confirm_{pitcher}", use_container_width=True):
                         odds = int(log_odds) if log_odds else -110
                         bet_val = round(float(log_bet), 2) if log_bet else 0.0
@@ -3361,6 +3453,7 @@ elif nav == "⚾ MLB Models":
                             'mm_tier': info.get('MM Tier'),
                             'model_edge': info.get('Model Edge'), 'no_vig_prob': info.get('No Vig Prob'),
                             'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
+                            'mm_stake_recommended': log_mm_stake_dollars,
                         })
                         st.session_state[f'log_modal_{pitcher}'] = False
                         st.success(f"✅ Bet logged for {pitcher}!")
@@ -3582,6 +3675,17 @@ elif nav == "🏀 NBA Models":
                             log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 25", key=f"{session_key}_log_actual_{player}")
                             log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"{session_key}_log_result_{player}")
 
+                        log_mm_stake_dollars = None
+                        _log_result_data = player_results.get(player)
+                        if bankroll and _log_result_data:
+                            _log_stake = calculate_mm_stake(info, _log_result_data, bankroll, risk_style)
+                            if _log_stake and not _log_stake.get('pass'):
+                                log_mm_stake_dollars = _log_stake['stake_dollars']
+                                if log_bet:
+                                    st.caption(format_stake_deviation_message(log_mm_stake_dollars, log_bet))
+                                else:
+                                    st.caption(f"💰 MM Stake recommendation: ${log_mm_stake_dollars:,.2f}")
+
                         if st.button("✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player}", use_container_width=True):
                             odds = int(log_odds) if log_odds else -110
                             bet_val = round(float(log_bet), 2) if log_bet else 0.0
@@ -3597,6 +3701,7 @@ elif nav == "🏀 NBA Models":
                                 'mm_tier': info.get('MM Tier'),
                                 'model_edge': info.get('Edge'), 'confidence_tier': info.get('Tier'),
                                 'model_prob': info.get('Model Prob'), 'no_vig_prob': info.get('No Vig Prob'),
+                                'mm_stake_recommended': log_mm_stake_dollars,
                             })
                             st.session_state[f'{session_key}_log_modal_{player}'] = False
                             st.success(f"✅ Bet logged for {player}!")
@@ -3759,6 +3864,32 @@ elif nav == "📒 Bet Tracker":
                 col4.metric("Largest Drawdown", f"{max_drawdown}%")
 
             st.caption(f"Baseline of ${starting_bankroll:,.2f} set on {baseline_date}. Adjustable anytime in Settings.")
+
+            discipline = calc_stake_discipline_stats(all_bets_unfiltered)
+            if discipline:
+                st.markdown("---")
+                st.subheader("🎯 MM Stake Performance")
+                st.caption(f"Based on {discipline['total_tracked']} bet(s) logged with an MM Stake recommendation attached. \"Followed\" = actual stake within ±{STAKE_DEVIATION_FOLLOWED_THRESHOLD}% of the recommendation.")
+
+                if discipline['today_total'] > 0:
+                    st.caption(f"**Today's Discipline:** {discipline['today_followed']} of {discipline['today_total']} bets followed MM Stake")
+
+                dcol1, dcol2 = st.columns(2)
+                dcol1.metric("Bets Following MM Stake", f"{discipline['bets_following']} of {discipline['total_tracked']}")
+                dcol2.metric("Stake Discipline", f"{discipline['discipline_pct']}%")
+
+                dcol3, dcol4 = st.columns(2)
+                dev = discipline['avg_deviation_pct']
+                dcol3.metric("Avg. Stake Deviation", f"{'+' if dev >= 0 else ''}{dev}%")
+
+                if discipline['roi_following'] is not None and discipline['roi_exceeding'] is not None:
+                    dcol4.metric(
+                        "ROI: Following vs. Deviating",
+                        f"{discipline['roi_following']}% vs {discipline['roi_exceeding']}%",
+                    )
+                elif discipline['roi_following'] is not None:
+                    dcol4.metric("ROI When Following MM Stake", f"{discipline['roi_following']}%")
+                    st.caption("Not enough settled deviated bets yet for a comparison.")
         else:
             st.caption("💰 Set a bankroll in Settings to unlock your Bankroll dashboard and personalized MM Stake recommendations.")
 
