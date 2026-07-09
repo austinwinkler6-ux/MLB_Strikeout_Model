@@ -3454,6 +3454,20 @@ elif nav == "📒 Bet Tracker":
         with col_save:
             if st.button("💾 Save Table Changes", use_container_width=True):
                 updated_bets = edited_df.to_dict('records')
+
+                # Rows removed via the table's own delete UI (trash icon) never
+                # show up in edited_df at all — without this, a "deleted" row
+                # just reappears on the next reload since nothing told the
+                # database to actually delete it.
+                original_ids = {str(b['id']) for b in bets if b.get('id')}
+                remaining_ids = {
+                    str(b.get('id')) for b in updated_bets
+                    if b.get('id') is not None and not (isinstance(b.get('id'), float) and pd.isna(b.get('id'))) and str(b.get('id')).strip() != ''
+                }
+                removed_ids = original_ids - remaining_ids
+                for removed_id in removed_ids:
+                    delete_bet(removed_id)
+
                 for b in updated_bets:
                     row_id = b.get('id')
                     if row_id is None or (isinstance(row_id, float) and pd.isna(row_id)) or str(row_id).strip() == '':
@@ -3473,6 +3487,8 @@ elif nav == "📒 Bet Tracker":
                         'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
                         'confidence_tier': b.get('confidence_tier')
                     })
+                if removed_ids:
+                    st.success(f"✅ Deleted {len(removed_ids)} bet(s).")
                 st.rerun()
         with col_clear:
             if not st.session_state.get('confirm_clear_bets'):
