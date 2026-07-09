@@ -3168,28 +3168,6 @@ if nav == "🏠 Home":
         </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
-    st.markdown("<h2 style='font-size: 1.4rem; margin-bottom: 20px;'>How It Works</h2>", unsafe_allow_html=True)
-
-    steps = [
-        ("Select a sport", "Pick a model from the sidebar — MLB strikeouts, NBA points, or NBA assists."),
-        ("Load today's props", "Pull live prop lines from FanDuel and DraftKings for every game on the slate."),
-        ("Run the projections", "Compare our model's numbers against the sportsbooks to surface value."),
-        ("Read the tier", "🟢 Best Bet, 🔵 Worth a Look, 🟡 Lean, or 🔴 Pass — how strongly the model and market agree."),
-        ("Check the reasoning", "Open 💡 Why this bet? for the full breakdown behind every recommendation."),
-        ("Log it in one click", "Hit 📝 Log to send the bet straight to your tracker — no manual entry."),
-    ]
-    for i, (title, desc) in enumerate(steps, 1):
-        st.markdown(f"""
-            <div style='display: flex; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--mm-border);'>
-                <div style='font-family: var(--mm-mono); color: var(--mm-accent); font-weight: 600; min-width: 28px;'>{i:02d}</div>
-                <div>
-                    <div style='font-weight: 600; margin-bottom: 2px;'>{title}</div>
-                    <div style='color: var(--mm-text-dim); font-size: 0.9rem;'>{desc}</div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
     st.markdown("<div style='padding-top: 36px;'></div>", unsafe_allow_html=True)
     st.markdown("""
         <div class='mm-card'>
