@@ -3274,7 +3274,7 @@ elif nav == "🎯 Today's Card":
                     ev = e['ev_pct']
                     if ev is not None:
                         color = "var(--mm-success)" if ev > 0 else "var(--mm-danger)"
-                        st.markdown(f"<span style='font-family: var(--mm-mono); color: {color}; font-weight: 600;'>{'+' if ev > 0 else ''}{ev}%</span>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='color: var(--mm-text-faint); font-size: 0.7rem; text-transform: uppercase;'>EV</div><span style='font-family: var(--mm-mono); color: {color}; font-weight: 600;'>{'+' if ev > 0 else ''}{ev}%</span>", unsafe_allow_html=True)
                     else:
                         st.write("—")
                 with col4:
