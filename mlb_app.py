@@ -173,7 +173,7 @@ def inject_custom_css():
     /* Streamlit's own default top padding is large — trim it so page content
        (especially Home) starts higher up instead of leaving a big gap. */
     .block-container {
-        padding-top: 3rem !important;
+        padding-top: 4.5rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
