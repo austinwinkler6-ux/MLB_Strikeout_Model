@@ -893,6 +893,26 @@ def load_bets(sport=None):
         st.error(f"Error loading bets: {e}")
         return []
 
+def get_already_bet_players_today(sport=None):
+    """Returns the set of player/pitcher names already logged as a bet today
+    for the current user — used to flag 'you already bet this' so the same
+    play doesn't get accidentally logged twice."""
+    try:
+        today_str = mm_today_str()
+        bets = load_bets(sport)
+        return {b['pitcher'] for b in bets if b.get('date') == today_str and b.get('pitcher')}
+    except Exception:
+        return set()
+
+def get_already_bet_players_today_by_sport():
+    """Sport-specific version for pages that mix MLB/NBA Points/NBA Assists in
+    one list (Today's Card, Home) — betting a player's points shouldn't flag
+    his separate assists prop (or vice versa) as already bet."""
+    return {sport: get_already_bet_players_today(sport) for sport in ('MLB', 'NBA', 'NBA_AST')}
+
+def sport_key_to_bet_label(sport_key):
+    return 'MLB' if sport_key == 'mlb_strikeouts' else nba_bet_sport_label(sport_key)
+
 def save_bet(bet):
     try:
         bet['user_id'] = user_id
@@ -2976,6 +2996,7 @@ if nav == "🏠 Home":
 
     run_todays_card_auto_run(minimal_ui=True)
     top_entry = top_ranked_entry(build_todays_card_entries())
+    already_bet_by_sport = get_already_bet_players_today_by_sport()
 
     if top_entry:
         tier_word = "Bet" if "Best Bet" in top_entry['tier'] else "Pick"
@@ -2983,12 +3004,15 @@ if nav == "🏠 Home":
         line_str = f" {play_short} {top_entry['line']}" if top_entry['line'] is not None else ""
         ev = top_entry['ev_pct']
         ev_str = f"{'+' if ev and ev > 0 else ''}{ev}%" if ev is not None else "—"
+        _top_entry_sport_label = sport_key_to_bet_label(top_entry['sport_key'])
+        already_bet_banner = "<div style='color: var(--mm-success); font-size: 0.85rem; margin-bottom: 8px;'>✅ You already bet this today</div>" if top_entry['name'] in already_bet_by_sport.get(_top_entry_sport_label, set()) else ""
         st.markdown(f"""
             <div class='mm-card' style='max-width: 640px; margin: 0 auto 16px auto; text-align: center; border-color: var(--mm-accent);'>
                 <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px;'>
                     🔥 Today's Highest Rated {tier_word} &nbsp;·&nbsp; {top_entry['sport_label']}
                 </div>
                 <h2 style='margin: 0 0 4px 0; font-size: 1.7rem;'>{top_entry['name']}</h2>
+                {already_bet_banner}
                 <div style='color: var(--mm-text-dim); font-size: 1.15rem; margin-bottom: 16px;'>{line_str.strip()}</div>
                 <div style='display: flex; justify-content: center; gap: 28px; margin-bottom: 18px;'>
                     <div>
@@ -3221,6 +3245,7 @@ elif nav == "🎯 Today's Card":
         st.caption(f"🕐 Last updated at {st.session_state['today_card_updated_at']}")
 
     card_entries = build_todays_card_entries()
+    already_bet_by_sport = get_already_bet_players_today_by_sport()
 
     if not card_entries:
         st.markdown("""
@@ -3288,7 +3313,8 @@ elif nav == "🎯 Today's Card":
                 with col2:
                     play_short = (e['play'] or '').replace('⬆️ OVER', 'O').replace('⬇️ UNDER', 'U')
                     line_str = f" {play_short}{e['line']}" if e['line'] is not None else ""
-                    st.markdown(f"**{e['name']}**{line_str} &nbsp; <span style='color: var(--mm-text-faint); font-size:0.78rem;'>{e['sport_label']}</span>", unsafe_allow_html=True)
+                    already_bet_note = " &nbsp; <span style='color: var(--mm-success); font-size:0.75rem;'>✅ Already bet</span>" if e['name'] in already_bet_by_sport.get(sport_key_to_bet_label(e['sport_key']), set()) else ""
+                    st.markdown(f"**{e['name']}**{line_str} &nbsp; <span style='color: var(--mm-text-faint); font-size:0.78rem;'>{e['sport_label']}</span>{already_bet_note}", unsafe_allow_html=True)
                     if e['tier'] == "🔴 Pass" and e['info'].get('Pass Reason'):
                         st.caption(f"Pass Reason: {e['info'].get('Pass Reason')}")
                     else:
@@ -3335,6 +3361,7 @@ elif nav == "🎯 Today's Card":
 elif nav == "⚾ MLB Models":
     st.title("⚾ MLB Strikeout Model")
     bankroll, risk_style = get_bankroll_context()
+    already_bet_today = get_already_bet_players_today('MLB')
 
     col_load, col_run_all = st.columns(2)
 
@@ -3410,6 +3437,8 @@ elif nav == "⚾ MLB Models":
             with col1:
                 st.write(f"**{pitcher}**")
                 st.caption(f"{info['away']} @ {info['home']}")
+                if pitcher in already_bet_today:
+                    st.caption("✅ Already bet today")
             with col2:
                 st.write(f"FD: {info['FanDuel Line']}")
                 st.caption(f"O:{fmt_odds(info['FanDuel Over'])} U:{fmt_odds(info['FanDuel Under'])}")
@@ -3590,6 +3619,7 @@ elif nav == "🏀 NBA Models":
 
     def run_nba_display(all_players_key, run_fn, sport_key, prop_market, session_key):
         bankroll, risk_style = get_bankroll_context()
+        already_bet_today = get_already_bet_players_today(nba_bet_sport_label(sport_key))
         col_load, col_run_all = st.columns(2)
 
         with col_load:
@@ -3665,6 +3695,8 @@ elif nav == "🏀 NBA Models":
                 with col1:
                     st.write(f"**{player}**")
                     st.caption(f"{info['away']} @ {info['home']}")
+                    if player in already_bet_today:
+                        st.caption("✅ Already bet today")
                 with col2:
                     st.write(f"FD: {info['FanDuel Line']}")
                     st.caption(f"O:{fmt_odds(info['FanDuel Over'])} U:{fmt_odds(info['FanDuel Under'])}")
