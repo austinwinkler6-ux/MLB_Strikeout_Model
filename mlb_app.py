@@ -2855,7 +2855,7 @@ elif nav == "⚾ MLB Models":
                     col_a, col_b = st.columns(2)
                     with col_a:
                         log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"log_ou_{pitcher}")
-                        log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100", key=f"log_bet_{pitcher}")
+                        log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"log_bet_{pitcher}")
                         log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"log_odds_{pitcher}")
                     with col_b:
                         log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 7", key=f"log_actual_{pitcher}")
@@ -3093,7 +3093,7 @@ elif nav == "🏀 NBA Models":
                         col_a, col_b = st.columns(2)
                         with col_a:
                             log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"{session_key}_log_ou_{player}")
-                            log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100", key=f"{session_key}_log_bet_{player}")
+                            log_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"{session_key}_log_bet_{player}")
                             log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"{session_key}_log_odds_{player}")
                         with col_b:
                             log_actual = st.number_input("Actual Result (fill after game)", value=None, placeholder="e.g. 25", key=f"{session_key}_log_actual_{player}")
@@ -3194,7 +3194,7 @@ elif nav == "📒 Bet Tracker":
             bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
         bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
         bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
-        bt_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100")
+        bt_bet = st.number_input("Bet Amount ($)", value=None, placeholder="e.g. 100.50", step=0.01, format="%.2f")
         bt_model_edge = st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
     with col2:
         bt_date = st.date_input("Date")
@@ -3432,7 +3432,7 @@ elif nav == "📒 Bet Tracker":
                 'actual': st.column_config.NumberColumn('Actual', min_value=0),
                 'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
                 'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
-                'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0),
+                'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
                 'odds': st.column_config.NumberColumn('Odds', format="%+d"),
                 'profit': st.column_config.NumberColumn('Profit ($)'),
                 'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
