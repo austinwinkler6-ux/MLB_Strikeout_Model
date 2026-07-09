@@ -167,21 +167,7 @@ def inject_custom_css():
         border: 1px solid var(--mm-border);
         border-radius: 12px;
         padding: 24px;
-        height: 100%;
         box-sizing: border-box;
-    }
-
-    /* Make columns in a row stretch to match the tallest sibling, so cards
-       placed side-by-side via st.columns() render at equal height instead of
-       each shrinking to its own content. */
-    [data-testid="stHorizontalBlock"] {
-        align-items: stretch;
-    }
-    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-        display: flex;
-    }
-    [data-testid="stHorizontalBlock"] > [data-testid="column"] > div {
-        width: 100%;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -3108,7 +3094,7 @@ if nav == "🏠 Home":
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
-            <div class='mm-card' style='min-height: 210px;'>
+            <div class='mm-card' style='height: 210px; overflow: hidden;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>📈</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Proprietary Projection Models</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
@@ -3118,7 +3104,7 @@ if nav == "🏠 Home":
         """, unsafe_allow_html=True)
     with col2:
         st.markdown("""
-            <div class='mm-card' style='min-height: 210px;'>
+            <div class='mm-card' style='height: 210px; overflow: hidden;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>💰</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Real-Time +EV Analysis</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
@@ -3128,7 +3114,7 @@ if nav == "🏠 Home":
         """, unsafe_allow_html=True)
     with col3:
         st.markdown("""
-            <div class='mm-card' style='min-height: 210px;'>
+            <div class='mm-card' style='height: 210px; overflow: hidden;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>🎯</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Clear Bet Tiers</h3>
                 <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
@@ -3141,21 +3127,21 @@ if nav == "🏠 Home":
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
-            <div class='mm-card' style='min-height: 110px;'>
+            <div class='mm-card' style='height: 110px; overflow: hidden;'>
                 <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>⚾ MLB</div>
                 <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Strikeouts</div>
             </div>
         """, unsafe_allow_html=True)
     with col2:
         st.markdown("""
-            <div class='mm-card' style='min-height: 110px;'>
+            <div class='mm-card' style='height: 110px; overflow: hidden;'>
                 <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🏀 NBA</div>
                 <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Points · Assists</div>
             </div>
         """, unsafe_allow_html=True)
     with col3:
         st.markdown("""
-            <div class='mm-card' style='min-height: 110px;'>
+            <div class='mm-card' style='height: 110px; overflow: hidden;'>
                 <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🏈 NFL</div>
                 <div style='font-family: var(--mm-mono); font-size: 0.95rem; font-weight: 600;'>Pass Attempts · Pass Completions · Receptions</div>
             </div>
