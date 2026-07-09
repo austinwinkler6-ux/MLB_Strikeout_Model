@@ -392,33 +392,51 @@ def market_result_label(clv_val, odds_clv_val):
     return "⚪ Push"
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None):
+    """Tier answers exactly ONE question: is there positive expected value,
+    and how strong is it? Confidence (cv + workload) and MM Stake (sizing)
+    are separate, independent axes — a low-confidence pick with real EV is a
+    Lean with a small stake, not a Pass. Pass means the model doesn't see
+    positive expected value, full stop; it says nothing about how much to
+    trust the number or how much to risk on it."""
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
-    ev_threshold = 15.0 if cv >= 0.35 else 10.0
+    ev_threshold = 12.0
 
-    if cv >= 0.50:
-        return "🔴 Pass"
-
-    # Workload/role instability is a separate risk from K-rate variance (cv) —
-    # a pitcher can look fine on cv while his innings/role is genuinely
-    # unsettled, and that shouldn't be able to reach Best Bet or Worth a Look
-    # no matter how good the raw EV looks.
-    if workload_tier and "Highly Volatile" in workload_tier:
-        return "🔴 Pass"
-
-    same_direction = model_edge > 0 and ev_pct > 0
+    same_direction = model_edge is not None and ev_pct is not None and model_edge > 0 and ev_pct > 0
     if not same_direction:
         return "🔴 Pass"
 
     model_strong = model_edge >= threshold
     ev_strong = ev_pct >= ev_threshold
-    low_variance = cv < 0.35
 
-    if model_strong and ev_strong and low_variance:
+    if model_strong and ev_strong:
         return "🟢 Best Bet"
     elif model_strong or ev_strong:
         return "🔵 Worth a Look"
     else:
         return "🟡 Lean"
+
+def get_pass_reason(model_edge, ev_pct, cv=None, workload_tier=None):
+    """Pass now only ever means one thing — no positive expected value —
+    so there are only two possible reasons left."""
+    if model_edge is None or model_edge <= 0:
+        return "No Projection Edge"
+    if ev_pct is None or ev_pct <= 0:
+        return "Negative EV"
+    return None
+
+def get_confidence_level(cv, workload_tier=None):
+    """A separate axis from Tier — how much to trust the projection, not
+    whether the bet is worth considering. Combines K-rate variance (cv) and
+    workload/role stability into a single High/Medium/Low read."""
+    highly_volatile_workload = bool(workload_tier and "Highly Volatile" in workload_tier)
+    changing_workload = bool(workload_tier and "Changing" in workload_tier)
+    if cv >= 0.50 or highly_volatile_workload:
+        return "🔴 Low"
+    elif cv >= 0.35 or changing_workload:
+        return "🟠 Medium"
+    else:
+        return "🟢 High"
+
 
 TIER_RANK = {"🟢 Best Bet": 3, "🔵 Worth a Look": 2, "🟡 Lean": 1, "🔴 Pass": 0}
 
@@ -482,6 +500,14 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
     no_vig_prob = info.get('No Vig Prob')
     ev_pct = info.get('EV%')
     tier = info.get('Tier')
+
+    mm_tier = info.get('MM Tier')
+    pass_reason = info.get('Pass Reason')
+    confidence_level = info.get('Confidence Level')
+    if mm_tier == "🔴 Pass" and pass_reason:
+        lines.append(f"🔴 **Pass** — Reason: **{pass_reason}**")
+    elif mm_tier and confidence_level:
+        lines.append(f"{mm_tier} · Confidence: **{confidence_level}**")
 
     if proj and line:
         diff = round(proj - line, 1)
@@ -767,7 +793,9 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'fair_odds': fair_odds,
             'edge_cents': edge_cents,
             'low_confidence': low_confidence,
-            'tier': get_tier(model_edge, ev_pct, cv, sport, workload_tier)
+            'tier': get_tier(model_edge, ev_pct, cv, sport, workload_tier),
+            'pass_reason': get_pass_reason(model_edge, ev_pct, cv, workload_tier),
+            'confidence_level': get_confidence_level(cv, workload_tier)
         }
     except:
         return None
@@ -1010,11 +1038,8 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     confidence_tier = result.get('confidence_tier', '') if result else ''
     workload_tier = result.get('workload_tier', '') if result else ''
     mm_tier = info.get('MM Tier', '')
-    if mm_tier == "🔴 Pass" or "Uncertain Workload" in confidence_tier:
-        return {
-            'pass': True,
-            'reason': 'Uncertain workload / high variance' if "Uncertain Workload" in confidence_tier else 'Model tier is Pass',
-        }
+    if mm_tier == "🔴 Pass":
+        return {'pass': True, 'reason': 'Model tier is Pass — no positive expected value'}
 
     tier_range = TIER_STAKE_RANGES.get(mm_tier)
     if not tier_range:
@@ -2580,6 +2605,8 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'EV%': ev_result['ev_pct'] if ev_result else None,
                     'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                     'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                    'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                     'Model Prob': ev_result['model_prob'] if ev_result else None,
                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
                     'Model Edge': ev_result['model_edge'] if ev_result else None,
@@ -2718,6 +2745,8 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                     'EV%': ev_result['ev_pct'] if ev_result else None,
                     'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                     'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                    'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
@@ -3032,8 +3061,11 @@ if nav == "🏠 Home":
             <div class='mm-card' style='height: 100%;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>🎯</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Clear Bet Tiers</h3>
-                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
-                    Every prop sorts into Best Bet, Worth a Look, Lean, or Pass based on edge, EV, and confidence — no scores to decode.
+                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.6; margin: 0;'>
+                    🟢 <b>Best Bet</b> — strong edge, strong EV, and high confidence.<br>
+                    🔵 <b>Worth a Look</b> — strong value, but one factor keeps it below Best Bet.<br>
+                    🟡 <b>Lean</b> — positive value, but limited conviction.<br>
+                    🔴 <b>Pass</b> — the model doesn't recommend this wager, with a specific Pass Reason shown (No Edge, High Variance, Unsettled Workload, Negative EV).
                 </p>
             </div>
         """, unsafe_allow_html=True)
@@ -3247,7 +3279,10 @@ elif nav == "🎯 Today's Card":
                     play_short = (e['play'] or '').replace('⬆️ OVER', 'O').replace('⬇️ UNDER', 'U')
                     line_str = f" {play_short}{e['line']}" if e['line'] is not None else ""
                     st.markdown(f"**{e['name']}**{line_str} &nbsp; <span style='color: var(--mm-text-faint); font-size:0.78rem;'>{e['sport_label']}</span>", unsafe_allow_html=True)
-                    st.caption(short_why(e['info'], e['result'], e['sport_key']))
+                    if e['tier'] == "🔴 Pass" and e['info'].get('Pass Reason'):
+                        st.caption(f"Pass Reason: {e['info'].get('Pass Reason')}")
+                    else:
+                        st.caption(short_why(e['info'], e['result'], e['sport_key']))
                 with col3:
                     ev = e['ev_pct']
                     if ev is not None:
@@ -3257,6 +3292,8 @@ elif nav == "🎯 Today's Card":
                         st.write("—")
                 with col4:
                     st.markdown(tier_badge(e['tier']), unsafe_allow_html=True)
+                    if e['tier'] != "🔴 Pass" and e['info'].get('Confidence Level'):
+                        st.caption(f"Confidence: {e['info'].get('Confidence Level')}")
                 if show_why_expander and e['result']:
                     direction = e['info'].get('Direction', 'over')
                     why_lines = generate_why(e['info'], e['result'], direction, e['sport_key'])
@@ -3384,6 +3421,10 @@ elif nav == "⚾ MLB Models":
                     st.caption("⚠️ Low Conf.")
             with col9:
                 st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
+                if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
+                    st.caption(info.get('Pass Reason'))
+                elif info.get('Confidence Level'):
+                    st.caption(f"Confidence: {info.get('Confidence Level')}")
             with col10:
                 if st.button("▶️ Run", key=f"run_{pitcher}"):
                     with st.spinner(f"Running {pitcher}..."):
@@ -3414,6 +3455,8 @@ elif nav == "⚾ MLB Models":
                                     'EV%': ev_result['ev_pct'] if ev_result else None,
                                     'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                                     'MM Tier': ev_result['tier'] if ev_result else None,
+                                    'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                                    'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                                     'Model Prob': ev_result['model_prob'] if ev_result else None,
                                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
                                     'Model Edge': ev_result['model_edge'] if ev_result else None,
@@ -3633,6 +3676,10 @@ elif nav == "🏀 NBA Models":
                         st.caption("⚠️ Low Conf.")
                 with col9:
                     st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
+                    if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
+                        st.caption(info.get('Pass Reason'))
+                    elif info.get('Confidence Level'):
+                        st.caption(f"Confidence: {info.get('Confidence Level')}")
                 with col10:
                     if st.button("▶️ Run", key=f"{session_key}_run_{player}"):
                         with st.spinner(f"Running {player}..."):
@@ -3681,6 +3728,8 @@ elif nav == "🏀 NBA Models":
                                         'EV%': ev_result['ev_pct'] if ev_result else None,
                                         'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
                                         'MM Tier': ev_result['tier'] if ev_result else None,
+                                        'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                                        'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                                         'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                                         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
                                         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
