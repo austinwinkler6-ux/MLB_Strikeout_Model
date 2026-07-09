@@ -1007,6 +1007,48 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
         'reasoning': reasoning,
     }
 
+def get_risk_level_label(result):
+    """Maps the pitcher's own reliability tier to a risk-level indicator for
+    the MM Stake display — Uncertain Workload never reaches here since those
+    are already filtered to Pass before a stake is ever calculated."""
+    confidence_tier = result.get('confidence_tier', '') if result else ''
+    if "Reliable" in confidence_tier:
+        return "🟢 Low"
+    elif "Volatile" in confidence_tier:
+        return "🟡 Moderate"
+    return "⚪ Unrated"
+
+def get_bankroll_context():
+    """One settings lookup per page load — bankroll + risk style used to
+    personalize every MM Stake shown on that page."""
+    settings = get_user_settings()
+    bankroll = get_current_bankroll(settings) if settings else None
+    risk_style = settings.get('risk_style', 'Standard') if settings else 'Standard'
+    return bankroll, risk_style
+
+def render_mm_stake_block(info, result, bankroll, risk_style):
+    """Shared MM Stake™ display — same structure everywhere it appears, so
+    branding/wording can't drift out of sync across pages."""
+    if not bankroll:
+        st.caption("💰 Set a bankroll in Settings to see your personalized MM Stake recommendation.")
+        return
+    stake = calculate_mm_stake(info, result, bankroll, risk_style)
+    if not stake:
+        return
+    st.markdown("---")
+    st.markdown("💰 **MM Stake**")
+    if stake.get('pass'):
+        st.markdown("**Suggested Stake: Pass**")
+        st.caption(f"Reason: {stake.get('reason', 'Model tier is Pass')}")
+    else:
+        st.markdown(f"### {stake['stake_units']} Units (${stake['stake_dollars']:,.2f})")
+        st.caption(f"Risk Level: {get_risk_level_label(result)}")
+        st.markdown("**Based on:**")
+        for r in stake['reasoning']:
+            icon = "⚠️" if ("reduced" in r.lower() or "capped" in r.lower()) else "✅"
+            st.markdown(f"{icon} {r}")
+    st.caption("*Suggested Stake — based on your bankroll and this model's estimated edge, reliability, and market signals. Guidance, not a guarantee.*")
+
 # ---- SHARED DAILY PROJECTION CACHE ----
 # One computed projection per (date, sport, player) is shared across ALL users,
 # instead of every visitor re-running the full model pipeline (and re-hitting
@@ -2644,6 +2686,8 @@ if nav == "🏠 Home":
                                 mm_today_str(), cache_sport_label, top_entry['name'], top_entry['info'], top_entry['result']
                             )
                         render_ai_insight_block(insight, thesis_label, top_entry['result'], top_entry['sport_key'])
+                    bankroll, risk_style = get_bankroll_context()
+                    render_mm_stake_block(top_entry['info'], top_entry['result'], bankroll, risk_style)
 
     else:
         st.markdown("""
@@ -2848,6 +2892,8 @@ elif nav == "🎯 Today's Card":
             </div>
         """, unsafe_allow_html=True)
 
+        bankroll, risk_style = get_bankroll_context()
+
         def render_ranked_section(title, entries, show_why_expander=True, auto_insight=False):
             if title:
                 st.markdown(f"### {title}")
@@ -2886,6 +2932,8 @@ elif nav == "🎯 Today's Card":
                                         mm_today_str(), cache_sport_label, e['name'], e['info'], e['result']
                                     )
                                 render_ai_insight_block(insight, thesis_label, e['result'], e['sport_key'])
+                            if auto_insight:
+                                render_mm_stake_block(e['info'], e['result'], bankroll, risk_style)
                 st.divider()
 
         render_ranked_section("🟢 Today's Best Bets", groups["🟢 Best Bet"], auto_insight=True)
@@ -2900,6 +2948,7 @@ elif nav == "🎯 Today's Card":
 # ---- MLB PAGE ----
 elif nav == "⚾ MLB Models":
     st.title("⚾ MLB Strikeout Model")
+    bankroll, risk_style = get_bankroll_context()
 
     col_load, col_run_all = st.columns(2)
 
@@ -3069,6 +3118,7 @@ elif nav == "⚾ MLB Models":
                     with st.expander(f"💡 Why this bet? — {pitcher}"):
                         for line in why_lines:
                             st.markdown(line)
+                        render_mm_stake_block(info, result, bankroll, risk_style)
                         if ANTHROPIC_API_KEY:
                             if st.button("🧠 Generate Model Insight", key=f"insight_btn_{pitcher}"):
                                 with st.spinner("🧠 Generating model insight..."):
@@ -3133,6 +3183,7 @@ elif nav == "🏀 NBA Models":
     nba_model_select = st.selectbox("Select Model", ["NBA Points", "NBA Assists"])
 
     def run_nba_display(all_players_key, run_fn, sport_key, prop_market, session_key):
+        bankroll, risk_style = get_bankroll_context()
         col_load, col_run_all = st.columns(2)
 
         with col_load:
@@ -3302,6 +3353,7 @@ elif nav == "🏀 NBA Models":
                         with st.expander(f"💡 Why this bet? — {player}"):
                             for line in why_lines:
                                 st.markdown(line)
+                            render_mm_stake_block(info, result, bankroll, risk_style)
                             if ANTHROPIC_API_KEY:
                                 if st.button("🧠 Generate Model Insight", key=f"{session_key}_insight_btn_{player}"):
                                     with st.spinner("🧠 Generating model insight..."):
