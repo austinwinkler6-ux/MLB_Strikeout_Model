@@ -3028,23 +3028,6 @@ if nav == "🏠 Home":
             </div>
         """, unsafe_allow_html=True)
 
-        if top_entry['result']:
-            direction = top_entry['info'].get('Direction', 'over')
-            why_lines = generate_why(top_entry['info'], top_entry['result'], direction, top_entry['sport_key'])
-            if why_lines:
-                with st.expander("💡 View Full Analysis"):
-                    for line in why_lines:
-                        st.markdown(line)
-                    if ANTHROPIC_API_KEY:
-                        cache_sport_label = 'MLB' if top_entry['sport_key'] == 'mlb_strikeouts' else nba_bet_sport_label(top_entry['sport_key'])
-                        with st.spinner("🧠 Generating model insight..."):
-                            insight, thesis_label = get_or_generate_ai_insight(
-                                mm_today_str(), cache_sport_label, top_entry['name'], top_entry['info'], top_entry['result']
-                            )
-                        render_ai_insight_block(insight, thesis_label, top_entry['result'], top_entry['sport_key'])
-                bankroll, risk_style = get_bankroll_context()
-                render_mm_stake_block(top_entry['info'], top_entry['result'], bankroll, risk_style)
-
     else:
         st.markdown("""
             <div class='mm-card' style='max-width: 640px; margin: 0 auto 16px auto; text-align: center;'>
