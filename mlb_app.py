@@ -391,11 +391,18 @@ def market_result_label(clv_val, odds_clv_val):
         return "🔴 Lost to Close"
     return "⚪ Push"
 
-def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts"):
+def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None):
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
     ev_threshold = 15.0 if cv >= 0.35 else 10.0
 
     if cv >= 0.50:
+        return "🔴 Pass"
+
+    # Workload/role instability is a separate risk from K-rate variance (cv) —
+    # a pitcher can look fine on cv while his innings/role is genuinely
+    # unsettled, and that shouldn't be able to reach Best Bet or Worth a Look
+    # no matter how good the raw EV looks.
+    if workload_tier and "Highly Volatile" in workload_tier:
         return "🔴 Pass"
 
     same_direction = model_edge > 0 and ev_pct > 0
@@ -644,7 +651,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
 
     return lines
 
-def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction='over', sport='mlb_strikeouts'):
+def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction='over', sport='mlb_strikeouts', workload_tier=None, confidence_tier=None):
     if not over_odds or not under_odds:
         return None
     try:
@@ -697,8 +704,19 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         else:
             model_prob = max(0.25, min(0.72, model_prob))
 
+        # Workload/role instability is a separate signal from cv (K-rate
+        # variance) — a pitcher can look consistent on cv while his innings
+        # or role is genuinely unsettled, and that risk isn't captured above.
+        highly_volatile_workload = bool(workload_tier and "Highly Volatile" in workload_tier)
+        also_volatile_reliability = bool(confidence_tier and "Volatile" in confidence_tier)
+        if highly_volatile_workload:
+            if also_volatile_reliability:
+                model_prob = min(model_prob, 0.52)
+            else:
+                model_prob = min(model_prob, 0.53)
+
         model_edge = round(projection - line, 2) if direction == 'over' else round(line - projection, 2)
-        low_confidence = cv >= 0.50
+        low_confidence = cv >= 0.50 or highly_volatile_workload
 
         odds = over_odds if direction == 'over' else under_odds
         ev_dollar = calculate_ev(model_prob, odds)
@@ -711,6 +729,17 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         elif abs(model_edge) < 0.75:
             ev_pct *= 0.60
             ev_dollar *= 0.60
+
+        # Further penalize EV when workload/role is genuinely unsettled —
+        # the explanation panel already flags this as high uncertainty, and
+        # the EV/tier shouldn't be able to override that with raw math alone.
+        if highly_volatile_workload:
+            if also_volatile_reliability:
+                ev_pct *= 0.25
+                ev_dollar *= 0.25
+            else:
+                ev_pct *= 0.35
+                ev_dollar *= 0.35
 
         ev_pct = round(ev_pct, 2)
         ev_dollar = round(ev_dollar, 2)
@@ -728,7 +757,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'fair_odds': fair_odds,
             'edge_cents': edge_cents,
             'low_confidence': low_confidence,
-            'tier': get_tier(model_edge, ev_pct, cv, sport)
+            'tier': get_tier(model_edge, ev_pct, cv, sport, workload_tier)
         }
     except:
         return None
@@ -2521,7 +2550,8 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     projection=proj, line=best_line,
                     std_dev=result['last10_k_std'], cv=result['cv'],
                     over_odds=over_odds or -110, under_odds=under_odds or -110,
-                    direction=direction, sport='mlb_strikeouts'
+                    direction=direction, sport='mlb_strikeouts',
+                    workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
                 )
 
                 all_pitchers[pitcher].update({
@@ -2658,7 +2688,8 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                 ev_result = analyze_prop(
                     projection=proj, line=best_line, std_dev=std_dev, cv=result['cv'],
                     over_odds=over_odds or -110, under_odds=under_odds or -110,
-                    direction=direction, sport=sport_key
+                    direction=direction, sport=sport_key,
+                    workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
                 )
                 all_players[player].update({
                     'Projection': proj, 'Edge': edge, 'Play': play,
@@ -3352,7 +3383,8 @@ elif nav == "⚾ MLB Models":
                                     projection=proj, line=best_line,
                                     std_dev=result['last10_k_std'], cv=result['cv'],
                                     over_odds=over_odds or -110, under_odds=under_odds or -110,
-                                    direction=direction, sport='mlb_strikeouts'
+                                    direction=direction, sport='mlb_strikeouts',
+                                    workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
                                 )
                                 st.session_state['all_pitchers'][pitcher].update({
                                     'Projection': proj, 'Edge': edge, 'Play': play,
@@ -3617,7 +3649,8 @@ elif nav == "🏀 NBA Models":
                                     ev_result = analyze_prop(
                                         projection=proj, line=best_line, std_dev=std_dev, cv=result['cv'],
                                         over_odds=over_odds or -110, under_odds=under_odds or -110,
-                                        direction=direction, sport=sport_key
+                                        direction=direction, sport=sport_key,
+                                        workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
                                     )
                                     st.session_state[all_players_key][player].update({
                                         'Projection': proj, 'Edge': edge, 'Play': play,
