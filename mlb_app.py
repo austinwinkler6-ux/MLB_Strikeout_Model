@@ -3293,7 +3293,7 @@ elif nav == "🎯 Today's Card":
                 with col4:
                     st.markdown(tier_badge(e['tier']), unsafe_allow_html=True)
                     if e['tier'] != "🔴 Pass" and e['info'].get('Confidence Level') == "🔴 Low":
-                        st.caption("Confidence: Low")
+                        st.caption("🔴 Confidence: Low")
                 if show_why_expander and e['result']:
                     direction = e['info'].get('Direction', 'over')
                     why_lines = generate_why(e['info'], e['result'], direction, e['sport_key'])
@@ -3424,7 +3424,7 @@ elif nav == "⚾ MLB Models":
                 if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
                     st.caption(info.get('Pass Reason'))
                 elif info.get('Confidence Level') == "🔴 Low":
-                    st.caption("Confidence: Low")
+                    st.caption("🔴 Confidence: Low")
             with col10:
                 if st.button("▶️ Run", key=f"run_{pitcher}"):
                     with st.spinner(f"Running {pitcher}..."):
@@ -3679,7 +3679,7 @@ elif nav == "🏀 NBA Models":
                     if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
                         st.caption(info.get('Pass Reason'))
                     elif info.get('Confidence Level') == "🔴 Low":
-                        st.caption("Confidence: Low")
+                        st.caption("🔴 Confidence: Low")
                 with col10:
                     if st.button("▶️ Run", key=f"{session_key}_run_{player}"):
                         with st.spinner(f"Running {player}..."):
