@@ -4564,6 +4564,23 @@ elif nav == "⚙️ Settings":
             else:
                 st.warning("Enter a starting bankroll to get started.")
 
+    if settings and settings.get('starting_bankroll') is not None:
+        with st.form("bankroll_adjust_form"):
+            st.caption("Deposited more money, or pulled some out? Adjust your bankroll without resetting your tracking history or start date — a top-up doesn't erase your profit/loss record.")
+            adjustment = st.number_input(
+                "Add or Remove Funds ($)", value=None, step=0.01, format="%.2f",
+                placeholder="e.g. 500 to add, -200 to remove",
+                help="Positive to deposit, negative to withdraw. This shifts your Current Bankroll by exactly this amount — your original start date and all past profit tracking stay untouched."
+            )
+            if st.form_submit_button("➕ Apply Adjustment"):
+                if adjustment:
+                    new_starting = round(settings['starting_bankroll'] + float(adjustment), 2)
+                    if save_user_settings(new_starting, settings.get('risk_style', 'Standard'), reset_baseline=False):
+                        st.success(f"✅ Bankroll adjusted by {'+' if adjustment > 0 else ''}${adjustment:,.2f}.")
+                        st.rerun()
+                else:
+                    st.warning("Enter a nonzero amount to adjust.")
+
     st.markdown("---")
     st.subheader("Subscription")
     st.info("💳 Subscription management coming soon — stay tuned!")
