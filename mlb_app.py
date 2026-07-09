@@ -3116,11 +3116,8 @@ if nav == "🏠 Home":
             <div class='mm-card' style='height: 100%;'>
                 <div style='font-size: 1.6rem; margin-bottom: 10px;'>🎯</div>
                 <h3 style='margin: 0 0 8px 0; font-size: 1.1rem;'>Clear Bet Tiers</h3>
-                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.6; margin: 0;'>
-                    🟢 <b>Best Bet</b> — strong edge, strong EV, and high confidence.<br>
-                    🔵 <b>Worth a Look</b> — strong value, but one factor keeps it below Best Bet.<br>
-                    🟡 <b>Lean</b> — positive value, but limited conviction.<br>
-                    🔴 <b>Pass</b> — the model doesn't recommend this wager, with a specific Pass Reason shown (No Edge, High Variance, Unsettled Workload, Negative EV).
+                <p style='color: var(--mm-text-dim); font-size: 0.92rem; line-height: 1.55; margin: 0;'>
+                    Every prop sorts into 🟢 Best Bet, 🔵 Worth a Look, 🟡 Lean, or 🔴 Pass — with a specific reason shown whenever the model passes.
                 </p>
             </div>
         """, unsafe_allow_html=True)
