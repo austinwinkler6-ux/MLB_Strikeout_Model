@@ -2250,10 +2250,12 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                 })
     return results
 
-def run_todays_card_auto_run():
+def run_todays_card_auto_run(minimal_ui=False):
     """Loads and runs today's MLB + NBA models if not already done this session.
-    Shows a progress checklist (rather than one static spinner) since the full
-    run across 3 model types can take a while."""
+    minimal_ui=False (Today's Card): shows the detailed technical checklist.
+    minimal_ui=True (Home): shows polished, on-brand copy instead — a first-time
+    visitor landing on the homepage shouldn't see raw step names like "Loading
+    NBA assists props," that reads like an unfinished dev tool, not a product."""
     if st.session_state.get('today_card_auto_ran'):
         return
 
@@ -2265,7 +2267,22 @@ def run_todays_card_auto_run():
     status_box = st.empty()
     completed = []
 
+    minimal_messages = [
+        "🔍 Scanning today's matchups...",
+        "📊 Comparing every line to the market...",
+        "🧮 Running the numbers...",
+        "🎯 Finding today's sharpest edge...",
+    ]
+
     def render(current=None):
+        if minimal_ui:
+            msg = minimal_messages[len(completed) % len(minimal_messages)]
+            status_box.markdown(f"""
+                <div style='text-align: center; padding: 24px 0; color: var(--mm-text-dim); font-family: var(--mm-mono); font-size: 0.95rem;'>
+                    {msg}
+                </div>
+            """, unsafe_allow_html=True)
+            return
         lines = []
         for s in steps:
             if s in completed:
@@ -2327,7 +2344,6 @@ def run_todays_card_auto_run():
     else:
         completed.extend(["Loading NBA assists props", "Running NBA assists projections"])
 
-    render()
     status_box.empty()
 
     st.session_state['today_card_auto_ran'] = True
@@ -2377,7 +2393,7 @@ if nav == "🏠 Home":
         </div>
     """, unsafe_allow_html=True)
 
-    run_todays_card_auto_run()
+    run_todays_card_auto_run(minimal_ui=True)
     top_entry = top_ranked_entry(build_todays_card_entries())
 
     if top_entry:
