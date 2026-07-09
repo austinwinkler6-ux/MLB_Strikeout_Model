@@ -925,6 +925,16 @@ def load_predictions(sport=None):
 def save_prediction(pred):
     try:
         pred['user_id'] = user_id
+        # Avoid duplicate rows for the same pitcher/date/sport — the shared
+        # cache means projections are cheap to re-serve, but that shouldn't
+        # mean a fresh prediction row gets saved every time some session's
+        # auto-run happens to re-process a pitcher already logged today.
+        existing = supabase.table("predictions").select("id") \
+            .eq("user_id", user_id).eq("pitcher", pred.get("pitcher")) \
+            .eq("date", pred.get("date")).eq("sport", pred.get("sport")) \
+            .execute()
+        if existing.data:
+            return
         supabase.table("predictions").insert(pred).execute()
     except Exception as e:
         st.error(f"Error saving prediction: {e}")
