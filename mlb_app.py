@@ -3270,8 +3270,6 @@ elif nav == "🎯 Today's Card":
                     st.markdown(f"**{e['name']}**{line_str} &nbsp; <span style='color: var(--mm-text-faint); font-size:0.78rem;'>{e['sport_label']}</span>{already_bet_note}", unsafe_allow_html=True)
                     if e['tier'] == "🔴 Pass" and e['info'].get('Pass Reason'):
                         st.caption(f"Pass Reason: {e['info'].get('Pass Reason')}")
-                    else:
-                        st.caption(short_why(e['info'], e['result'], e['sport_key']))
                 with col3:
                     ev = e['ev_pct']
                     if ev is not None:
