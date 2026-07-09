@@ -1026,6 +1026,46 @@ def get_bankroll_context():
     risk_style = settings.get('risk_style', 'Standard') if settings else 'Standard'
     return bankroll, risk_style
 
+def calc_max_drawdown_pct(bets, starting_bankroll, baseline_date):
+    """Largest peak-to-trough decline in bankroll balance, walked chronologically
+    from the baseline. Purely informational — helps a user see their worst
+    stretch, not a prediction of future risk."""
+    if not starting_bankroll:
+        return None
+    settled = sorted(
+        [b for b in bets if b.get('result') != 'Pending' and b.get('date') and b['date'] >= baseline_date],
+        key=lambda b: b.get('date', '')
+    )
+    if not settled:
+        return 0.0
+    balance = starting_bankroll
+    peak = balance
+    max_dd = 0.0
+    for b in settled:
+        balance += (b.get('profit') or 0)
+        if balance > peak:
+            peak = balance
+        if peak > 0:
+            dd = (peak - balance) / peak * 100
+            if dd > max_dd:
+                max_dd = dd
+    return round(max_dd, 1)
+
+def calc_profit_this_month(bets):
+    month_prefix = mm_today_str()[:7]  # 'YYYY-MM'
+    return round(sum(
+        (b.get('profit') or 0) for b in bets
+        if b.get('result') != 'Pending' and (b.get('date') or '').startswith(month_prefix)
+    ), 2)
+
+def calc_avg_stake_units(bets, bankroll):
+    settled = [b for b in bets if b.get('result') != 'Pending' and b.get('bet_amount')]
+    if not settled or not bankroll:
+        return None
+    avg_dollar = sum(b.get('bet_amount', 0) for b in settled) / len(settled)
+    unit_value = bankroll * 0.01
+    return round(avg_dollar / unit_value, 2) if unit_value > 0 else None
+
 def render_mm_stake_block(info, result, bankroll, risk_style):
     """Shared MM Stake™ display — its own dropdown, same level as 'Why this
     bet?', never nested inside another expander (Streamlit doesn't support
@@ -3528,6 +3568,35 @@ elif nav == "📒 Bet Tracker":
 
             if 'ev_pct' in bets_df.columns and bets_df['ev_pct'].notna().any():
                 st.metric("Avg EV%", f"{round(bets_df['ev_pct'].dropna().mean(), 2)}%")
+
+        settings = get_user_settings()
+        if settings and settings.get('starting_bankroll') is not None:
+            st.markdown("---")
+            st.subheader("💰 Bankroll")
+            all_bets_unfiltered = bets if sport_filter == "All" else load_bets()
+            current_bankroll = get_current_bankroll(settings, all_bets_unfiltered)
+            starting_bankroll = settings['starting_bankroll']
+            baseline_date = settings.get('bankroll_set_date') or '1900-01-01'
+            profit_this_month = calc_profit_this_month(all_bets_unfiltered)
+            max_drawdown = calc_max_drawdown_pct(all_bets_unfiltered, starting_bankroll, baseline_date)
+            avg_stake_units = calc_avg_stake_units(all_bets_unfiltered, current_bankroll)
+
+            col1, col2 = st.columns(2)
+            col1.metric("Current Bankroll", f"${current_bankroll:,.2f}")
+            col2.metric(
+                "This Month",
+                f"{'+' if profit_this_month >= 0 else ''}${profit_this_month:,.2f}"
+            )
+
+            col3, col4 = st.columns(2)
+            if avg_stake_units is not None:
+                col3.metric("Average Stake", f"{avg_stake_units} Units")
+            if max_drawdown is not None:
+                col4.metric("Largest Drawdown", f"{max_drawdown}%")
+
+            st.caption(f"Baseline of ${starting_bankroll:,.2f} set on {baseline_date}. Adjustable anytime in Settings.")
+        else:
+            st.caption("💰 Set a bankroll in Settings to unlock your Bankroll dashboard and personalized MM Stake recommendations.")
 
         st.markdown("---")
         st.subheader("🎯 Closing Line Tracker")
