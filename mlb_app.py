@@ -954,6 +954,7 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
         return None
 
     confidence_tier = result.get('confidence_tier', '') if result else ''
+    workload_tier = result.get('workload_tier', '') if result else ''
     mm_tier = info.get('MM Tier', '')
     if mm_tier == "🔴 Pass" or "Uncertain Workload" in confidence_tier:
         return {
@@ -983,6 +984,17 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     elif "Volatile" in confidence_tier:
         multiplier *= 0.80
         reasoning.append("Volatile pitcher reduced stake")
+
+    # Workload/role stability (IP-variance based) is a genuinely separate
+    # signal from confidence_tier (K-variance based) — a pitcher can be a
+    # reliable strikeout performer while his innings/role is still unsettled,
+    # and that workload risk deserves its own stake reduction.
+    if "Changing" in workload_tier:
+        multiplier *= 0.75
+        reasoning.append("Recently changing workload reduced stake")
+    elif "Highly Volatile" in workload_tier:
+        multiplier *= 0.50
+        reasoning.append("Highly volatile workload reduced stake")
 
     if has_book_disagreement(info):
         multiplier *= 1.10
@@ -2900,13 +2912,7 @@ if nav == "🏠 Home":
                 st.rerun()
     else:
         _profile_bankroll, _profile_risk_style = get_bankroll_context()
-        _profile_stake_str = "—"
-        if top_entry:
-            _stake = calculate_mm_stake(top_entry['info'], top_entry['result'], _profile_bankroll, _profile_risk_style)
-            if _stake and not _stake.get('pass'):
-                _profile_stake_str = f"${_stake['stake_dollars']:,.2f}"
-            elif _stake and _stake.get('pass'):
-                _profile_stake_str = "Pass"
+        _max_single_bet = _profile_bankroll * RISK_STYLE_CAPS.get(_profile_risk_style, 0.02)
         st.markdown(f"""
             <div class='mm-card' style='border-color: var(--mm-accent);'>
                 <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px;'>💰 Your Bankroll Profile</div>
@@ -2920,8 +2926,8 @@ if nav == "🏠 Home":
                         <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Risk Style</div>
                     </div>
                     <div>
-                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>{_profile_stake_str}</div>
-                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Recommended Stake Today</div>
+                        <div style='font-family: var(--mm-mono); font-size: 1.3rem; font-weight: 600;'>${_max_single_bet:,.2f}</div>
+                        <div style='color: var(--mm-text-faint); font-size: 0.75rem; text-transform: uppercase;'>Max Single Bet</div>
                     </div>
                 </div>
             </div>
