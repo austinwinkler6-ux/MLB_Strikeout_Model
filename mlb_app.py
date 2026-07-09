@@ -945,11 +945,19 @@ def has_book_disagreement(info):
             return True
     return False
 
+TIER_STAKE_RANGES = {
+    "🟡 Lean": (0.25, 0.75),
+    "🔵 Worth a Look": (0.50, 1.25),
+    "🟢 Best Bet": (1.00, 2.00),
+}
+
 def calculate_mm_stake(info, result, bankroll, risk_style):
-    """Quarter-Kelly stake sizing — real math from model probability and market
-    odds, not a bucketed heuristic — modified by reliability and book
-    disagreement, then hard-capped by risk style so it can never recommend
-    betting more than that ceiling of bankroll on one prop."""
+    """MM Stake v2: the confidence tier (which already weighs EV, edge, reliability,
+    and workload) sets the unit RANGE for a play — Kelly only decides where within
+    that range the stake lands, rather than driving the number outright. This keeps
+    stake sizing telling the same story as the rest of the model: a Lean should
+    feel like a Lean, a Best Bet should feel like a Best Bet, regardless of what
+    the raw Kelly fraction happens to compute to."""
     if not bankroll or bankroll <= 0:
         return None
 
@@ -961,6 +969,11 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
             'pass': True,
             'reason': 'Uncertain workload / high variance' if "Uncertain Workload" in confidence_tier else 'Model tier is Pass',
         }
+
+    tier_range = TIER_STAKE_RANGES.get(mm_tier)
+    if not tier_range:
+        return None
+    tier_min, tier_max = tier_range
 
     model_prob = info.get('Model Prob')
     odds = info.get('Odds')
@@ -975,43 +988,92 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     if base_fraction <= 0:
         return {'pass': True, 'reason': 'No positive edge after Kelly calculation'}
 
-    reasoning = ["Quarter-Kelly sizing", "+EV model probability"]
-    multiplier = 1.0
+    # Kelly only positions the stake within the tier's range (0 = bottom, 1 = top)
+    # — it no longer sets the dollar amount directly. 0.06 is the reference
+    # Kelly fraction treated as "full range" — a strong-but-realistic edge.
+    kelly_position = min(1.0, max(0.0, base_fraction / 0.06))
+    stake_units = tier_min + kelly_position * (tier_max - tier_min)
+
+    tier_label = mm_tier.split(" ", 1)[1] if " " in mm_tier else mm_tier
+    reasoning = [f"{tier_label} tier sets a {tier_min}\u2013{tier_max} unit range", "Quarter-Kelly positions the stake within that range"]
 
     if "Reliable" in confidence_tier:
-        multiplier *= 1.15
+        stake_units *= 1.10
         reasoning.append("Reliable pitcher increased stake")
     elif "Volatile" in confidence_tier:
-        multiplier *= 0.80
+        stake_units *= 0.80
         reasoning.append("Volatile pitcher reduced stake")
 
-    # Workload/role stability (IP-variance based) is a genuinely separate
-    # signal from confidence_tier (K-variance based) — a pitcher can be a
-    # reliable strikeout performer while his innings/role is still unsettled,
-    # and that workload risk deserves its own stake reduction.
+    workload_hard_cap = None
     if "Changing" in workload_tier:
-        multiplier *= 0.75
+        stake_units *= 0.85
         reasoning.append("Recently changing workload reduced stake")
     elif "Highly Volatile" in workload_tier:
-        multiplier *= 0.50
+        stake_units *= 0.65
         reasoning.append("Highly volatile workload reduced stake")
+        workload_hard_cap = 0.75
 
     if has_book_disagreement(info):
-        multiplier *= 1.10
+        stake_units *= 1.08
         reasoning.append("Sportsbook disagreement boosted stake")
 
-    stake_fraction = base_fraction * multiplier
-    stake_dollars = bankroll * stake_fraction
+    edge_magnitude = abs(info['Edge']) if info.get('Edge') is not None else None
+    if edge_magnitude is not None:
+        if edge_magnitude < 0.3:
+            stake_units *= 0.85
+            reasoning.append("Small projection edge reduced stake")
+        elif edge_magnitude < 0.8:
+            pass
+        elif edge_magnitude < 1.3:
+            stake_units *= 1.10
+            reasoning.append("Solid projection edge increased stake")
+        else:
+            stake_units *= 1.20
+            reasoning.append("Strong projection edge increased stake")
+
+    ev_pct = info.get('EV%')
+    if ev_pct is not None:
+        if ev_pct < 5:
+            pass
+        elif ev_pct < 10:
+            stake_units *= 1.05
+            reasoning.append("Moderate EV increased stake")
+        elif ev_pct < 15:
+            stake_units *= 1.10
+            reasoning.append("Strong EV increased stake")
+        else:
+            stake_units *= 1.15
+            reasoning.append("Exceptional EV increased stake")
+
+    # Modifiers can nudge within the tier's range, but never push outside it —
+    # the tier's judgment is the outer boundary, not just a starting point.
+    stake_units = max(tier_min, min(tier_max, stake_units))
+
+    if workload_hard_cap is not None:
+        stake_units = min(stake_units, workload_hard_cap)
+
+    # True max (2.0 units) reserved for the strongest confluence of signals only
+    if mm_tier == "🟢 Best Bet" and stake_units > 1.5:
+        meets_max_criteria = (
+            ev_pct is not None and ev_pct >= 15 and
+            "Reliable" in confidence_tier and
+            "Stable" in workload_tier and
+            edge_magnitude is not None and edge_magnitude >= 1.0
+        )
+        if not meets_max_criteria:
+            stake_units = min(stake_units, 1.5)
+            reasoning.append("Held below maximum — not all top-tier criteria met")
+
+    stake_units = round(stake_units, 2)
+    unit_value = bankroll * 0.01  # 1 unit = 1% of bankroll, standard convention
+    stake_dollars = round(stake_units * unit_value, 2)
 
     cap_pct = RISK_STYLE_CAPS.get(risk_style, 0.02)
-    max_stake = bankroll * cap_pct
-    if stake_dollars > max_stake:
-        stake_dollars = max_stake
+    max_stake_dollars = bankroll * cap_pct
+    if stake_dollars > max_stake_dollars:
+        stake_dollars = round(max_stake_dollars, 2)
+        stake_units = round(stake_dollars / unit_value, 2) if unit_value > 0 else 0
         reasoning.append(f"Capped at {int(cap_pct*100)}% of bankroll ({risk_style})")
-
-    stake_dollars = round(stake_dollars, 2)
-    unit_value = bankroll * 0.01  # 1 unit = 1% of bankroll, standard convention
-    stake_units = round(stake_dollars / unit_value, 2) if unit_value > 0 else 0
 
     return {
         'pass': stake_dollars <= 0,
