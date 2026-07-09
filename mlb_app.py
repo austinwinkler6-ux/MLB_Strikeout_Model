@@ -1088,7 +1088,7 @@ def render_mm_stake_block(info, result, bankroll, risk_style):
             for r in stake['reasoning']:
                 icon = "⚠️" if ("reduced" in r.lower() or "capped" in r.lower()) else "✅"
                 st.markdown(f"{icon} {r}")
-        st.caption("*Suggested Stake — based on your bankroll and this model's estimated edge, reliability, and market signals. Guidance, not a guarantee.*")
+        st.caption("*Suggested stake is guidance based on bankroll, EV, odds, and model confidence — not a guarantee.*")
 
 # ---- SHARED DAILY PROJECTION CACHE ----
 # One computed projection per (date, sport, player) is shared across ALL users,
