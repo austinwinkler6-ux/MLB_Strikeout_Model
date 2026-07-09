@@ -887,6 +887,33 @@ if 'user' not in st.session_state:
 user = st.session_state['user']
 user_id = user.id
 is_admin = user.email.lower() == ADMIN_EMAIL.lower()
+
+def refresh_supabase_session_if_needed():
+    """Supabase access tokens expire (typically ~1 hour) — without this, any
+    session left open longer than that starts throwing 'JWT expired' on every
+    database call. Proactively refreshes using the stored refresh token,
+    throttled to at most once every 10 minutes so it doesn't hammer the auth
+    endpoint on every single rerun."""
+    now = datetime.now(ZoneInfo("UTC")).timestamp()
+    last_refresh = st.session_state.get('_session_refreshed_at', 0)
+    if now - last_refresh < 600:
+        return
+    try:
+        session = st.session_state.get('session')
+        refresh_token = getattr(session, 'refresh_token', None)
+        if not refresh_token:
+            return
+        refreshed = supabase.auth.refresh_session(refresh_token)
+        if refreshed and refreshed.session:
+            st.session_state['session'] = refreshed.session
+        st.session_state['_session_refreshed_at'] = now
+    except Exception:
+        # If the refresh token itself is invalid/expired (e.g. laptop closed
+        # for days), the user will hit an auth error on their next action and
+        # need to log out/back in — no clean way to force that from here.
+        pass
+
+refresh_supabase_session_if_needed()
 supabase.postgrest.auth(st.session_state['session'].access_token)
 
 # ---- DATABASE FUNCTIONS ----
