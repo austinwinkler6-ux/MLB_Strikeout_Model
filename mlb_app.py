@@ -1086,8 +1086,9 @@ def get_signals_used(result, sport):
 
 def render_ai_insight_block(insight, thesis_label, result, sport):
     """Consistent rendering used everywhere the AI insight shows up — header
-    order, Signals Used transparency badge, and the fixed 'why this matters'
-    footer all live in exactly one place so they can't drift out of sync."""
+    order and the fixed 'why this matters' footer live in exactly one place
+    so they can't drift out of sync. (result/sport kept in the signature for
+    future use even though not currently referenced in the body.)"""
     if not insight:
         return
     st.markdown("---")
@@ -1095,9 +1096,6 @@ def render_ai_insight_block(insight, thesis_label, result, sport):
     if thesis_label:
         st.markdown(f"**{thesis_label}**")
     st.markdown(insight)
-    signals = get_signals_used(result, sport)
-    if signals:
-        st.caption("Signals used: " + " · ".join(f"✅ {s}" for s in signals))
     st.caption("*Why this matters: the goal isn't to predict every outcome correctly — it's to identify situations where the model's assessment differs meaningfully from the current market.*")
 
 def generate_ai_insight(pitcher_name, info, result, sport, thesis_label):
