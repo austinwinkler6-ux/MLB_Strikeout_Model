@@ -169,6 +169,12 @@ def inject_custom_css():
         padding: 24px;
         box-sizing: border-box;
     }
+
+    /* Streamlit's own default top padding is large — trim it so page content
+       (especially Home) starts higher up instead of leaving a big gap. */
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -2983,7 +2989,7 @@ if nav == "🏠 Home":
         st.stop()
 
     st.markdown("""
-        <div style='text-align: center; padding: 24px 0 8px 0;'>
+        <div style='text-align: center; padding: 8px 0 4px 0;'>
             <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;'>
                 Player Prop Analytics
             </div>
@@ -3042,7 +3048,7 @@ if nav == "🏠 Home":
         if st.button("🎯 See Full Today's Card", use_container_width=True, type="primary"):
             st.session_state['nav_redirect'] = "🎯 Today's Card"
             st.rerun()
-    st.markdown("<div style='padding-bottom: 12px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='padding-bottom: 4px;'></div>", unsafe_allow_html=True)
 
     if not _has_bankroll:
         st.markdown("""
