@@ -919,6 +919,10 @@ def calc_profit(bet_amount, odds, result):
 
 # ---- BANKROLL / MM STAKE ----
 RISK_STYLE_CAPS = {'Conservative': 0.01, 'Standard': 0.02, 'Aggressive': 0.03}
+# Scales the tier unit ranges themselves (not just the final $ cap) so Aggressive
+# genuinely recommends bigger individual stakes and Conservative genuinely
+# recommends smaller ones — matches the same 1%/2%/3% ratio as the caps above.
+RISK_STYLE_RANGE_MULTIPLIER = {'Conservative': 0.5, 'Standard': 1.0, 'Aggressive': 1.5}
 
 def get_user_settings():
     try:
@@ -929,18 +933,21 @@ def get_user_settings():
         pass
     return None
 
-def save_user_settings(starting_bankroll, risk_style):
-    """Sets a NEW bankroll baseline as of today. Current Bankroll is always
-    computed live from this baseline + profit since, never stored/synced
-    directly — so there's no update-on-every-bet sync risk."""
+def save_user_settings(starting_bankroll, risk_style, reset_baseline=True):
+    """If reset_baseline=True (setting/resetting the bankroll amount), sets a
+    NEW baseline dated today. If False (just changing risk style), leaves the
+    existing baseline/date untouched — otherwise every risk-style change would
+    silently wipe out accumulated profit-tracking history."""
     try:
-        supabase.table("user_settings").upsert({
+        payload = {
             "user_id": user_id,
             "starting_bankroll": starting_bankroll,
-            "bankroll_set_date": str(date.today()),
             "risk_style": risk_style,
             "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-        }, on_conflict="user_id").execute()
+        }
+        if reset_baseline:
+            payload["bankroll_set_date"] = str(date.today())
+        supabase.table("user_settings").upsert(payload, on_conflict="user_id").execute()
         return True
     except Exception as e:
         st.error(f"Error saving settings: {e}")
@@ -1012,7 +1019,8 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     tier_range = TIER_STAKE_RANGES.get(mm_tier)
     if not tier_range:
         return None
-    tier_min, tier_max = tier_range
+    range_mult = RISK_STYLE_RANGE_MULTIPLIER.get(risk_style, 1.0)
+    tier_min, tier_max = tier_range[0] * range_mult, tier_range[1] * range_mult
 
     model_prob = info.get('Model Prob')
     odds = info.get('Odds')
@@ -1091,8 +1099,10 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     if workload_hard_cap is not None:
         stake_units = min(stake_units, workload_hard_cap)
 
-    # True max (2.0 units) reserved for the strongest confluence of signals only
-    if mm_tier == "🟢 Best Bet" and stake_units > 1.5:
+    # True max reserved for the strongest confluence of signals only —
+    # threshold scales with tier_max so this stays meaningful at every risk style
+    near_max_threshold = tier_max * 0.75
+    if mm_tier == "🟢 Best Bet" and stake_units > near_max_threshold:
         meets_max_criteria = (
             ev_pct is not None and ev_pct >= 15 and
             "Reliable" in confidence_tier and
@@ -1100,7 +1110,7 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
             edge_magnitude is not None and edge_magnitude >= 1.0
         )
         if not meets_max_criteria:
-            stake_units = min(stake_units, 1.5)
+            stake_units = min(stake_units, near_max_threshold)
             reasoning.append("Held below maximum — not all top-tier criteria met")
 
     stake_units = round(stake_units, 2)
@@ -4461,7 +4471,7 @@ elif nav == "⚙️ Settings":
                     st.rerun()
             elif settings:
                 # Risk style changed without resetting the bankroll baseline
-                if save_user_settings(settings['starting_bankroll'], risk_style):
+                if save_user_settings(settings['starting_bankroll'], risk_style, reset_baseline=False):
                     st.success("✅ Risk style updated.")
                     st.rerun()
             else:
