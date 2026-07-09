@@ -2653,14 +2653,13 @@ with st.sidebar:
     st.markdown("---")
     admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
     nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
-    default_index = 0
     if st.session_state.get('nav_redirect') in nav_options:
-        default_index = nav_options.index(st.session_state['nav_redirect'])
+        st.session_state['main_nav_radio'] = st.session_state['nav_redirect']
         del st.session_state['nav_redirect']
     nav = st.radio(
         "Navigation",
         nav_options,
-        index=default_index,
+        key="main_nav_radio",
         label_visibility="collapsed"
     )
     st.markdown("---")
