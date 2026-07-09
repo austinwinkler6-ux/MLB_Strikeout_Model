@@ -3790,8 +3790,7 @@ elif nav == "📒 Bet Tracker":
             bt_date = st.date_input("Date")
             bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
             bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
-            _actual_label = "Actual Strikeouts" if bet_sport == "MLB" else ("Actual Points" if bet_sport == "NBA" else "Actual Assists")
-            bt_actual = st.number_input(_actual_label, value=None, placeholder="e.g. 7")
+            bt_actual = st.number_input("Actual Statistic", value=None, placeholder="e.g. 7")
             bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
         with col3:
             bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
