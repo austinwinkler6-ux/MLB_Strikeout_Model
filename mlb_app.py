@@ -946,7 +946,10 @@ def classify_thesis(info, result, sport):
     """Labels the *kind* of edge a prop represents, using only signals the model
     already computes (trend gaps, workload, EV, direction). Heuristic, not
     guaranteed — a best-effort categorization to help users understand the
-    shape of the edge, not a certainty claim."""
+    shape of the edge, not a certainty claim.
+    Checked in priority order: sharp trend-based theses first (most specific/
+    valuable read), falling back to matchup/park/umpire-driven theses, then
+    general workload-character tags as the final catch-all."""
     if not result or not info:
         return None
     edge = info.get('Edge')
@@ -963,6 +966,11 @@ def classify_thesis(info, result, sport):
         consecutive = result.get('consecutive_5ip_starts')
         last5_avg_ip = result.get('last5_avg_ip')
         season_avg_ip = result.get('season_avg_ip')
+        opp_factor = result.get('opp_factor')
+        park_factor = result.get('park_factor')
+        umpire_factor = result.get('umpire_factor')
+        workload_tier = result.get('workload_tier', '')
+        confidence_tier = result.get('confidence_tier', '')
 
         season_implied_k_per_start = (season_k_pct * expected_bf) if (season_k_pct and expected_bf) else None
         workload_recovering = (
@@ -987,6 +995,20 @@ def classify_thesis(info, result, sport):
                 last5_avg_ip < season_avg_ip * 0.70 and
                 (consecutive is None or consecutive <= 1)):
             return "💰 Market Overreaction"
+
+        # Matchup/environment-driven theses
+        if direction == 'over' and edge > 0 and opp_factor and opp_factor >= 1.08:
+            return "🎯 Strikeout Matchup"
+        if direction == 'over' and edge > 0 and park_factor and park_factor >= 1.05:
+            return "🏟 Park Advantage"
+        if direction == 'over' and edge > 0 and umpire_factor and umpire_factor >= 1.02:
+            return "🧤 Favorable Umpire"
+
+        # General workload-character fallback
+        if edge > 0 and "Stable" in workload_tier and "Reliable" in confidence_tier:
+            return "🧱 Stable Workhorse"
+        if "Highly Volatile" in workload_tier or "Uncertain Workload" in confidence_tier:
+            return "⚠️ Uncertain Workload"
 
     return None
 
@@ -1022,6 +1044,10 @@ def build_insight_facts(pitcher_name, info, result, sport):
             facts.append(f"Performance-variance tier: {result['confidence_tier']}")
         if result.get('opp_factor') is not None:
             facts.append(f"Opponent strikeout-rate factor vs league average: {result['opp_factor']}")
+        if result.get('park_factor') is not None and result.get('park_factor') != 1.0:
+            facts.append(f"Park factor: {result['park_factor']} (>1.0 favors pitcher/strikeouts)")
+        if result.get('umpire_name') and result.get('umpire_factor'):
+            facts.append(f"Home plate umpire: {result['umpire_name']}, strike-zone factor {result['umpire_factor']} (>1.0 favors strikeouts)")
     facts.append(f"Model projection: {info.get('Projection')}")
     facts.append(f"Book line: {info.get('FanDuel Line') or info.get('DraftKings Line')}")
     facts.append(f"Model edge: {info.get('Edge')}")
@@ -1029,31 +1055,84 @@ def build_insight_facts(pitcher_name, info, result, sport):
     facts.append(f"Direction: {info.get('Direction')}")
     return facts
 
+def get_signals_used(result, sport):
+    """Returns a friendly list of which data categories fed into the insight —
+    lets users see it's grounded in the model's own signals, not invented."""
+    signals = []
+    if not result:
+        return signals
+    if sport == 'mlb_strikeouts':
+        if result.get('last5_k') is not None or result.get('last10_k') is not None:
+            signals.append("Recent Form")
+        if result.get('workload_tier') or result.get('last5_avg_ip') is not None:
+            signals.append("Workload Trend")
+        if result.get('opp_factor') is not None:
+            signals.append("Opponent Matchup")
+        if result.get('park_factor') is not None and result.get('park_factor') != 1.0:
+            signals.append("Park Factor")
+        if result.get('umpire_name'):
+            signals.append("Umpire")
+    else:
+        if result.get('last5_avg') is not None or result.get('last10_avg') is not None:
+            signals.append("Recent Form")
+        if result.get('expected_minutes') is not None:
+            signals.append("Workload Trend")
+        if result.get('opp_def_rating') is not None or result.get('opp_ast_allowed') is not None:
+            signals.append("Opponent Matchup")
+        if result.get('opp_pace') is not None:
+            signals.append("Pace")
+    signals.append("Betting Market Line")
+    return signals
+
+def render_ai_insight_block(insight, thesis_label, result, sport):
+    """Consistent rendering used everywhere the AI insight shows up — header
+    order, Signals Used transparency badge, and the fixed 'why this matters'
+    footer all live in exactly one place so they can't drift out of sync."""
+    if not insight:
+        return
+    st.markdown("---")
+    st.markdown("🧠 **Model Thesis**")
+    if thesis_label:
+        st.markdown(f"**{thesis_label}**")
+    st.markdown(insight)
+    signals = get_signals_used(result, sport)
+    if signals:
+        st.caption("Signals used: " + " · ".join(f"✅ {s}" for s in signals))
+    st.caption("*Why this matters: the goal isn't to predict every outcome correctly — it's to identify situations where the model's assessment differs meaningfully from the current market.*")
+
 def generate_ai_insight(pitcher_name, info, result, sport, thesis_label):
     """Calls Claude to turn the model's own facts into a short, evidence-only
     explanation. Explicitly instructed to never invent context (injury status,
-    health, certainty) that isn't in the supplied facts."""
+    health, certainty) that isn't in the supplied facts, and to never phrase
+    anything as a certain outcome."""
     if not ANTHROPIC_API_KEY:
         return None
     facts = build_insight_facts(pitcher_name, info, result, sport)
     facts_text = "\n".join(f"- {f}" for f in facts)
     thesis_note = f"\nThe model has tagged this as: {thesis_label}" if thesis_label else ""
+    mm_tier = info.get('MM Tier', 'unrated')
+    reliability_tier = result.get('confidence_tier', '') if result else ''
 
-    prompt = f"""You are writing a short "Model Insight" note for a sports betting analytics app, explaining why a statistical model's projection may differ from the sportsbook's line for {pitcher_name}.
+    prompt = f"""You are writing a short "Model Thesis" note for a sports betting analytics app, explaining why a statistical model's projection may differ from the sportsbook's line for {pitcher_name}.
 
 Here are the ONLY facts you may use. Do not use any outside knowledge about this player, their health, or their team:
 {facts_text}
 {thesis_note}
+This prop's overall tier: {mm_tier}
+This prop's reliability read: {reliability_tier}
 
-Write 2-4 sentences explaining the baseball reasoning behind the projection, using ONLY the facts above. 
+Write the note in this exact structure:
+1. ONE bolded sentence (markdown **bold**) stating the model's overall read — analytical, not a stat restatement. Example: "**The model believes {pitcher_name} is undervalued because his recent strikeout profile is stronger than today's market line.**"
+2. 2-3 sentences of supporting analysis. Explain what the market APPEARS TO BE PRICING versus what the underlying data supports — don't just list numbers. Bad: "Averaging 5.88 innings over his last 5 starts." Good: "The sportsbook appears to be pricing him closer to a shorter outing than his recent workload actually supports."
+3. One closing line starting with "**Overall Thesis:**" that ties the reasoning back to this prop's tier and reliability read above — the model's overall take on whether this edge is worth acting on given both the edge size and the confidence level.
 
 Strict rules:
-- Never state or imply anything about the player's health, injury status, or certainty of future performance unless a fact explicitly says so.
-- Never invent context not present in the facts (no assumptions about why a trend exists).
-- Stick to describing the factual pattern (e.g. "his innings have increased from X to Y over his last two starts") rather than diagnosing a cause.
-- Do not use hedge phrases like "presumably" or "likely due to" for anything not directly supported by the facts.
+- NEVER say a bet "will hit," "is a lock," "is guaranteed," or anything implying certainty about a future outcome.
+- Always phrase conclusions as "the model believes," "the data suggests," "the market appears to be...", never as fact about what will happen.
+- Never state or imply anything about health, injury, or motivation not explicitly in the facts.
+- Never invent context not present in the facts.
 - Write in plain, confident, analytical language — like a sharp bettor explaining their read, not a disclaimer-heavy legal notice.
-- No preamble, no "Based on the facts provided" — just the explanation itself."""
+- No preamble, no "Based on the facts provided" — just the 3-part note itself."""
 
     try:
         response = requests.post(
@@ -2436,12 +2515,7 @@ if nav == "🏠 Home":
                             insight, thesis_label = get_or_generate_ai_insight(
                                 mm_today_str(), cache_sport_label, top_entry['name'], top_entry['info'], top_entry['result']
                             )
-                        if insight:
-                            st.markdown("---")
-                            if thesis_label:
-                                st.markdown(f"**{thesis_label}**")
-                            st.markdown("🧠 **Model Insight**")
-                            st.markdown(insight)
+                        render_ai_insight_block(insight, thesis_label, top_entry['result'], top_entry['sport_key'])
 
     else:
         st.markdown("""
@@ -2522,6 +2596,27 @@ if nav == "🏠 Home":
                 <div style='font-family: var(--mm-mono); font-size: 1.15rem; font-weight: 600;'>Pass Attempts · Pass Completions · Receptions</div>
             </div>
         """, unsafe_allow_html=True)
+
+    st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
+    st.markdown(f"""
+        <div class='mm-card' style='border-color: var(--mm-accent);'>
+            <div style='font-size: 1.6rem; margin-bottom: 10px;'>🧠</div>
+            <h2 style='margin: 0 0 8px 0; font-size: 1.3rem;'>AI Model Thesis</h2>
+            <p style='color: var(--mm-text-dim); font-size: 1rem; line-height: 1.55; margin-bottom: 18px;'>
+                Don't just see the projection. Understand why the model disagrees with the market.
+            </p>
+            <p style='color: var(--mm-text-faint); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;'>
+                Every recommended bet includes an AI-generated explanation built from:
+            </p>
+            <div style='display: flex; gap: 10px; flex-wrap: wrap;'>
+                {tier_badge("Recent Performance")}
+                {tier_badge("Workload Trends")}
+                {tier_badge("Matchup Data")}
+                {tier_badge("Betting Market Movement")}
+                {tier_badge("Model Projections")}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("<div style='padding-top: 44px;'></div>", unsafe_allow_html=True)
     st.markdown("<h2 style='font-size: 1.4rem; margin-bottom: 20px;'>How It Works</h2>", unsafe_allow_html=True)
@@ -2662,12 +2757,7 @@ elif nav == "🎯 Today's Card":
                                     insight, thesis_label = get_or_generate_ai_insight(
                                         mm_today_str(), cache_sport_label, e['name'], e['info'], e['result']
                                     )
-                                if insight:
-                                    st.markdown("---")
-                                    if thesis_label:
-                                        st.markdown(f"**{thesis_label}**")
-                                    st.markdown(f"🧠 **Model Insight**")
-                                    st.markdown(insight)
+                                render_ai_insight_block(insight, thesis_label, e['result'], e['sport_key'])
                 st.divider()
 
         render_ranked_section("🟢 Today's Best Bets", groups["🟢 Best Bet"], auto_insight=True)
@@ -2852,17 +2942,13 @@ elif nav == "⚾ MLB Models":
                         for line in why_lines:
                             st.markdown(line)
                         if ANTHROPIC_API_KEY:
-                            st.markdown("---")
                             if st.button("🧠 Generate Model Insight", key=f"insight_btn_{pitcher}"):
                                 with st.spinner("🧠 Generating model insight..."):
                                     insight, thesis_label = get_or_generate_ai_insight(
                                         mm_today_str(), 'MLB', pitcher, info, result
                                     )
                                 if insight:
-                                    if thesis_label:
-                                        st.markdown(f"**{thesis_label}**")
-                                    st.markdown("🧠 **Model Insight**")
-                                    st.markdown(insight)
+                                    render_ai_insight_block(insight, thesis_label, result, 'mlb_strikeouts')
                                 else:
                                     st.caption("Couldn't generate an insight right now.")
 
@@ -3089,17 +3175,13 @@ elif nav == "🏀 NBA Models":
                             for line in why_lines:
                                 st.markdown(line)
                             if ANTHROPIC_API_KEY:
-                                st.markdown("---")
                                 if st.button("🧠 Generate Model Insight", key=f"{session_key}_insight_btn_{player}"):
                                     with st.spinner("🧠 Generating model insight..."):
                                         insight, thesis_label = get_or_generate_ai_insight(
                                             mm_today_str(), nba_bet_sport_label(sport_key), player, info, result
                                         )
                                     if insight:
-                                        if thesis_label:
-                                            st.markdown(f"**{thesis_label}**")
-                                        st.markdown("🧠 **Model Insight**")
-                                        st.markdown(insight)
+                                        render_ai_insight_block(insight, thesis_label, result, sport_key)
                                     else:
                                         st.caption("Couldn't generate an insight right now.")
 
