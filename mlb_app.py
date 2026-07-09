@@ -3036,15 +3036,6 @@ if nav == "🏠 Home":
             </div>
         """, unsafe_allow_html=True)
 
-    st.markdown(f"""
-        <div style='display: flex; justify-content: center; gap: 10px; padding: 12px 0 20px 0; flex-wrap: wrap;'>
-            {tier_badge("🟢 Best Bet")}
-            {tier_badge("🔵 Worth a Look")}
-            {tier_badge("🟡 Lean")}
-            {tier_badge("🔴 Pass")}
-        </div>
-    """, unsafe_allow_html=True)
-
     cta_col1, cta_col2, cta_col3 = st.columns([1, 1, 1])
     with cta_col2:
         if st.button("🎯 See Full Today's Card", use_container_width=True, type="primary"):
