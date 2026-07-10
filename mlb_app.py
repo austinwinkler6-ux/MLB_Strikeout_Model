@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from collections import Counter
 from io import StringIO
 from supabase import create_client, Client
-from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, leaguedashteamstats
+from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, leaguedashteamstats, leaguedashptstats
 from nba_api.stats.static import players as nba_players
 from scipy import stats
 
@@ -1969,7 +1969,7 @@ def get_nba_games_for_date(game_date_str):
     try:
         url = f"https://stats.nba.com/stats/scoreboardV2?DayOffset=0&LeagueID=00&gameDate={game_date_str}"
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.nba.com'}
-        data = requests.get(url, headers=headers).json()
+        data = requests.get(url, headers=headers, timeout=NBA_API_TIMEOUT).json()
         games = []
         game_header = data['resultSets'][0]
         headers_list = game_header['headers']
@@ -2224,6 +2224,34 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
     except Exception as e:
         return None
 
+NBA_API_TIMEOUT = 20  # seconds — fail fast instead of hanging indefinitely on a stalled request
+
+@st.cache_data(ttl=3600)
+def get_league_player_advanced_stats(season, measure_type='Advanced'):
+    """League-wide player stats are the same regardless of which player is being
+    evaluated — cached so a Backtest run processing 100+ players doesn't re-fetch
+    this identical table from the NBA API for every single one of them."""
+    stats = leaguedashplayerstats.LeagueDashPlayerStats(
+        season=season, per_mode_detailed='PerGame', measure_type_detailed_defense=measure_type, timeout=NBA_API_TIMEOUT
+    )
+    return stats.get_data_frames()[0]
+
+@st.cache_data(ttl=3600)
+def get_league_team_stats(season, measure_type='Advanced'):
+    """Same reasoning as get_league_player_advanced_stats — one league-wide
+    team table, cached instead of re-fetched per player."""
+    stats = leaguedashteamstats.LeagueDashTeamStats(
+        season=season, per_mode_detailed='PerGame', measure_type_detailed_defense=measure_type, timeout=NBA_API_TIMEOUT
+    )
+    return stats.get_data_frames()[0]
+
+@st.cache_data(ttl=3600)
+def get_league_passing_stats(season):
+    stats = leaguedashptstats.LeagueDashPtStats(
+        season=season, per_mode_simple='PerGame', player_or_team='Player', pt_measure_type='Passing', timeout=NBA_API_TIMEOUT
+    )
+    return stats.get_data_frames()[0]
+
 # ---- NBA POINTS PROJECTION ENGINE ----
 def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26'):
     try:
@@ -2232,7 +2260,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             return None
         player_id = player_list[0]['id']
 
-        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
         df = logs.get_data_frames()[0]
         if df.empty or len(df) < 5:
             return None
@@ -2273,13 +2301,11 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
 
-        adv_stats = leaguedashplayerstats.LeagueDashPlayerStats(season=season, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-        adv_df = adv_stats.get_data_frames()[0]
+        adv_df = get_league_player_advanced_stats(season)
         player_adv = adv_df[adv_df['PLAYER_ID'] == player_id]
         usage_rate = round(float(player_adv['USG_PCT'].iloc[0]), 3) if not player_adv.empty else 0.20
 
-        team_stats = leaguedashteamstats.LeagueDashTeamStats(season=season, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-        teams_df = team_stats.get_data_frames()[0]
+        teams_df = get_league_team_stats(season)
         opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
         opp_team = teams_df[teams_df['TEAM_NAME'] == opp_full_name]
         opp_def_rating = round(float(opp_team['DEF_RATING'].iloc[0]), 1) if not opp_team.empty else league_avg_def_rating
@@ -2359,7 +2385,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             return None
         player_id = player_list[0]['id']
 
-        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
         df = logs.get_data_frames()[0]
         if df.empty or len(df) < 5:
             return None
@@ -2402,8 +2428,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
 
-        adv_stats = leaguedashplayerstats.LeagueDashPlayerStats(season=season, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-        adv_df = adv_stats.get_data_frames()[0]
+        adv_df = get_league_player_advanced_stats(season)
         player_adv = adv_df[adv_df['PLAYER_ID'] == player_id]
         usage_rate = round(float(player_adv['USG_PCT'].iloc[0]), 3) if not player_adv.empty else 0.20
         ast_pct = round(float(player_adv['AST_PCT'].iloc[0]), 3) if not player_adv.empty else 0.15
@@ -2411,9 +2436,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         potential_assists = None
         potential_ast_adj = 0
         try:
-            from nba_api.stats.endpoints import leaguedashptstats
-            pt_stats = leaguedashptstats.LeagueDashPtStats(season=season, per_mode_simple='PerGame', player_or_team='Player', pt_measure_type='Passing')
-            pt_df = pt_stats.get_data_frames()[0]
+            pt_df = get_league_passing_stats(season)
             player_pt = pt_df[pt_df['PLAYER_ID'] == player_id]
             if not player_pt.empty and 'POTENTIAL_AST' in player_pt.columns:
                 potential_assists = round(float(player_pt['POTENTIAL_AST'].iloc[0]), 1)
@@ -2423,16 +2446,14 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         except:
             pass
 
-        team_stats = leaguedashteamstats.LeagueDashTeamStats(season=season, per_mode_detailed='PerGame', measure_type_detailed_defense='Advanced')
-        teams_df = team_stats.get_data_frames()[0]
+        teams_df = get_league_team_stats(season)
         opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
         opp_team = teams_df[teams_df['TEAM_NAME'] == opp_full_name]
         opp_pace = round(float(opp_team['PACE'].iloc[0]), 1) if not opp_team.empty else league_avg_pace
 
         opp_ast_allowed = 25.0
         try:
-            opp_basic = leaguedashteamstats.LeagueDashTeamStats(season=season, per_mode_detailed='PerGame', measure_type_detailed_defense='Base')
-            opp_basic_df = opp_basic.get_data_frames()[0]
+            opp_basic_df = get_league_team_stats(season, measure_type='Base')
             opp_basic_row = opp_basic_df[opp_basic_df['TEAM_NAME'] == opp_full_name]
             if not opp_basic_row.empty and 'OPP_AST' in opp_basic_row.columns:
                 opp_ast_allowed = round(float(opp_basic_row['OPP_AST'].iloc[0]), 1)
@@ -2771,7 +2792,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
             if not player_list:
                 continue
             player_id = player_list[0]['id']
-            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
             df_check = logs.get_data_frames()[0]
             if df_check.empty:
                 continue
@@ -3706,7 +3727,7 @@ elif nav == "🏀 NBA Models":
                                 player_list = nba_players.find_players_by_full_name(player)
                                 if player_list:
                                     player_id = player_list[0]['id']
-                                    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+                                    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
                                     df_check = logs.get_data_frames()[0]
                                     matchup = df_check['MATCHUP'].iloc[0]
                                     home_or_away = 'home' if 'vs.' in matchup else 'away'
@@ -4446,7 +4467,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         away_name = nba_abbrev_to_name.get(away_abbrev, '')
                         try:
                             box_url = f"https://stats.nba.com/stats/boxscoretraditionalv2?GameID={game['game_id']}&StartPeriod=0&EndPeriod=10&StartRange=0&EndRange=28800&RangeType=0"
-                            box_data = requests.get(box_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.nba.com'}).json()
+                            box_data = requests.get(box_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.nba.com'}, timeout=NBA_API_TIMEOUT).json()
                             player_stats = box_data['resultSets'][0]
                             headers_list = player_stats['headers']
                             for row in player_stats['rowSet']:
