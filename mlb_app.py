@@ -1,4 +1,5 @@
 import streamlit as st
+import time
 import requests
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -1966,35 +1967,40 @@ def get_actual_strikeouts(game_pk, pitcher_name):
     return None
 
 def get_nba_games_for_date(game_date_str):
-    try:
-        url = f"https://stats.nba.com/stats/scoreboardV2?DayOffset=0&LeagueID=00&gameDate={game_date_str}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.nba.com/',
-            'Origin': 'https://www.nba.com',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'x-nba-stats-origin': 'stats',
-            'x-nba-stats-token': 'true',
-            'Connection': 'keep-alive',
-        }
-        response = requests.get(url, headers=headers, timeout=NBA_API_TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        games = []
-        game_header = data['resultSets'][0]
-        headers_list = game_header['headers']
-        for row in game_header['rowSet']:
-            game = dict(zip(headers_list, row))
-            games.append({
-                'game_id': game['GAME_ID'],
-                'home_team_abbrev': game.get('HOME_TEAM_ABBREVIATION', ''),
-                'away_team_abbrev': game.get('VISITOR_TEAM_ABBREVIATION', '')
-            })
-        return games
-    except Exception as e:
-        st.error(f"Error fetching NBA games: {e}")
-        return []
+    url = f"https://stats.nba.com/stats/scoreboardV2?DayOffset=0&LeagueID=00&gameDate={game_date_str}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.nba.com/',
+        'Origin': 'https://www.nba.com',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'x-nba-stats-origin': 'stats',
+        'x-nba-stats-token': 'true',
+        'Connection': 'keep-alive',
+    }
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.get(url, headers=headers, timeout=NBA_API_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+            games = []
+            game_header = data['resultSets'][0]
+            headers_list = game_header['headers']
+            for row in game_header['rowSet']:
+                game = dict(zip(headers_list, row))
+                games.append({
+                    'game_id': game['GAME_ID'],
+                    'home_team_abbrev': game.get('HOME_TEAM_ABBREVIATION', ''),
+                    'away_team_abbrev': game.get('VISITOR_TEAM_ABBREVIATION', '')
+                })
+            return games
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(2)
+    st.error(f"Error fetching NBA games after 3 attempts: {last_error}")
+    return []
 
 # ---- MLB PROJECTION ENGINE ----
 def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1.0, before_date=None,
