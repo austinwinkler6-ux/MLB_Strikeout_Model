@@ -3041,8 +3041,7 @@ if nav == "🏠 Home":
                 <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px;'>
                     🔥 Today's Highest Rated {tier_word} &nbsp;·&nbsp; {top_entry['sport_label']}
                 </div>
-                <h2 style='margin: 0 0 4px 0; font-size: 1.7rem;'>{top_entry['name']}</h2>
-                {already_bet_banner}
+                <h2 style='margin: 0 0 4px 0; font-size: 1.7rem;'>{top_entry['name']}</h2>{already_bet_banner}
                 <div style='color: var(--mm-text-dim); font-size: 1.15rem; margin-bottom: 16px;'>{line_str.strip()}</div>
                 <div style='display: flex; justify-content: center; gap: 28px; margin-bottom: 18px;'>
                     <div>
