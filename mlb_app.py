@@ -4525,6 +4525,7 @@ elif nav == "🧪 Backtest" and is_admin:
                                     result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
                                 else:
                                     result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
+                                time.sleep(1.5)  # avoid rapid-fire requests that can trigger rate-limiting/blocking
                                 if result:
                                     results.append({
                                         'Player': player_name,
