@@ -2308,6 +2308,37 @@ def get_bref_league_season_totals(season_end_year):
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
+def get_bref_team_pace_estimates(season_end_year):
+    """Estimates each team's pace (possessions/game) from aggregated player
+    season totals: Poss ≈ FGA - OREB + TOV + 0.44*FTA. Basketball-Reference's
+    library doesn't expose a direct pace stat, so this is a real, team-specific
+    approximation built from actual totals — meaningfully better than a flat
+    league-average fallback that never varies by opponent."""
+    try:
+        totals_df = get_bref_league_season_totals(season_end_year)
+        required = ['team', 'attempted_field_goals', 'offensive_rebounds', 'turnovers', 'attempted_free_throws', 'games_played']
+        if totals_df.empty or any(c not in totals_df.columns for c in required):
+            return {}
+        estimates = {}
+        for team_val, group in totals_df.groupby('team'):
+            fga = pd.to_numeric(group['attempted_field_goals'], errors='coerce').sum()
+            oreb = pd.to_numeric(group['offensive_rebounds'], errors='coerce').sum()
+            tov = pd.to_numeric(group['turnovers'], errors='coerce').sum()
+            fta = pd.to_numeric(group['attempted_free_throws'], errors='coerce').sum()
+            team_games = pd.to_numeric(group['games_played'], errors='coerce').max()
+            if team_games and team_games > 0:
+                total_poss = fga - oreb + tov + 0.44 * fta
+                team_name = team_val.value.replace('_', ' ').title() if hasattr(team_val, 'value') else str(team_val).replace('_', ' ').title()
+                estimates[team_name] = round(total_poss / team_games, 1)
+        return estimates
+    except Exception:
+        return {}
+
+def get_bref_opp_pace(opp_full_name, season_end_year):
+    estimates = get_bref_team_pace_estimates(season_end_year)
+    return estimates.get(opp_full_name, league_avg_pace)
+
+@st.cache_data(ttl=3600)
 def get_bref_standings(season_end_year):
     """Team win/loss + point differential — used as our best available proxy
     for opponent strength/pace, since Basketball-Reference's library doesn't
@@ -2439,10 +2470,11 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
                 usage_rate = round(float(player_adv[usage_col].iloc[0]), 3)
 
         # Known limitation: Basketball-Reference's library doesn't expose a direct
-        # team pace / defensive rating stat like stats.nba.com did — falling back
-        # to league averages here rather than a real opponent-specific number.
+        # defensive rating stat like stats.nba.com did — that one still falls back
+        # to league average. Pace, however, is now a real per-opponent estimate.
         opp_def_rating = league_avg_def_rating
-        opp_pace = league_avg_pace
+        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
+        opp_pace = get_bref_opp_pace(opp_full_name, season_end_year)
 
         location_col = 'location' if 'location' in df.columns else None
         if location_col:
@@ -2582,12 +2614,12 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
 
         # Known limitations: Basketball-Reference's library doesn't expose
         # "potential assists" (a tracking-data stat unique to stats.nba.com) or
-        # opponent-assists-allowed / team pace the way the old data source did.
-        # These fall back to neutral/league-average rather than being computed —
-        # a real precision trade-off versus the old pipeline, not a bug.
+        # opponent-assists-allowed the way the old data source did — those still
+        # fall back to neutral. Pace, however, is now a real per-opponent estimate.
         potential_assists = None
         potential_ast_adj = 0
-        opp_pace = league_avg_pace
+        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
+        opp_pace = get_bref_opp_pace(opp_full_name, season_end_year)
         opp_ast_allowed = 25.0
         opp_ast_adj = 0
 
