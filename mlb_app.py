@@ -4556,20 +4556,6 @@ elif nav == "🔬 Model Lab" and is_admin:
             st.dataframe(version_df, use_container_width=True)
             st.bar_chart(version_df.set_index('Version')['MAE'])
 
-        elif lab_sport == "NBA Points":
-            st.subheader("🏀 NBA Points Model Performance")
-
-        else:
-            st.subheader("🏀 NBA Assists — Conversion Rate Tester")
-            conversion_rate = st.select_slider("Potential Assist Conversion Rate", options=[0.42, 0.45, 0.48], value=0.45)
-            st.caption(f"Testing: expected assists = potential assists × {conversion_rate}")
-            if preds_with_actual:
-                errors_by_rate = {rate: round(sum(abs(p['projection'] - p['actual']) for p in preds_with_actual) / len(preds_with_actual), 2) for rate in [0.42, 0.45, 0.48]}
-                rate_df = pd.DataFrame([{'Conversion Rate': k, 'MAE': v} for k, v in errors_by_rate.items()])
-                st.dataframe(rate_df, use_container_width=True)
-                best_rate = min(errors_by_rate, key=errors_by_rate.get)
-                st.success(f"✅ Best conversion rate so far: **{best_rate}** with MAE of **{errors_by_rate[best_rate]}**")
-
         preds_with_tier = [p for p in preds_with_actual if p.get('confidence_tier')]
         if preds_with_tier:
             st.markdown("---")
