@@ -4569,6 +4569,10 @@ elif nav == "🧪 Backtest" and is_admin:
     else:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
         is_assists = backtest_sport == "NBA Assists"
+        max_players = st.number_input(
+            "Max players to test", min_value=5, max_value=200, value=15, step=5,
+            help="Basketball-Reference scraping is slower per player than an API call. Keep this small for a quick test — a big slate (like Christmas Day) can have 80-100+ players and take long enough to hit a timeout. Raise this once you've confirmed it works."
+        )
 
         if st.button("🔍 Load NBA Games & Run Projections", use_container_width=True):
             with st.spinner(f"Pulling NBA games for {backtest_date}..."):
@@ -4576,6 +4580,7 @@ elif nav == "🧪 Backtest" and is_admin:
                 if box_df.empty:
                     st.error("No NBA games found for that date (Basketball-Reference)")
                 else:
+                    box_df = box_df.head(int(max_players))
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     results = []
