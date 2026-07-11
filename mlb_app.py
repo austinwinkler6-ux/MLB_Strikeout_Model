@@ -4442,6 +4442,28 @@ elif nav == "🔬 Model Lab" and is_admin:
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
+    with st.expander("🔧 NBA Proxy Diagnostic (test connection only)"):
+        st.caption("Tests the exact same proxy against a simple, definitely-not-blocked site first — to prove whether the proxy connection itself works, separate from whether stats.nba.com specifically blocks it.")
+        if st.button("Test Proxy Connection"):
+            if not NBA_PROXY_URL:
+                st.error("NBA_PROXY_URL is not set.")
+            else:
+                try:
+                    test_resp = requests.get("https://ipv4.webshare.io/", proxies=NBA_PROXY_DICT, timeout=15)
+                    st.success(f"✅ Proxy works! It reported this outbound IP: {test_resp.text.strip()}")
+                except Exception as e:
+                    st.error(f"❌ Proxy connection itself failed: {e}")
+                try:
+                    test_resp2 = requests.get("https://stats.nba.com/stats/scoreboardV2?DayOffset=0&LeagueID=00&gameDate=12/25/2025", headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': 'https://www.nba.com/', 'Origin': 'https://www.nba.com',
+                        'Accept': 'application/json, text/plain, */*', 'Accept-Language': 'en-US,en;q=0.9',
+                        'x-nba-stats-origin': 'stats', 'x-nba-stats-token': 'true', 'Connection': 'keep-alive',
+                    }, proxies=NBA_PROXY_DICT, timeout=15)
+                    st.success(f"✅ stats.nba.com responded! Status: {test_resp2.status_code}")
+                except Exception as e:
+                    st.error(f"❌ stats.nba.com specifically failed: {e}")
+
     backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists"], key="backtest_sport")
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
