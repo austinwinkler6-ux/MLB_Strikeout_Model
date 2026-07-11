@@ -9,6 +9,8 @@ from io import StringIO
 from supabase import create_client, Client
 from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, leaguedashteamstats, leaguedashptstats
 from nba_api.stats.static import players as nba_players
+from basketball_reference_web_scraper import client as bref_client
+from basketball_reference_web_scraper.data import OutputType as BRefOutputType
 from scipy import stats
 
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
@@ -2255,6 +2257,98 @@ NBA_API_TIMEOUT = 20  # seconds — fail fast instead of hanging indefinitely on
 NBA_PROXY_URL = st.secrets.get("NBA_PROXY_URL")
 NBA_PROXY_DICT = {"http": NBA_PROXY_URL, "https": NBA_PROXY_URL} if NBA_PROXY_URL else None
 
+# ---- BASKETBALL-REFERENCE DATA LAYER ----
+# stats.nba.com blocks every IP type we tested (datacenter, sticky residential,
+# rotating residential) at the request-fingerprint level, not the IP level — see
+# July 2026 diagnostic session. Basketball-Reference is a separate company
+# (Sports Reference LLC) with no known equivalent bot detection, and is the
+# standard fallback data source used by the wider NBA-stats community for
+# exactly this reason. This layer replaces stats.nba.com as the data source;
+# the actual projection math (blending, workload tiers, EV/tier system) is
+# unchanged — only how the raw numbers get fetched.
+
+@st.cache_data(ttl=86400)
+def get_bref_player_slug(player_name):
+    """Basketball-Reference identifies players by a 'slug' (e.g. 'westbru01'),
+    not by name — resolve name -> slug once per day per player, cached, since
+    it rarely changes and this search hits the site directly."""
+    try:
+        last_name = player_name.strip().split(" ")[-1]
+        results = bref_client.search(term=last_name)
+        players_results = results.get("players", []) if isinstance(results, dict) else []
+        name_lower = player_name.strip().lower()
+        for p in players_results:
+            if p.get("name", "").strip().lower() == name_lower:
+                return p.get("slug") or p.get("identifier")
+        # Fallback: first result if no exact match (e.g. suffix/accent mismatch)
+        if players_results:
+            return players_results[0].get("slug") or players_results[0].get("identifier")
+        return None
+    except Exception:
+        return None
+
+@st.cache_data(ttl=3600)
+def get_bref_league_advanced_stats(season_end_year):
+    """League-wide advanced stats (usage rate and similar) for every player —
+    one call, cached, shared across every player evaluated that hour."""
+    try:
+        data = bref_client.players_advanced_season_totals(season_end_year=season_end_year)
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_bref_league_season_totals(season_end_year):
+    """League-wide basic season totals for every player — used to derive
+    season-long per-game averages (points, assists) by dividing by games played."""
+    try:
+        data = bref_client.players_season_totals(season_end_year=season_end_year)
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_bref_standings(season_end_year):
+    """Team win/loss + point differential — used as our best available proxy
+    for opponent strength/pace, since Basketball-Reference's library doesn't
+    expose a direct 'team pace' stat the way stats.nba.com's LeagueDashTeamStats
+    does. This is a known, deliberate simplification versus the old data source."""
+    try:
+        data = bref_client.standings(season_end_year=season_end_year)
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
+
+def get_bref_player_game_log(player_name, season_end_year):
+    """A player's full-season game log — the direct replacement for stats.nba.com's
+    PlayerGameLog. Not cached at this layer (keyed by resolved slug in the caller)
+    since Streamlit's cache_data needs hashable args and player_name -> slug
+    resolution already has its own cache."""
+    slug = get_bref_player_slug(player_name)
+    if not slug:
+        return pd.DataFrame(), None
+    try:
+        data = _cached_bref_player_box_scores(slug, season_end_year)
+        return pd.DataFrame(data), slug
+    except Exception:
+        return pd.DataFrame(), slug
+
+@st.cache_data(ttl=3600)
+def _cached_bref_player_box_scores(player_identifier, season_end_year):
+    return bref_client.regular_season_player_box_scores(player_identifier=player_identifier, season_end_year=season_end_year)
+
+@st.cache_data(ttl=3600)
+def get_bref_games_for_date(year, month, day):
+    """All player box scores league-wide for one specific date — replaces both
+    get_nba_games_for_date() AND the per-game box score fetch in Backtest with a
+    single call, since Basketball-Reference's player_box_scores() already returns
+    every player who played that day across every game."""
+    try:
+        data = bref_client.player_box_scores(day=day, month=month, year=year)
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
+
 @st.cache_data(ttl=3600)
 def get_league_player_advanced_stats(season, measure_type='Advanced'):
     """League-wide player stats are the same regardless of which player is being
@@ -2287,31 +2381,27 @@ def get_league_passing_stats(season):
 # ---- NBA POINTS PROJECTION ENGINE ----
 def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26'):
     try:
-        player_list = nba_players.find_players_by_full_name(player_name)
-        if not player_list:
-            return None
-        player_id = player_list[0]['id']
+        season_end_year = int(season.split("-")[0]) + 1
 
-        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
-        df = logs.get_data_frames()[0]
-        if df.empty or len(df) < 5:
+        df, slug = get_bref_player_game_log(player_name, season_end_year)
+        if df.empty or len(df) < 5 or not slug:
             return None
 
-        df = df[['GAME_DATE', 'MATCHUP', 'PTS', 'FGA', 'MIN']]
-        df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['FGA'] = pd.to_numeric(df['FGA'], errors='coerce')
-        df = df.iloc[::-1].reset_index(drop=True)
+        df['minutes_played'] = pd.to_numeric(df.get('seconds_played', 0), errors='coerce') / 60.0
+        df['attempted_field_goals'] = pd.to_numeric(df.get('attempted_field_goals', 0), errors='coerce')
+        df['points'] = pd.to_numeric(df.get('points', 0), errors='coerce')
+        df = df.reset_index(drop=True)
 
-        season_ppg = round(df['PTS'].mean(), 1)
-        season_mpg = round(df['MIN'].mean(), 1)
-        season_fga = round(df['FGA'].mean(), 1)
-        last5_avg = round(df['PTS'].tail(5).mean(), 1)
-        last10_avg = round(df['PTS'].tail(10).mean(), 1)
-        last5_fga = round(df['FGA'].tail(5).mean(), 1)
-        last5_min = round(df['MIN'].tail(5).mean(), 1)
-        last10_min = round(df['MIN'].tail(10).mean(), 1)
+        season_ppg = round(df['points'].mean(), 1)
+        season_mpg = round(df['minutes_played'].mean(), 1)
+        season_fga = round(df['attempted_field_goals'].mean(), 1)
+        last5_avg = round(df['points'].tail(5).mean(), 1)
+        last10_avg = round(df['points'].tail(10).mean(), 1)
+        last5_fga = round(df['attempted_field_goals'].tail(5).mean(), 1)
+        last5_min = round(df['minutes_played'].tail(5).mean(), 1)
+        last10_min = round(df['minutes_played'].tail(10).mean(), 1)
 
-        last10_pts = df['PTS'].tail(10)
+        last10_pts = df['points'].tail(10)
         last10_pts_std = round(last10_pts.std(), 2) if len(last10_pts) > 1 else 0.0
         cv = round(last10_pts_std / round(last10_pts.mean(), 2), 3) if round(last10_pts.mean(), 2) > 0 else 1.0
 
@@ -2319,7 +2409,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
-        last10_min_series = df['MIN'].tail(10)
+        last10_min_series = df['minutes_played'].tail(10)
         last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
         min_cv = round(last10_min_std / last10_min, 3) if last10_min > 0 else 1.0
 
@@ -2333,26 +2423,38 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
 
-        adv_df = get_league_player_advanced_stats(season)
-        player_adv = adv_df[adv_df['PLAYER_ID'] == player_id]
-        usage_rate = round(float(player_adv['USG_PCT'].iloc[0]), 3) if not player_adv.empty else 0.20
+        adv_df = get_bref_league_advanced_stats(season_end_year)
+        usage_rate = 0.20
+        if not adv_df.empty and 'slug' in adv_df.columns:
+            player_adv = adv_df[adv_df['slug'] == slug]
+            usage_col = next((c for c in ['usage_percentage', 'usage_percent', 'usg_pct'] if c in adv_df.columns), None)
+            if not player_adv.empty and usage_col:
+                usage_rate = round(float(player_adv[usage_col].iloc[0]), 3)
 
-        teams_df = get_league_team_stats(season)
-        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
-        opp_team = teams_df[teams_df['TEAM_NAME'] == opp_full_name]
-        opp_def_rating = round(float(opp_team['DEF_RATING'].iloc[0]), 1) if not opp_team.empty else league_avg_def_rating
-        opp_pace = round(float(opp_team['PACE'].iloc[0]), 1) if not opp_team.empty else league_avg_pace
+        # Known limitation: Basketball-Reference's library doesn't expose a direct
+        # team pace / defensive rating stat like stats.nba.com did — falling back
+        # to league averages here rather than a real opponent-specific number.
+        opp_def_rating = league_avg_def_rating
+        opp_pace = league_avg_pace
 
-        home_games = df[df['MATCHUP'].str.contains('vs.')]
-        away_games = df[df['MATCHUP'].str.contains('@')]
-        home_ppg = round(home_games['PTS'].mean(), 1) if not home_games.empty else season_ppg
-        away_ppg = round(away_games['PTS'].mean(), 1) if not away_games.empty else season_ppg
+        location_col = 'location' if 'location' in df.columns else None
+        if location_col:
+            home_games = df[df[location_col].astype(str).str.contains('HOME', case=False, na=False)]
+            away_games = df[df[location_col].astype(str).str.contains('AWAY', case=False, na=False)]
+        else:
+            home_games = away_games = df.iloc[0:0]
+        home_ppg = round(home_games['points'].mean(), 1) if not home_games.empty else season_ppg
+        away_ppg = round(away_games['points'].mean(), 1) if not away_games.empty else season_ppg
         location_adj = max(-2.0, min(2.0, round(home_ppg - season_ppg, 2) if home_or_away == 'home' else round(away_ppg - season_ppg, 2)))
 
         expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
 
-        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-        days_rest = (datetime.today() - df['GAME_DATE'].iloc[-1]).days
+        date_col = 'date' if 'date' in df.columns else None
+        if date_col:
+            df[date_col] = pd.to_datetime(df[date_col])
+            days_rest = (datetime.today() - df[date_col].iloc[-1]).days
+        else:
+            days_rest = 2
         rest_adj = -1.5 if days_rest == 0 else (1.0 if days_rest >= 3 else 0)
 
         game_total = spread = None
@@ -2412,32 +2514,27 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
 # ---- NBA ASSISTS PROJECTION ENGINE ----
 def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26'):
     try:
-        player_list = nba_players.find_players_by_full_name(player_name)
-        if not player_list:
-            return None
-        player_id = player_list[0]['id']
+        season_end_year = int(season.split("-")[0]) + 1
 
-        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
-        df = logs.get_data_frames()[0]
-        if df.empty or len(df) < 5:
+        df, slug = get_bref_player_game_log(player_name, season_end_year)
+        if df.empty or len(df) < 5 or not slug:
             return None
 
-        df = df[['GAME_DATE', 'MATCHUP', 'AST', 'TOV', 'MIN']]
-        df['MIN'] = pd.to_numeric(df['MIN'], errors='coerce')
-        df['AST'] = pd.to_numeric(df['AST'], errors='coerce')
-        df['TOV'] = pd.to_numeric(df['TOV'], errors='coerce')
-        df = df.iloc[::-1].reset_index(drop=True)
+        df['minutes_played'] = pd.to_numeric(df.get('seconds_played', 0), errors='coerce') / 60.0
+        df['assists'] = pd.to_numeric(df.get('assists', 0), errors='coerce')
+        df['turnovers'] = pd.to_numeric(df.get('turnovers', 0), errors='coerce')
+        df = df.reset_index(drop=True)
 
-        season_apg = round(df['AST'].mean(), 1)
-        season_mpg = round(df['MIN'].mean(), 1)
-        season_tov = round(df['TOV'].mean(), 1)
-        last5_avg = round(df['AST'].tail(5).mean(), 1)
-        last10_avg = round(df['AST'].tail(10).mean(), 1)
-        last5_min = round(df['MIN'].tail(5).mean(), 1)
-        last10_min = round(df['MIN'].tail(10).mean(), 1)
-        last5_tov = round(df['TOV'].tail(5).mean(), 1)
+        season_apg = round(df['assists'].mean(), 1)
+        season_mpg = round(df['minutes_played'].mean(), 1)
+        season_tov = round(df['turnovers'].mean(), 1)
+        last5_avg = round(df['assists'].tail(5).mean(), 1)
+        last10_avg = round(df['assists'].tail(10).mean(), 1)
+        last5_min = round(df['minutes_played'].tail(5).mean(), 1)
+        last10_min = round(df['minutes_played'].tail(10).mean(), 1)
+        last5_tov = round(df['turnovers'].tail(5).mean(), 1)
 
-        last10_ast = df['AST'].tail(10)
+        last10_ast = df['assists'].tail(10)
         last10_ast_avg = round(last10_ast.mean(), 2)
         last10_ast_std = round(last10_ast.std(), 2) if len(last10_ast) > 1 else 0.0
         cv = round(last10_ast_std / last10_ast_avg, 3) if last10_ast_avg > 0 else 1.0
@@ -2446,7 +2543,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
-        last10_min_series = df['MIN'].tail(10)
+        last10_min_series = df['minutes_played'].tail(10)
         last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
         min_cv = round(last10_min_std / last10_min, 3) if last10_min > 0 else 1.0
 
@@ -2460,50 +2557,47 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
 
-        adv_df = get_league_player_advanced_stats(season)
-        player_adv = adv_df[adv_df['PLAYER_ID'] == player_id]
-        usage_rate = round(float(player_adv['USG_PCT'].iloc[0]), 3) if not player_adv.empty else 0.20
-        ast_pct = round(float(player_adv['AST_PCT'].iloc[0]), 3) if not player_adv.empty else 0.15
+        adv_df = get_bref_league_advanced_stats(season_end_year)
+        usage_rate, ast_pct = 0.20, 0.15
+        if not adv_df.empty and 'slug' in adv_df.columns:
+            player_adv = adv_df[adv_df['slug'] == slug]
+            usage_col = next((c for c in ['usage_percentage', 'usage_percent', 'usg_pct'] if c in adv_df.columns), None)
+            ast_col = next((c for c in ['assist_percentage', 'assist_percent', 'ast_pct'] if c in adv_df.columns), None)
+            if not player_adv.empty:
+                if usage_col:
+                    usage_rate = round(float(player_adv[usage_col].iloc[0]), 3)
+                if ast_col:
+                    ast_pct = round(float(player_adv[ast_col].iloc[0]), 3)
 
+        # Known limitations: Basketball-Reference's library doesn't expose
+        # "potential assists" (a tracking-data stat unique to stats.nba.com) or
+        # opponent-assists-allowed / team pace the way the old data source did.
+        # These fall back to neutral/league-average rather than being computed —
+        # a real precision trade-off versus the old pipeline, not a bug.
         potential_assists = None
         potential_ast_adj = 0
-        try:
-            pt_df = get_league_passing_stats(season)
-            player_pt = pt_df[pt_df['PLAYER_ID'] == player_id]
-            if not player_pt.empty and 'POTENTIAL_AST' in player_pt.columns:
-                potential_assists = round(float(player_pt['POTENTIAL_AST'].iloc[0]), 1)
-                if potential_assists and season_apg > 0:
-                    expected_ast_from_potential = potential_assists * 0.45
-                    potential_ast_adj = max(-0.75, min(0.75, round((expected_ast_from_potential - season_apg) * 0.25, 2)))
-        except:
-            pass
-
-        teams_df = get_league_team_stats(season)
-        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
-        opp_team = teams_df[teams_df['TEAM_NAME'] == opp_full_name]
-        opp_pace = round(float(opp_team['PACE'].iloc[0]), 1) if not opp_team.empty else league_avg_pace
-
+        opp_pace = league_avg_pace
         opp_ast_allowed = 25.0
-        try:
-            opp_basic_df = get_league_team_stats(season, measure_type='Base')
-            opp_basic_row = opp_basic_df[opp_basic_df['TEAM_NAME'] == opp_full_name]
-            if not opp_basic_row.empty and 'OPP_AST' in opp_basic_row.columns:
-                opp_ast_allowed = round(float(opp_basic_row['OPP_AST'].iloc[0]), 1)
-        except:
-            pass
+        opp_ast_adj = 0
 
-        opp_ast_adj = max(-0.5, min(0.5, round((opp_ast_allowed - 25.0) * 0.05, 2)))
-
-        home_games = df[df['MATCHUP'].str.contains('vs.')]
-        away_games = df[df['MATCHUP'].str.contains('@')]
-        home_apg = round(home_games['AST'].mean(), 1) if not home_games.empty else season_apg
-        away_apg = round(away_games['AST'].mean(), 1) if not away_games.empty else season_apg
+        location_col = 'location' if 'location' in df.columns else None
+        if location_col:
+            home_games = df[df[location_col].astype(str).str.contains('HOME', case=False, na=False)]
+            away_games = df[df[location_col].astype(str).str.contains('AWAY', case=False, na=False)]
+        else:
+            home_games = away_games = df.iloc[0:0]
+        home_apg = round(home_games['assists'].mean(), 1) if not home_games.empty else season_apg
+        away_apg = round(away_games['assists'].mean(), 1) if not away_games.empty else season_apg
         location_adj = max(-1.5, min(1.5, round(home_apg - season_apg, 2) if home_or_away == 'home' else round(away_apg - season_apg, 2)))
 
         expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
 
-        df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-        days_rest = (datetime.today() - df['GAME_DATE'].iloc[-1]).days
+        date_col = 'date' if 'date' in df.columns else None
+        if date_col:
+            df[date_col] = pd.to_datetime(df[date_col])
+            days_rest = (datetime.today() - df[date_col].iloc[-1]).days
+        else:
+            days_rest = 2
         rest_adj = -0.5 if days_rest == 0 else (0.3 if days_rest >= 3 else 0)
 
         game_total = spread = None
@@ -2820,16 +2914,13 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
         away_abbrev = nba_name_to_abbrev.get(away_team, '')
 
         try:
-            player_list = nba_players.find_players_by_full_name(player)
-            if not player_list:
+            season_end_year = int(season.split("-")[0]) + 1
+            check_df, _ = get_bref_player_game_log(player, season_end_year)
+            if check_df.empty:
                 continue
-            player_id = player_list[0]['id']
-            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
-            df_check = logs.get_data_frames()[0]
-            if df_check.empty:
-                continue
-            matchup = df_check['MATCHUP'].iloc[0]
-            home_or_away = 'home' if 'vs.' in matchup else 'away'
+            last_row = check_df.iloc[-1]
+            location_val = last_row.get('location')
+            home_or_away = 'home' if 'HOME' in str(location_val).upper() else 'away'
             opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
         except:
             home_or_away = 'home'
@@ -3756,13 +3847,12 @@ elif nav == "🏀 NBA Models":
                             home_abbrev = nba_name_to_abbrev.get(home_team, '')
                             away_abbrev = nba_name_to_abbrev.get(away_team, '')
                             try:
-                                player_list = nba_players.find_players_by_full_name(player)
-                                if player_list:
-                                    player_id = player_list[0]['id']
-                                    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
-                                    df_check = logs.get_data_frames()[0]
-                                    matchup = df_check['MATCHUP'].iloc[0]
-                                    home_or_away = 'home' if 'vs.' in matchup else 'away'
+                                season_end_year = int(season.split("-")[0]) + 1
+                                check_df, _ = get_bref_player_game_log(player, season_end_year)
+                                if not check_df.empty:
+                                    last_row = check_df.iloc[-1]
+                                    location_val = last_row.get('location')
+                                    home_or_away = 'home' if 'HOME' in str(location_val).upper() else 'away'
                                     opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
                                 else:
                                     home_or_away = 'home'
@@ -4504,58 +4594,44 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if st.button("🔍 Load NBA Games & Run Projections", use_container_width=True):
             with st.spinner(f"Pulling NBA games for {backtest_date}..."):
-                date_str = backtest_date.strftime('%m/%d/%Y')
-                games = get_nba_games_for_date(date_str)
-                if not games:
-                    st.error("No NBA games found for that date")
+                box_df = get_bref_games_for_date(backtest_date.year, backtest_date.month, backtest_date.day)
+                if box_df.empty:
+                    st.error("No NBA games found for that date (Basketball-Reference)")
                 else:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     results = []
-                    for i, game in enumerate(games):
-                        status_text.text(f"Processing game {i+1} of {len(games)}")
-                        progress_bar.progress((i+1) / len(games))
-                        home_abbrev = game.get('home_team_abbrev', '')
-                        away_abbrev = game.get('away_team_abbrev', '')
-                        home_name = nba_abbrev_to_name.get(home_abbrev, '')
-                        away_name = nba_abbrev_to_name.get(away_abbrev, '')
+                    total = len(box_df)
+                    for i, row in box_df.iterrows():
+                        status_text.text(f"Processing player {i+1} of {total}")
+                        progress_bar.progress((i+1) / total)
                         try:
-                            box_url = f"https://stats.nba.com/stats/boxscoretraditionalv2?GameID={game['game_id']}&StartPeriod=0&EndPeriod=10&StartRange=0&EndRange=28800&RangeType=0"
-                            box_headers = {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                                'Referer': 'https://www.nba.com/',
-                                'Origin': 'https://www.nba.com',
-                                'Accept': 'application/json, text/plain, */*',
-                                'Accept-Language': 'en-US,en;q=0.9',
-                                'x-nba-stats-origin': 'stats',
-                                'x-nba-stats-token': 'true',
-                                'Connection': 'keep-alive',
-                            }
-                            box_data = requests.get(box_url, headers=box_headers, timeout=NBA_API_TIMEOUT, proxies=NBA_PROXY_DICT).json()
-                            player_stats = box_data['resultSets'][0]
-                            headers_list = player_stats['headers']
-                            for row in player_stats['rowSet']:
-                                player = dict(zip(headers_list, row))
-                                player_name = player['PLAYER_NAME']
-                                actual_val = player.get('AST' if is_assists else 'PTS', None)
-                                if actual_val is None:
-                                    continue
-                                team_abbrev = player.get('TEAM_ABBREVIATION', '')
-                                home_or_away = 'home' if team_abbrev == home_abbrev else 'away'
-                                opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
-                                if is_assists:
-                                    result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
-                                else:
-                                    result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
-                                time.sleep(1.5)  # avoid rapid-fire requests that can trigger rate-limiting/blocking
-                                if result:
-                                    results.append({
-                                        'Player': player_name,
-                                        'Matchup': f"{away_name} @ {home_name}",
-                                        'Projection': result['projection'], 'Actual': actual_val,
-                                        'Error': round(abs(result['projection'] - actual_val), 1),
-                                        'Tier': result['confidence_tier']
-                                    })
+                            player_name = row.get('name')
+                            actual_val = row.get('assists' if is_assists else 'points')
+                            if player_name is None or actual_val is None:
+                                continue
+                            team_val = row.get('team')
+                            opponent_val = row.get('opponent')
+                            location_val = row.get('location')
+                            team_name = team_val.value.replace('_', ' ').title() if hasattr(team_val, 'value') else str(team_val).replace('_', ' ').title()
+                            opp_name = opponent_val.value.replace('_', ' ').title() if hasattr(opponent_val, 'value') else str(opponent_val).replace('_', ' ').title()
+                            home_or_away = 'home' if 'HOME' in str(location_val).upper() else 'away'
+                            home_name = team_name if home_or_away == 'home' else opp_name
+                            away_name = opp_name if home_or_away == 'home' else team_name
+                            opp_abbrev = nba_name_to_abbrev.get(opp_name, '')
+                            if is_assists:
+                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
+                            else:
+                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
+                            time.sleep(0.5)
+                            if result:
+                                results.append({
+                                    'Player': player_name,
+                                    'Matchup': f"{away_name} @ {home_name}",
+                                    'Projection': result['projection'], 'Actual': actual_val,
+                                    'Error': round(abs(result['projection'] - actual_val), 1),
+                                    'Tier': result['confidence_tier']
+                                })
                         except:
                             continue
                     st.session_state['backtest_results'] = results
