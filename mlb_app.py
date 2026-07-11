@@ -4535,6 +4535,22 @@ elif nav == "🔬 Model Lab" and is_admin:
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
+    with st.expander("🔧 Player Game Log Diagnostic (debug)"):
+        st.caption("Checks the raw season game log for one player — specifically whether it's in chronological order, since 'last 5/10 games' depends entirely on that.")
+        debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
+        debug_season_end_year = st.number_input("Season end year", value=2026, key="debug_season_end_year")
+        if st.button("Check Game Log"):
+            debug_df, debug_slug = get_bref_player_game_log(debug_player, int(debug_season_end_year))
+            if debug_df.empty:
+                st.error(f"No game log returned (slug resolved to: {debug_slug})")
+            else:
+                st.write(f"Resolved slug: **{debug_slug}** — {len(debug_df)} games found")
+                st.write("Columns:", debug_df.columns.tolist())
+                st.write("**First 3 rows (should be EARLIEST games if chronological):**")
+                st.dataframe(debug_df.head(3))
+                st.write("**Last 3 rows (should be MOST RECENT games if chronological):**")
+                st.dataframe(debug_df.tail(3))
+
     backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists"], key="backtest_sport")
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
