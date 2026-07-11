@@ -2307,6 +2307,30 @@ def get_bref_league_season_totals(season_end_year):
     except Exception:
         return pd.DataFrame()
 
+def get_bref_team_pace_estimates_debug(season_end_year):
+    """Same logic as get_bref_team_pace_estimates but without swallowing
+    exceptions — used only by the Backtest diagnostic panel to see the real
+    error instead of a generic empty-dict fallback."""
+    totals_df = get_bref_league_season_totals(season_end_year)
+    required = ['team', 'attempted_field_goals', 'offensive_rebounds', 'turnovers', 'attempted_free_throws', 'games_played']
+    missing = [c for c in required if c not in totals_df.columns]
+    if totals_df.empty:
+        return {}, "totals_df came back empty"
+    if missing:
+        return {}, f"missing columns: {missing}"
+    estimates = {}
+    for team_val, group in totals_df.groupby('team'):
+        fga = pd.to_numeric(group['attempted_field_goals'], errors='coerce').sum()
+        oreb = pd.to_numeric(group['offensive_rebounds'], errors='coerce').sum()
+        tov = pd.to_numeric(group['turnovers'], errors='coerce').sum()
+        fta = pd.to_numeric(group['attempted_free_throws'], errors='coerce').sum()
+        team_games = pd.to_numeric(group['games_played'], errors='coerce').max()
+        if team_games and team_games > 0:
+            total_poss = fga - oreb + tov + 0.44 * fta
+            team_name = team_val.value.replace('_', ' ').title() if hasattr(team_val, 'value') else str(team_val).replace('_', ' ').title()
+            estimates[team_name] = round(total_poss / team_games, 1)
+    return estimates, None
+
 @st.cache_data(ttl=3600)
 def get_bref_team_pace_estimates(season_end_year):
     """Estimates each team's pace (possessions/game) from aggregated player
@@ -4589,9 +4613,9 @@ elif nav == "🧪 Backtest" and is_admin:
                     display_df[col] = display_df[col].astype(str)
                 st.dataframe(display_df)
         if st.button("Check Pace Estimates"):
-            estimates = get_bref_team_pace_estimates(int(pace_debug_season))
+            estimates, error_msg = get_bref_team_pace_estimates_debug(int(pace_debug_season))
             if not estimates:
-                st.error("No estimates returned — required columns likely missing from players_season_totals.")
+                st.error(f"No estimates returned — {error_msg}")
             else:
                 pace_table = pd.DataFrame(sorted(estimates.items(), key=lambda x: x[1], reverse=True), columns=["Team", "Estimated Pace"])
                 st.dataframe(pace_table, use_container_width=True)
