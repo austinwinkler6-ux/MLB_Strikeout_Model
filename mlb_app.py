@@ -4578,6 +4578,13 @@ elif nav == "🧪 Backtest" and is_admin:
     with st.expander("🔧 Team Pace Estimate Diagnostic (debug)"):
         st.caption(f"Real NBA team pace is normally roughly 95-105 possessions/game. League average fallback is currently set to {league_avg_pace}. If these estimates are way outside that range, the formula/data is off.")
         pace_debug_season = st.number_input("Season end year", value=2026, key="pace_debug_season")
+        if st.button("Check Raw Season Totals Columns"):
+            raw_totals_df = get_bref_league_season_totals(int(pace_debug_season))
+            if raw_totals_df.empty:
+                st.error("get_bref_league_season_totals returned nothing at all.")
+            else:
+                st.write("Columns:", raw_totals_df.columns.tolist())
+                st.dataframe(raw_totals_df.head(3))
         if st.button("Check Pace Estimates"):
             estimates = get_bref_team_pace_estimates(int(pace_debug_season))
             if not estimates:
