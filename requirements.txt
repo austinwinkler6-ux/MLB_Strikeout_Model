@@ -5,3 +5,4 @@ numpy
 supabase
 nba_api
 scipy
+basketball_reference_web_scraper
