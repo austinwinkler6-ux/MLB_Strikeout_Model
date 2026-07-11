@@ -2384,7 +2384,11 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         season_end_year = int(season.split("-")[0]) + 1
 
         df, slug = get_bref_player_game_log(player_name, season_end_year)
-        if df.empty or len(df) < 5 or not slug:
+        if df.empty or not slug:
+            return None
+        if 'active' in df.columns:
+            df = df[df['active'] == True]
+        if len(df) < 5:
             return None
 
         df['minutes_played'] = pd.to_numeric(df.get('seconds_played', 0), errors='coerce') / 60.0
@@ -2520,7 +2524,11 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         season_end_year = int(season.split("-")[0]) + 1
 
         df, slug = get_bref_player_game_log(player_name, season_end_year)
-        if df.empty or len(df) < 5 or not slug:
+        if df.empty or not slug:
+            return None
+        if 'active' in df.columns:
+            df = df[df['active'] == True]
+        if len(df) < 5:
             return None
 
         df['minutes_played'] = pd.to_numeric(df.get('seconds_played', 0), errors='coerce') / 60.0
