@@ -2389,7 +2389,10 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
 
         df['minutes_played'] = pd.to_numeric(df.get('seconds_played', 0), errors='coerce') / 60.0
         df['attempted_field_goals'] = pd.to_numeric(df.get('attempted_field_goals', 0), errors='coerce')
-        df['points'] = pd.to_numeric(df.get('points', 0), errors='coerce')
+        made_fg = pd.to_numeric(df.get('made_field_goals', 0), errors='coerce')
+        made_3pt = pd.to_numeric(df.get('made_three_point_field_goals', 0), errors='coerce')
+        made_ft = pd.to_numeric(df.get('made_free_throws', 0), errors='coerce')
+        df['points'] = 2 * made_fg + made_3pt + made_ft
         df = df.reset_index(drop=True)
 
         season_ppg = round(df['points'].mean(), 1)
@@ -4593,7 +4596,18 @@ elif nav == "🧪 Backtest" and is_admin:
                         progress_bar.progress((i+1) / total)
                         try:
                             player_name = row.get('name')
-                            actual_val = row.get('assists' if is_assists else 'points')
+                            if is_assists:
+                                actual_val = row.get('assists')
+                                if pd.isna(actual_val):
+                                    actual_val = None
+                            else:
+                                fg = row.get('made_field_goals')
+                                fg3 = row.get('made_three_point_field_goals')
+                                ft = row.get('made_free_throws')
+                                if pd.notna(fg) and pd.notna(fg3) and pd.notna(ft):
+                                    actual_val = 2 * fg + fg3 + ft
+                                else:
+                                    actual_val = None
                             if player_name is None or actual_val is None:
                                 continue
                             team_val = row.get('team')
