@@ -4731,7 +4731,9 @@ elif nav == "🧪 Backtest" and is_admin:
                                     'Matchup': f"{away_name} @ {home_name}",
                                     'Projection': result['projection'], 'Actual': actual_val,
                                     'Error': round(abs(result['projection'] - actual_val), 1),
-                                    'Tier': result['confidence_tier']
+                                    'Tier': result['confidence_tier'],
+                                    'Opp Pace': result.get('opp_pace'),
+                                    'Pace Adj': result.get('pace_adj'),
                                 })
                         except:
                             continue
