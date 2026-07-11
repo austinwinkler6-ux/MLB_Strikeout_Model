@@ -403,12 +403,19 @@ def market_result_label(clv_val, odds_clv_val):
     return "⚪ Push"
 
 def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None):
-    """Tier answers exactly ONE question: is there positive expected value,
-    and how strong is it? Confidence (cv + workload) and MM Stake (sizing)
-    are separate, independent axes — a low-confidence pick with real EV is a
-    Lean with a small stake, not a Pass. Pass means the model doesn't see
-    positive expected value, full stop; it says nothing about how much to
-    trust the number or how much to risk on it."""
+    """Tier primarily answers: is there positive expected value, and how
+    strong is it? Confidence (cv + workload) and MM Stake (sizing) are mostly
+    separate axes — a low-confidence pick with real EV is still a Lean with a
+    small stake, not a Pass. Pass means the model doesn't see positive
+    expected value, full stop.
+
+    One exception: extreme uncertainty (Low confidence) acts as a one-notch
+    brake on the initial tier. Otherwise a bet that just barely crosses the
+    edge threshold can outrank a much more reliable, higher-EV bet purely
+    because of one raw number — the confidence tag alone doesn't fix that,
+    since it's usually not the property people compare tier-to-tier. See:
+    Assad (edge-only Worth a Look, Low confidence, Highly Volatile workload)
+    vs Lodolo (Lean, 3x the EV, stable role) — July 2026."""
     threshold = EDGE_THRESHOLDS.get(sport, 0.75)
     ev_threshold = 12.0
 
@@ -420,11 +427,21 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None)
     ev_strong = ev_pct >= ev_threshold
 
     if model_strong and ev_strong:
-        return "🟢 Best Bet"
+        tier = "🟢 Best Bet"
     elif model_strong or ev_strong:
-        return "🔵 Worth a Look"
+        tier = "🔵 Worth a Look"
     else:
-        return "🟡 Lean"
+        tier = "🟡 Lean"
+
+    if get_confidence_level(cv, workload_tier) == "🔴 Low":
+        if tier == "🟢 Best Bet":
+            tier = "🔵 Worth a Look"
+        elif tier == "🔵 Worth a Look":
+            tier = "🟡 Lean"
+        # Already "Lean" stays "Lean" — Low confidence alone shouldn't force
+        # a Pass when there's still genuine positive EV underneath it.
+
+    return tier
 
 def get_pass_reason(model_edge, ev_pct, cv=None, workload_tier=None):
     """Pass now only ever means one thing — no positive expected value —
