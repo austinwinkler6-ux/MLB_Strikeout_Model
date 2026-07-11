@@ -851,9 +851,11 @@ if 'user' not in st.session_state:
     auth_tab1, auth_tab2 = st.tabs(["Login", "Sign Up"])
 
     with auth_tab1:
-        login_email = st.text_input("Email", key="login_email")
-        login_password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Login", use_container_width=True):
+        with st.form("login_form"):
+            login_email = st.text_input("Email", key="login_email")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            login_submitted = st.form_submit_button("Login", use_container_width=True)
+        if login_submitted:
             user, session, error = sign_in(login_email, login_password)
             if error:
                 st.error(f"Login failed: {error}")
@@ -863,10 +865,12 @@ if 'user' not in st.session_state:
                 st.rerun()
 
     with auth_tab2:
-        signup_email = st.text_input("Email", key="signup_email")
-        signup_password = st.text_input("Password", type="password", key="signup_password")
-        signup_password2 = st.text_input("Confirm Password", type="password", key="signup_password2")
-        if st.button("Create Account", use_container_width=True):
+        with st.form("signup_form"):
+            signup_email = st.text_input("Email", key="signup_email")
+            signup_password = st.text_input("Password", type="password", key="signup_password")
+            signup_password2 = st.text_input("Confirm Password", type="password", key="signup_password2")
+            signup_submitted = st.form_submit_button("Create Account", use_container_width=True)
+        if signup_submitted:
             if signup_password != signup_password2:
                 st.error("Passwords don't match!")
             elif len(signup_password) < 6:
