@@ -2319,7 +2319,7 @@ def get_bref_team_pace_estimates_debug(season_end_year):
     if missing:
         return {}, f"missing columns: {missing}"
     estimates = {}
-    for team_val, group in totals_df.groupby('team'):
+    for team_val, group in totals_df.groupby('team', sort=False):
         fga = pd.to_numeric(group['attempted_field_goals'], errors='coerce').sum()
         oreb = pd.to_numeric(group['offensive_rebounds'], errors='coerce').sum()
         tov = pd.to_numeric(group['turnovers'], errors='coerce').sum()
@@ -2344,7 +2344,7 @@ def get_bref_team_pace_estimates(season_end_year):
         if totals_df.empty or any(c not in totals_df.columns for c in required):
             return {}
         estimates = {}
-        for team_val, group in totals_df.groupby('team'):
+        for team_val, group in totals_df.groupby('team', sort=False):
             fga = pd.to_numeric(group['attempted_field_goals'], errors='coerce').sum()
             oreb = pd.to_numeric(group['offensive_rebounds'], errors='coerce').sum()
             tov = pd.to_numeric(group['turnovers'], errors='coerce').sum()
