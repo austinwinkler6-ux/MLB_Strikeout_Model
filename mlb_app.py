@@ -2404,6 +2404,12 @@ def get_bref_games_for_date(year, month, day):
     except Exception:
         return pd.DataFrame()
 
+def get_bref_games_for_date_debug(year, month, day):
+    """Same as get_bref_games_for_date but surfaces the real exception —
+    used only by the Backtest diagnostic panel to see what's actually failing."""
+    data = bref_client.player_box_scores(day=day, month=month, year=year)
+    return pd.DataFrame(data)
+
 @st.cache_data(ttl=3600)
 def get_league_player_advanced_stats(season, measure_type='Advanced'):
     """League-wide player stats are the same regardless of which player is being
@@ -4638,6 +4644,21 @@ elif nav == "🧪 Backtest" and is_admin:
 
     backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists"], key="backtest_sport")
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
+
+    with st.expander("🔧 Date Lookup Diagnostic (debug)"):
+        if st.button("Test Raw Date Fetch"):
+            try:
+                debug_box_df = get_bref_games_for_date_debug(backtest_date.year, backtest_date.month, backtest_date.day)
+                st.success(f"✅ Got {len(debug_box_df)} player rows back")
+                display_debug_df = debug_box_df.head(5).copy()
+                for col in display_debug_df.columns:
+                    display_debug_df[col] = display_debug_df[col].astype(str)
+                st.dataframe(display_debug_df)
+            except Exception as e:
+                st.error(f"❌ Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
 
     if backtest_sport == "MLB Strikeouts":
         backtest_season = st.selectbox("Season", ["2026", "2025", "2024"], key="backtest_season")
