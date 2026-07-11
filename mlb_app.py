@@ -4575,6 +4575,17 @@ elif nav == "🔬 Model Lab" and is_admin:
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
+    with st.expander("🔧 Team Pace Estimate Diagnostic (debug)"):
+        st.caption(f"Real NBA team pace is normally roughly 95-105 possessions/game. League average fallback is currently set to {league_avg_pace}. If these estimates are way outside that range, the formula/data is off.")
+        pace_debug_season = st.number_input("Season end year", value=2026, key="pace_debug_season")
+        if st.button("Check Pace Estimates"):
+            estimates = get_bref_team_pace_estimates(int(pace_debug_season))
+            if not estimates:
+                st.error("No estimates returned — required columns likely missing from players_season_totals.")
+            else:
+                pace_table = pd.DataFrame(sorted(estimates.items(), key=lambda x: x[1], reverse=True), columns=["Team", "Estimated Pace"])
+                st.dataframe(pace_table, use_container_width=True)
+
     with st.expander("🔧 Player Game Log Diagnostic (debug)"):
         st.caption("Checks the raw season game log for one player — specifically whether it's in chronological order, since 'last 5/10 games' depends entirely on that.")
         debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
