@@ -4584,7 +4584,10 @@ elif nav == "🧪 Backtest" and is_admin:
                 st.error("get_bref_league_season_totals returned nothing at all.")
             else:
                 st.write("Columns:", raw_totals_df.columns.tolist())
-                st.dataframe(raw_totals_df.head(3))
+                display_df = raw_totals_df.head(3).copy()
+                for col in display_df.columns:
+                    display_df[col] = display_df[col].astype(str)
+                st.dataframe(display_df)
         if st.button("Check Pace Estimates"):
             estimates = get_bref_team_pace_estimates(int(pace_debug_season))
             if not estimates:
