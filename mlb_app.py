@@ -1985,7 +1985,7 @@ def get_nba_games_for_date(game_date_str):
     last_error = None
     for attempt in range(3):
         try:
-            response = requests.get(url, headers=headers, timeout=NBA_API_TIMEOUT)
+            response = requests.get(url, headers=headers, timeout=NBA_API_TIMEOUT, proxies=NBA_PROXY_DICT)
             response.raise_for_status()
             data = response.json()
             games = []
@@ -2247,6 +2247,13 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         return None
 
 NBA_API_TIMEOUT = 20  # seconds — fail fast instead of hanging indefinitely on a stalled request
+# Optional proxy specifically for stats.nba.com calls (that host appears to block
+# datacenter/cloud IPs). Deliberately scoped to NBA calls only — not a blanket
+# proxy — so Supabase/Odds API/Anthropic traffic doesn't burn paid proxy bandwidth
+# it never needed. Format: "http://username:password@host:port". Leave unset and
+# everything falls back to direct connections, same as before.
+NBA_PROXY_URL = st.secrets.get("NBA_PROXY_URL")
+NBA_PROXY_DICT = {"http": NBA_PROXY_URL, "https": NBA_PROXY_URL} if NBA_PROXY_URL else None
 
 @st.cache_data(ttl=3600)
 def get_league_player_advanced_stats(season, measure_type='Advanced'):
@@ -2254,7 +2261,8 @@ def get_league_player_advanced_stats(season, measure_type='Advanced'):
     evaluated — cached so a Backtest run processing 100+ players doesn't re-fetch
     this identical table from the NBA API for every single one of them."""
     stats = leaguedashplayerstats.LeagueDashPlayerStats(
-        season=season, per_mode_detailed='PerGame', measure_type_detailed_defense=measure_type, timeout=NBA_API_TIMEOUT
+        season=season, per_mode_detailed='PerGame', measure_type_detailed_defense=measure_type,
+        timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL
     )
     return stats.get_data_frames()[0]
 
@@ -2263,14 +2271,16 @@ def get_league_team_stats(season, measure_type='Advanced'):
     """Same reasoning as get_league_player_advanced_stats — one league-wide
     team table, cached instead of re-fetched per player."""
     stats = leaguedashteamstats.LeagueDashTeamStats(
-        season=season, per_mode_detailed='PerGame', measure_type_detailed_defense=measure_type, timeout=NBA_API_TIMEOUT
+        season=season, per_mode_detailed='PerGame', measure_type_detailed_defense=measure_type,
+        timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL
     )
     return stats.get_data_frames()[0]
 
 @st.cache_data(ttl=3600)
 def get_league_passing_stats(season):
     stats = leaguedashptstats.LeagueDashPtStats(
-        season=season, per_mode_simple='PerGame', player_or_team='Player', pt_measure_type='Passing', timeout=NBA_API_TIMEOUT
+        season=season, per_mode_simple='PerGame', player_or_team='Player', pt_measure_type='Passing',
+        timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL
     )
     return stats.get_data_frames()[0]
 
@@ -2282,7 +2292,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             return None
         player_id = player_list[0]['id']
 
-        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
+        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
         df = logs.get_data_frames()[0]
         if df.empty or len(df) < 5:
             return None
@@ -2407,7 +2417,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             return None
         player_id = player_list[0]['id']
 
-        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
+        logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
         df = logs.get_data_frames()[0]
         if df.empty or len(df) < 5:
             return None
@@ -2814,7 +2824,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
             if not player_list:
                 continue
             player_id = player_list[0]['id']
-            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
+            logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
             df_check = logs.get_data_frames()[0]
             if df_check.empty:
                 continue
@@ -3749,7 +3759,7 @@ elif nav == "🏀 NBA Models":
                                 player_list = nba_players.find_players_by_full_name(player)
                                 if player_list:
                                     player_id = player_list[0]['id']
-                                    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT)
+                                    logs = playergamelog.PlayerGameLog(player_id=player_id, season=season, timeout=NBA_API_TIMEOUT, proxy=NBA_PROXY_URL)
                                     df_check = logs.get_data_frames()[0]
                                     matchup = df_check['MATCHUP'].iloc[0]
                                     home_or_away = 'home' if 'vs.' in matchup else 'away'
@@ -4489,7 +4499,17 @@ elif nav == "🧪 Backtest" and is_admin:
                         away_name = nba_abbrev_to_name.get(away_abbrev, '')
                         try:
                             box_url = f"https://stats.nba.com/stats/boxscoretraditionalv2?GameID={game['game_id']}&StartPeriod=0&EndPeriod=10&StartRange=0&EndRange=28800&RangeType=0"
-                            box_data = requests.get(box_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.nba.com'}, timeout=NBA_API_TIMEOUT).json()
+                            box_headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                'Referer': 'https://www.nba.com/',
+                                'Origin': 'https://www.nba.com',
+                                'Accept': 'application/json, text/plain, */*',
+                                'Accept-Language': 'en-US,en;q=0.9',
+                                'x-nba-stats-origin': 'stats',
+                                'x-nba-stats-token': 'true',
+                                'Connection': 'keep-alive',
+                            }
+                            box_data = requests.get(box_url, headers=box_headers, timeout=NBA_API_TIMEOUT, proxies=NBA_PROXY_DICT).json()
                             player_stats = box_data['resultSets'][0]
                             headers_list = player_stats['headers']
                             for row in player_stats['rowSet']:
