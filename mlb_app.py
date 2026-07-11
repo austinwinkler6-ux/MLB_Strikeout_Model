@@ -11,6 +11,7 @@ from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, league
 from nba_api.stats.static import players as nba_players
 from basketball_reference_web_scraper import client as bref_client
 from basketball_reference_web_scraper.data import OutputType as BRefOutputType
+from streamlit_cookies_controller import CookieController
 from scipy import stats
 
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
@@ -838,9 +839,37 @@ def sign_out():
         supabase.auth.sign_out()
     except:
         pass
+    try:
+        cookie_controller.remove('mm_refresh_token')
+    except:
+        pass
     st.session_state.clear()
 
 # ---- AUTH WALL ----
+cookie_controller = CookieController()
+
+def try_restore_session_from_cookie():
+    """'Stay logged in' — on a fresh browser session with no st.session_state
+    yet, check for a saved refresh token cookie (set on login, 30-day expiry)
+    and silently re-authenticate instead of showing the login screen again.
+    Cookie components read the browser asynchronously, so this may take one
+    extra rerun to actually take effect on a brand new tab — expected, not a bug."""
+    if 'user' in st.session_state:
+        return
+    try:
+        saved_refresh_token = cookie_controller.get('mm_refresh_token')
+        if not saved_refresh_token:
+            return
+        refreshed = supabase.auth.refresh_session(saved_refresh_token)
+        if refreshed and refreshed.session and refreshed.user:
+            st.session_state['user'] = refreshed.user
+            st.session_state['session'] = refreshed.session
+    except Exception:
+        # Saved token invalid/expired — fall through to a normal login screen.
+        pass
+
+try_restore_session_from_cookie()
+
 if 'user' not in st.session_state:
     st.markdown("""
         <div style='text-align: center; padding-top: 60px;'>
@@ -864,6 +893,10 @@ if 'user' not in st.session_state:
             else:
                 st.session_state['user'] = user
                 st.session_state['session'] = session
+                try:
+                    cookie_controller.set('mm_refresh_token', session.refresh_token, max_age=60 * 60 * 24 * 30)
+                except Exception:
+                    pass
                 st.rerun()
 
     with auth_tab2:
@@ -887,6 +920,10 @@ if 'user' not in st.session_state:
                         st.session_state['user'] = user2
                         st.session_state['session'] = session
                         st.session_state['just_signed_up'] = True
+                        try:
+                            cookie_controller.set('mm_refresh_token', session.refresh_token, max_age=60 * 60 * 24 * 30)
+                        except Exception:
+                            pass
                         st.rerun()
     st.stop()
 
@@ -913,6 +950,13 @@ def refresh_supabase_session_if_needed():
         refreshed = supabase.auth.refresh_session(refresh_token)
         if refreshed and refreshed.session:
             st.session_state['session'] = refreshed.session
+            # Supabase rotates refresh tokens on each use — keep the "stay
+            # logged in" cookie in sync or it'll silently go stale after the
+            # first refresh and fail to restore the session on a new tab.
+            try:
+                cookie_controller.set('mm_refresh_token', refreshed.session.refresh_token, max_age=60 * 60 * 24 * 30)
+            except Exception:
+                pass
         st.session_state['_session_refreshed_at'] = now
     except Exception:
         # If the refresh token itself is invalid/expired (e.g. laptop closed
