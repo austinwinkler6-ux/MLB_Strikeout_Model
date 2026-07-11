@@ -2324,7 +2324,7 @@ def get_bref_team_pace_estimates_debug(season_end_year):
         oreb = pd.to_numeric(group['offensive_rebounds'], errors='coerce').sum()
         tov = pd.to_numeric(group['turnovers'], errors='coerce').sum()
         fta = pd.to_numeric(group['attempted_free_throws'], errors='coerce').sum()
-        team_games = pd.to_numeric(group['games_played'], errors='coerce').max()
+        team_minutes = pd.to_numeric(group.get('minutes_played', 0), errors='coerce').sum(); team_games = team_minutes / 240.0
         if team_games and team_games > 0:
             total_poss = fga - oreb + tov + 0.44 * fta
             team_name = team_val.value.replace('_', ' ').title() if hasattr(team_val, 'value') else str(team_val).replace('_', ' ').title()
@@ -2349,7 +2349,7 @@ def get_bref_team_pace_estimates(season_end_year):
             oreb = pd.to_numeric(group['offensive_rebounds'], errors='coerce').sum()
             tov = pd.to_numeric(group['turnovers'], errors='coerce').sum()
             fta = pd.to_numeric(group['attempted_free_throws'], errors='coerce').sum()
-            team_games = pd.to_numeric(group['games_played'], errors='coerce').max()
+            team_minutes = pd.to_numeric(group.get('minutes_played', 0), errors='coerce').sum(); team_games = team_minutes / 240.0
             if team_games and team_games > 0:
                 total_poss = fga - oreb + tov + 0.44 * fta
                 team_name = team_val.value.replace('_', ' ').title() if hasattr(team_val, 'value') else str(team_val).replace('_', ' ').title()
