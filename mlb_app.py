@@ -4692,9 +4692,6 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.error("No NBA games found for that date (Basketball-Reference)")
                 else:
                     box_df = box_df.head(int(max_players))
-                    with st.expander("🔧 Raw data preview (debug)"):
-                        st.write("Columns:", box_df.columns.tolist())
-                        st.dataframe(box_df.head(3))
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     results = []
