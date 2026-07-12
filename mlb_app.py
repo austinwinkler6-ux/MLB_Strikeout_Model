@@ -4863,7 +4863,19 @@ elif nav == "🧪 Backtest" and is_admin:
                                 result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
                             time.sleep(1.5)
                             if not result:
-                                skipped.append({'Player': player_name, 'Reason': 'Projection engine returned None (likely <5 games logged, slug not found, or <5 active games after DNP filter)'})
+                                season_end_year_check = int(backtest_season_nba.split("-")[0]) + 1
+                                try:
+                                    check_df, check_slug = get_bref_player_game_log(player_name, season_end_year_check)
+                                    if not check_slug:
+                                        reason = "No slug resolved for this exact name"
+                                    elif check_df.empty:
+                                        reason = f"Slug '{check_slug}' resolved but game log came back empty"
+                                    else:
+                                        active_count = (check_df['active'].astype(str).str.upper() == 'TRUE').sum() if 'active' in check_df.columns else len(check_df)
+                                        reason = f"Slug '{check_slug}' found, {len(check_df)} total games, {active_count} active games (need 5)"
+                                except Exception as diag_e:
+                                    reason = f"Diagnostic check itself failed: {diag_e}"
+                                skipped.append({'Player': player_name, 'Reason': reason})
                             else:
                                 results.append({
                                     'Player': player_name,
