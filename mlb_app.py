@@ -4795,6 +4795,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             time.sleep(0.5)
                             if not result:
                                 skipped.append({'Player': player_name, 'Reason': 'Projection engine returned None (likely <5 games logged, slug not found, or <5 active games after DNP filter)'})
+                            else:
                                 results.append({
                                     'Player': player_name,
                                     'Matchup': f"{away_name} @ {home_name}",
