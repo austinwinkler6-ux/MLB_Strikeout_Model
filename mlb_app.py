@@ -2336,10 +2336,15 @@ def get_bref_player_slug(player_name):
     transient failures (rate-limiting), and deliberately lets a persistent
     failure raise rather than silently caching a 'not found' result for 24
     hours — a real player search failing right now shouldn't poison this
-    player's lookups for the rest of the day once the underlying issue clears."""
+    player's lookups for the rest of the day once the underlying issue clears.
+
+    Longer/more retries than other Basketball-Reference calls — direct
+    diagnostic evidence (July 2026) showed this specific search endpoint gets
+    rate-limited mid-batch even when other endpoints (game logs, box scores)
+    keep working fine, so it needs more patience than the rest of the pipeline."""
     last_name = player_name.strip().split(" ")[-1]
     last_error = None
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             results = bref_client.search(term=last_name)
             players_results = results.get("players", []) if isinstance(results, dict) else []
@@ -2353,8 +2358,8 @@ def get_bref_player_slug(player_name):
             return None  # Genuine no-match — safe to cache.
         except Exception as e:
             last_error = e
-            if attempt < 2:
-                time.sleep(3)
+            if attempt < 4:
+                time.sleep(3 * (attempt + 1))
     raise last_error  # All retries failed — don't cache this as "not found."
 
 @st.cache_data(ttl=3600)
@@ -4861,7 +4866,7 @@ elif nav == "🧪 Backtest" and is_admin:
                                 result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
                             else:
                                 result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
-                            time.sleep(1.5)
+                            time.sleep(3)
                             if not result:
                                 season_end_year_check = int(backtest_season_nba.split("-")[0]) + 1
                                 try:
