@@ -2509,7 +2509,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         if df.empty or not slug:
             return None
         if 'active' in df.columns:
-            df = df[df['active'] == True]
+            df = df[df['active'].astype(str).str.upper() == 'TRUE']
         if len(df) < 5:
             return None
 
@@ -2650,7 +2650,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         if df.empty or not slug:
             return None
         if 'active' in df.columns:
-            df = df[df['active'] == True]
+            df = df[df['active'].astype(str).str.upper() == 'TRUE']
         if len(df) < 5:
             return None
 
