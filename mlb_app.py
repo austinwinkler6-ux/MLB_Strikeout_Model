@@ -2332,41 +2332,64 @@ NBA_PROXY_DICT = {"http": NBA_PROXY_URL, "https": NBA_PROXY_URL} if NBA_PROXY_UR
 def get_bref_player_slug(player_name):
     """Basketball-Reference identifies players by a 'slug' (e.g. 'westbru01'),
     not by name — resolve name -> slug once per day per player, cached, since
-    it rarely changes and this search hits the site directly."""
-    try:
-        last_name = player_name.strip().split(" ")[-1]
-        results = bref_client.search(term=last_name)
-        players_results = results.get("players", []) if isinstance(results, dict) else []
-        name_lower = player_name.strip().lower()
-        for p in players_results:
-            if p.get("name", "").strip().lower() == name_lower:
-                return p.get("slug") or p.get("identifier")
-        # Fallback: first result if no exact match (e.g. suffix/accent mismatch)
-        if players_results:
-            return players_results[0].get("slug") or players_results[0].get("identifier")
-        return None
-    except Exception:
-        return None
+    it rarely changes and this search hits the site directly. Retries on
+    transient failures (rate-limiting), and deliberately lets a persistent
+    failure raise rather than silently caching a 'not found' result for 24
+    hours — a real player search failing right now shouldn't poison this
+    player's lookups for the rest of the day once the underlying issue clears."""
+    last_name = player_name.strip().split(" ")[-1]
+    last_error = None
+    for attempt in range(3):
+        try:
+            results = bref_client.search(term=last_name)
+            players_results = results.get("players", []) if isinstance(results, dict) else []
+            name_lower = player_name.strip().lower()
+            for p in players_results:
+                if p.get("name", "").strip().lower() == name_lower:
+                    return p.get("slug") or p.get("identifier")
+            # Fallback: first result if no exact match (e.g. suffix/accent mismatch)
+            if players_results:
+                return players_results[0].get("slug") or players_results[0].get("identifier")
+            return None  # Genuine no-match — safe to cache.
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(3)
+    raise last_error  # All retries failed — don't cache this as "not found."
 
 @st.cache_data(ttl=3600)
 def get_bref_league_advanced_stats(season_end_year):
     """League-wide advanced stats (usage rate and similar) for every player —
-    one call, cached, shared across every player evaluated that hour."""
-    try:
-        data = bref_client.players_advanced_season_totals(season_end_year=season_end_year)
-        return pd.DataFrame(data)
-    except Exception:
-        return pd.DataFrame()
+    one call, cached, shared across every player evaluated that hour. Retries
+    on transient failures; doesn't cache a failure as fake empty data, which
+    would otherwise silently degrade every player's usage rate to a fallback
+    for the rest of the hour after just one bad-timing request."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            data = bref_client.players_advanced_season_totals(season_end_year=season_end_year)
+            return pd.DataFrame(data)
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(3)
+    raise last_error
 
 @st.cache_data(ttl=3600)
 def get_bref_league_season_totals(season_end_year):
     """League-wide basic season totals for every player — used to derive
-    season-long per-game averages (points, assists) by dividing by games played."""
-    try:
-        data = bref_client.players_season_totals(season_end_year=season_end_year)
-        return pd.DataFrame(data)
-    except Exception:
-        return pd.DataFrame()
+    season-long per-game averages (points, assists) by dividing by games
+    played. Same retry/no-fake-empty-cache treatment as the function above."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            data = bref_client.players_season_totals(season_end_year=season_end_year)
+            return pd.DataFrame(data)
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(3)
+    raise last_error
 
 def get_bref_team_pace_estimates_debug(season_end_year):
     """Same logic as get_bref_team_pace_estimates but without swallowing
@@ -2439,15 +2462,23 @@ def get_bref_player_game_log(player_name, season_end_year):
     """A player's full-season game log — the direct replacement for stats.nba.com's
     PlayerGameLog. Not cached at this layer (keyed by resolved slug in the caller)
     since Streamlit's cache_data needs hashable args and player_name -> slug
-    resolution already has its own cache."""
-    slug = get_bref_player_slug(player_name)
+    resolution already has its own cache. Retries with backoff since mid-batch
+    rate-limiting from Basketball-Reference is a real, observed failure mode —
+    a single retry after a short pause resolves most of these."""
+    try:
+        slug = get_bref_player_slug(player_name)
+    except Exception:
+        return pd.DataFrame(), None
     if not slug:
         return pd.DataFrame(), None
-    try:
-        data = _cached_bref_player_box_scores(slug, season_end_year)
-        return pd.DataFrame(data), slug
-    except Exception:
-        return pd.DataFrame(), slug
+    for attempt in range(3):
+        try:
+            data = _cached_bref_player_box_scores(slug, season_end_year)
+            return pd.DataFrame(data), slug
+        except Exception:
+            if attempt < 2:
+                time.sleep(3)
+    return pd.DataFrame(), slug
 
 @st.cache_data(ttl=3600)
 def _cached_bref_player_box_scores(player_identifier, season_end_year):
@@ -2458,12 +2489,20 @@ def get_bref_games_for_date(year, month, day):
     """All player box scores league-wide for one specific date — replaces both
     get_nba_games_for_date() AND the per-game box score fetch in Backtest with a
     single call, since Basketball-Reference's player_box_scores() already returns
-    every player who played that day across every game."""
-    try:
-        data = bref_client.player_box_scores(day=day, month=month, year=year)
-        return pd.DataFrame(data)
-    except Exception:
-        return pd.DataFrame()
+    every player who played that day across every game. Retries on transient
+    failures and deliberately doesn't cache a failure as a fake 'no games that
+    day' result — that exact bug caused legitimate dates to look permanently
+    empty for up to an hour after a single rate-limited attempt."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            data = bref_client.player_box_scores(day=day, month=month, year=year)
+            return pd.DataFrame(data)
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(3)
+    raise last_error
 
 def get_bref_games_for_date_debug(year, month, day):
     """Same as get_bref_games_for_date but surfaces the real exception —
@@ -4772,7 +4811,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if st.button("🔍 Load NBA Games & Run Projections", use_container_width=True):
             with st.spinner(f"Pulling NBA games for {backtest_date}..."):
-                box_df = get_bref_games_for_date(backtest_date.year, backtest_date.month, backtest_date.day)
+                try:
+                    box_df = get_bref_games_for_date(backtest_date.year, backtest_date.month, backtest_date.day)
+                except Exception as e:
+                    st.error(f"Failed to fetch games after retries — likely still rate-limited, try again shortly. ({e})")
+                    box_df = pd.DataFrame()
                 if box_df.empty:
                     st.error("No NBA games found for that date (Basketball-Reference)")
                 else:
@@ -4816,7 +4859,7 @@ elif nav == "🧪 Backtest" and is_admin:
                                 result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
                             else:
                                 result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
-                            time.sleep(0.5)
+                            time.sleep(1.5)
                             if not result:
                                 skipped.append({'Player': player_name, 'Reason': 'Projection engine returned None (likely <5 games logged, slug not found, or <5 active games after DNP filter)'})
                             else:
