@@ -2639,6 +2639,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'min_cv': min_cv, 'workload_tier': workload_tier,
         }
     except Exception as e:
+        if st.session_state.get("_nba_debug_mode"): raise
         return None
 
 # ---- NBA ASSISTS PROJECTION ENGINE ----
@@ -2780,6 +2781,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             'min_cv': min_cv, 'workload_tier': workload_tier,
         }
     except Exception as e:
+        if st.session_state.get("_nba_debug_mode"): raise
         return None
 
 def nba_bet_sport_label(sport_key):
@@ -4698,6 +4700,18 @@ elif nav == "🧪 Backtest" and is_admin:
                 st.dataframe(debug_df.head(3))
                 st.write("**Last 3 rows (should be MOST RECENT games if chronological):**")
                 st.dataframe(debug_df.tail(3))
+        if st.button("Run Full Projection (show real error if it fails)"):
+            st.session_state['_nba_debug_mode'] = True
+            try:
+                debug_result = run_nba_points_projection(debug_player, '', 'Houston Rockets', 'Denver Nuggets', 'home', f"{int(debug_season_end_year)-1}-{str(int(debug_season_end_year))[2:]}")
+                st.success(f"✅ Worked! Projection: {debug_result['projection']}")
+                st.json(debug_result)
+            except Exception as e:
+                st.error(f"❌ Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+            finally:
+                st.session_state['_nba_debug_mode'] = False
 
     backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists"], key="backtest_sport")
     backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
