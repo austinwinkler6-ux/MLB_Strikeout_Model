@@ -4677,6 +4677,13 @@ elif nav == "🧪 Backtest" and is_admin:
         st.caption("Checks the raw season game log for one player — specifically whether it's in chronological order, since 'last 5/10 games' depends entirely on that.")
         debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
         debug_season_end_year = st.number_input("Season end year", value=2026, key="debug_season_end_year")
+        if st.button("Check Raw Search Response"):
+            try:
+                raw_search_result = bref_client.search(term=debug_player.strip().split(" ")[-1])
+                st.write("Type:", type(raw_search_result).__name__)
+                st.write(raw_search_result)
+            except Exception as e:
+                st.error(f"search() raised an exception: {e}")
         if st.button("Check Game Log"):
             debug_df, debug_slug = get_bref_player_game_log(debug_player, int(debug_season_end_year))
             if debug_df.empty:
