@@ -4756,10 +4756,12 @@ elif nav == "🧪 Backtest" and is_admin:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     results = []
+                    skipped = []
                     total = len(box_df)
                     for i, row in box_df.iterrows():
                         status_text.text(f"Processing player {i+1} of {total}")
                         progress_bar.progress((i+1) / total)
+                        player_name = row.get('name', 'Unknown')
                         try:
                             player_name = row.get('name')
                             if is_assists:
@@ -4775,6 +4777,7 @@ elif nav == "🧪 Backtest" and is_admin:
                                 else:
                                     actual_val = None
                             if player_name is None or actual_val is None:
+                                skipped.append({'Player': player_name or 'Unknown', 'Reason': 'Missing name or box score stat in raw data'})
                                 continue
                             team_val = row.get('team')
                             opponent_val = row.get('opponent')
@@ -4790,7 +4793,8 @@ elif nav == "🧪 Backtest" and is_admin:
                             else:
                                 result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
                             time.sleep(0.5)
-                            if result:
+                            if not result:
+                                skipped.append({'Player': player_name, 'Reason': 'Projection engine returned None (likely <5 games logged, slug not found, or <5 active games after DNP filter)'})
                                 results.append({
                                     'Player': player_name,
                                     'Matchup': f"{away_name} @ {home_name}",
@@ -4800,12 +4804,18 @@ elif nav == "🧪 Backtest" and is_admin:
                                     'Opp Pace': result.get('opp_pace'),
                                     'Pace Adj': result.get('pace_adj'),
                                 })
-                        except:
+                        except Exception as e:
+                            skipped.append({'Player': player_name or 'Unknown', 'Reason': f'Exception: {e}'})
                             continue
                     st.session_state['backtest_results'] = results
+                    st.session_state['backtest_skipped'] = skipped
                     st.session_state['backtest_date'] = backtest_date.strftime('%Y-%m-%d')
-                    status_text.text(f"✅ Done! {len(results)} players projected.")
+                    status_text.text(f"✅ Done! {len(results)} players projected, {len(skipped)} skipped.")
                     progress_bar.progress(1.0)
+
+    if st.session_state.get('backtest_skipped'):
+        with st.expander(f"⚠️ {len(st.session_state['backtest_skipped'])} players skipped — see why"):
+            st.dataframe(pd.DataFrame(st.session_state['backtest_skipped']), use_container_width=True)
 
     if 'backtest_results' in st.session_state and st.session_state['backtest_results']:
         st.markdown("---")
