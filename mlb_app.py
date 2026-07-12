@@ -4675,6 +4675,9 @@ elif nav == "🧪 Backtest" and is_admin:
 
     with st.expander("🔧 Player Game Log Diagnostic (debug)"):
         st.caption("Checks the raw season game log for one player — specifically whether it's in chronological order, since 'last 5/10 games' depends entirely on that.")
+        if st.button("🗑️ Clear All Cache (forces every cached function to re-fetch fresh)"):
+            st.cache_data.clear()
+            st.success("Cache cleared — next run will fetch everything fresh.")
         debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
         debug_season_end_year = st.number_input("Season end year", value=2026, key="debug_season_end_year")
         if st.button("Check Raw Search Response"):
