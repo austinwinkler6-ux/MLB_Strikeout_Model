@@ -4808,8 +4808,10 @@ elif nav == "🧪 Backtest" and is_admin:
             "Max players to test", min_value=5, max_value=200, value=15, step=5,
             help="Basketball-Reference scraping is slower per player than an API call. Keep this small for a quick test — a big slate (like Christmas Day) can have 80-100+ players and take long enough to hit a timeout. Raise this once you've confirmed it works."
         )
+        debug_this_run = st.checkbox("🔧 Show real errors instead of generic 'returned None' (debug)")
 
         if st.button("🔍 Load NBA Games & Run Projections", use_container_width=True):
+            st.session_state['_nba_debug_mode'] = debug_this_run
             with st.spinner(f"Pulling NBA games for {backtest_date}..."):
                 try:
                     box_df = get_bref_games_for_date(backtest_date.year, backtest_date.month, backtest_date.day)
@@ -4880,6 +4882,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['backtest_date'] = backtest_date.strftime('%Y-%m-%d')
                     status_text.text(f"✅ Done! {len(results)} players projected, {len(skipped)} skipped.")
                     progress_bar.progress(1.0)
+            st.session_state['_nba_debug_mode'] = False
 
     if st.session_state.get('backtest_skipped'):
         with st.expander(f"⚠️ {len(st.session_state['backtest_skipped'])} players skipped — see why"):
