@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import requests
+import unicodedata
 import pandas as pd
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo
@@ -2320,15 +2321,24 @@ def bdl_get(endpoint, params=None, max_pages=20):
             break
     return all_rows
 
+def strip_accents(text):
+    """'Jokić' -> 'Jokic'. balldontlie's search doesn't appear to match
+    accented characters against its index."""
+    return ''.join(c for c in unicodedata.normalize('NFKD', text) if not unicodedata.combining(c))
+
 @st.cache_data(ttl=86400)
 def get_bdl_player_id(player_name):
     """Resolve a player's full name to their balldontlie player ID — free-tier
-    endpoint, cached for a day since IDs never change."""
+    endpoint, cached for a day since IDs never change. Searches by last name
+    only (a full 'First Last' search came back empty in testing) and with
+    accents stripped (e.g. 'Jokić' -> 'Jokic'), since names with accented
+    characters didn't match balldontlie's search index directly."""
     try:
-        rows = bdl_get("players", {"search": player_name, "per_page": 25})
-        name_lower = player_name.strip().lower()
+        last_name = strip_accents(player_name.strip().split(" ")[-1])
+        rows = bdl_get("players", {"search": last_name, "per_page": 25})
+        name_lower = strip_accents(player_name.strip().lower())
         for p in rows:
-            full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower()
+            full_name = strip_accents(f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower())
             if full_name == name_lower:
                 return p.get("id")
         if rows:
