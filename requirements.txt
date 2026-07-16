@@ -3,7 +3,5 @@ requests
 pandas
 numpy
 supabase
-nba_api
 scipy
-basketball_reference_web_scraper
 streamlit-cookies-controller
