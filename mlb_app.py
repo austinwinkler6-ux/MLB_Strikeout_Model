@@ -2332,9 +2332,14 @@ def get_bdl_player_id(player_name):
     endpoint, cached for a day since IDs never change. Searches by last name
     only (a full 'First Last' search came back empty in testing) and with
     accents stripped (e.g. 'Jokić' -> 'Jokic'), since names with accented
-    characters didn't match balldontlie's search index directly."""
+    characters didn't match balldontlie's search index directly. Also strips
+    common suffixes (Jr., Sr., II, III, IV) before taking 'the last word' as
+    the last name — otherwise 'Ronald Holland II' searches for 'II', which
+    obviously finds nothing."""
     try:
-        last_name = strip_accents(player_name.strip().split(" ")[-1])
+        suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
+        name_parts = [p for p in player_name.strip().split(" ") if p.lower().rstrip(".") not in suffixes]
+        last_name = strip_accents(name_parts[-1] if name_parts else player_name.strip())
         rows = bdl_get("players", {"search": last_name, "per_page": 25})
         name_lower = strip_accents(player_name.strip().lower())
         for p in rows:
