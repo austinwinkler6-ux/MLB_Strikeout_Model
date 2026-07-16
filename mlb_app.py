@@ -4611,6 +4611,15 @@ elif nav == "🧪 Backtest" and is_admin:
             st.success("Cache cleared — next run will fetch everything fresh.")
         debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
         debug_season = st.number_input("Season (start year, e.g. 2025 for 2025-26)", value=2025, key="debug_bdl_season")
+        if st.button("Check Raw Player Search Response"):
+            try:
+                raw_rows = bdl_get("players", {"search": debug_player, "per_page": 25})
+                st.write(f"Got {len(raw_rows)} rows back")
+                st.json(raw_rows[:5] if raw_rows else raw_rows)
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
         if st.button("Check Player Lookup + Game Log"):
             debug_pid = get_bdl_player_id(debug_player)
             if not debug_pid:
