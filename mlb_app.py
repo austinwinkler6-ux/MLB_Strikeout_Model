@@ -2456,7 +2456,7 @@ def get_bdl_opp_pace(opp_full_name, season):
 
 
 # ---- NBA POINTS PROJECTION ENGINE ----
-def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26'):
+def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None):
     try:
         bdl_season = int(season.split("-")[0])  # balldontlie uses the season's start year
 
@@ -2479,6 +2479,10 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         df['home_team_id'] = df['game'].apply(lambda g: (g or {}).get('home_team_id'))
         df['team_id'] = df['team'].apply(lambda t: (t or {}).get('id'))
         df = df.sort_values('game_date').reset_index(drop=True)
+        if as_of_date:
+            df = df[df['game_date'] < pd.Timestamp(as_of_date)].reset_index(drop=True)
+            if len(df) < 5:
+                return None
 
         season_ppg = round(df['pts'].mean(), 1)
         season_mpg = round(df['minutes_played'].mean(), 1)
@@ -2539,7 +2543,8 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
 
         expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
 
-        days_rest = (datetime.today() - df['game_date'].iloc[-1].to_pydatetime()).days if not df.empty else 2
+        reference_date = as_of_date if as_of_date else datetime.today()
+        days_rest = (reference_date - df['game_date'].iloc[-1].to_pydatetime()).days if not df.empty else 2
         rest_adj = -1.5 if days_rest == 0 else (1.0 if days_rest >= 3 else 0)
 
         game_total = spread = None
@@ -2598,7 +2603,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         return None
 
 # ---- NBA ASSISTS PROJECTION ENGINE ----
-def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26'):
+def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None):
     try:
         bdl_season = int(season.split("-")[0])
 
@@ -2621,6 +2626,10 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         df['home_team_id'] = df['game'].apply(lambda g: (g or {}).get('home_team_id'))
         df['team_id'] = df['team'].apply(lambda t: (t or {}).get('id'))
         df = df.sort_values('game_date').reset_index(drop=True)
+        if as_of_date:
+            df = df[df['game_date'] < pd.Timestamp(as_of_date)].reset_index(drop=True)
+            if len(df) < 5:
+                return None
 
         season_apg = round(df['assists'].mean(), 1)
         season_mpg = round(df['minutes_played'].mean(), 1)
@@ -2686,7 +2695,8 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
 
         expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
 
-        days_rest = (datetime.today() - df['game_date'].iloc[-1].to_pydatetime()).days if not df.empty else 2
+        reference_date = as_of_date if as_of_date else datetime.today()
+        days_rest = (reference_date - df['game_date'].iloc[-1].to_pydatetime()).days if not df.empty else 2
         rest_adj = -0.5 if days_rest == 0 else (0.3 if days_rest >= 3 else 0)
 
         game_total = spread = None
@@ -4742,9 +4752,9 @@ elif nav == "🧪 Backtest" and is_admin:
                             away_name = opp_name if home_or_away == 'home' else team_name
                             opp_abbrev = nba_name_to_abbrev.get(opp_name, '')
                             if is_assists:
-                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
+                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
                             else:
-                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba)
+                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
                             time.sleep(1)
                             if not result:
                                 try:
