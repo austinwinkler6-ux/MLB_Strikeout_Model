@@ -4636,6 +4636,19 @@ elif nav == "🧪 Backtest" and is_admin:
             st.success("Cache cleared — next run will fetch everything fresh.")
         debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
         debug_season = st.number_input("Season (start year, e.g. 2025 for 2025-26)", value=2025, key="debug_bdl_season")
+        if st.button("Check Team Filter (Denver Nuggets, id=8)"):
+            try:
+                team_rows = bdl_get("stats", {"team_ids[]": 8, "seasons[]": int(debug_season), "per_page": 100})
+                st.write(f"Got {len(team_rows)} rows back")
+                unique_teams = set()
+                for r in team_rows[:200]:
+                    t = (r.get("team") or {}).get("full_name")
+                    unique_teams.add(t)
+                st.write("Distinct teams in the returned rows (should be JUST 'Denver Nuggets' if the filter works):", unique_teams)
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
         if st.button("Check Raw Player Search Response"):
             try:
                 raw_rows = bdl_get("players", {"search": debug_player, "per_page": 25})
