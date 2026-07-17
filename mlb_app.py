@@ -2468,6 +2468,38 @@ def get_bdl_opp_pace(opp_full_name, season):
 
 
 # ---- NBA POINTS PROJECTION ENGINE ----
+@st.cache_data(ttl=300)
+def get_live_nba_odds():
+    """Current NBA odds — cached for 5 minutes so 15 players from the same
+    game share one fetch instead of each triggering their own redundant call.
+    Deliberately has no as_of_date parameter: this is ONLY for live, current
+    props. Historical backtests must never call this (see the July 2026 code
+    review that caught this endpoint being hit unconditionally even during
+    backtesting, silently returning irrelevant present-day odds instead of
+    historical ones)."""
+    return requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
+        params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'}).json()
+
+def find_game_odds(games_data, home_team, away_team):
+    """Matches on BOTH teams as an exact set, not a fragile 'is home_team a
+    substring of this field' check — the old version could false-match on
+    partial name overlaps (e.g. 'LA Clippers' inside a longer string)."""
+    requested = {home_team, away_team}
+    for game in games_data:
+        if {game.get('home_team'), game.get('away_team')} == requested:
+            game_total = spread = None
+            for bookmaker in game.get('bookmakers', []):
+                for market in bookmaker.get('markets', []):
+                    if market['key'] == 'totals':
+                        game_total = market['outcomes'][0]['point']
+                    if market['key'] == 'spreads':
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == home_team:
+                                spread = outcome['point']
+                break
+            return game_total, spread
+    return None, None
+
 def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None, opp_pace_override=None):
     try:
         bdl_season = int(season.split("-")[0])  # balldontlie uses the season's start year
@@ -2568,28 +2600,29 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
 
         expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
 
+        # Rest days — fixed boundary bug (July 2026 review): a genuine
+        # back-to-back has a CALENDAR gap of 1 (e.g. played Nov 30, playing
+        # Dec 1), not 0 — the old "== 0" check could never actually fire for
+        # a real back-to-back. Also reduced the penalty now that it actually
+        # triggers for real games instead of being silently dead code.
         reference_date = as_of_date if as_of_date else datetime.today()
-        days_rest = (reference_date - df['game_date'].iloc[-1].to_pydatetime()).days if not df.empty else 2
-        rest_adj = -1.5 if days_rest == 0 else (1.0 if days_rest >= 3 else 0)
+        last_game_date = df['game_date'].iloc[-1].to_pydatetime() if not df.empty else None
+        date_gap = (pd.Timestamp(reference_date).normalize() - pd.Timestamp(last_game_date).normalize()).days if last_game_date else 2
+        days_rest = max(0, date_gap - 1)
+        if date_gap == 1:
+            rest_adj = -0.5  # true back-to-back
+        elif date_gap >= 4:
+            rest_adj = 0.25
+        else:
+            rest_adj = 0.0
 
         game_total = spread = None
-        try:
-            games_data = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
-                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'}).json()
-            for game in games_data:
-                if home_team in game.get('home_team', '') or home_team in game.get('away_team', ''):
-                    for bookmaker in game.get('bookmakers', []):
-                        for market in bookmaker.get('markets', []):
-                            if market['key'] == 'totals':
-                                game_total = market['outcomes'][0]['point']
-                            if market['key'] == 'spreads':
-                                for outcome in market['outcomes']:
-                                    if home_team in outcome['name']:
-                                        spread = outcome['point']
-                        break
-                    break
-        except:
-            pass
+        if as_of_date is None:  # live use only — a July 2026 review caught this
+            try:                # endpoint being hit unconditionally even during
+                games_data = get_live_nba_odds()  # backtests, silently pulling
+                game_total, spread = find_game_odds(games_data, home_team, away_team)  # today's real odds instead of historical ones
+            except:
+                pass
 
         team_total_adj = blowout_minutes_adj = 0
         implied_team_total = None
@@ -2721,28 +2754,26 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
 
         expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
 
+        # Rest days — same boundary-bug fix as the Points engine (see its
+        # comment for the full explanation).
         reference_date = as_of_date if as_of_date else datetime.today()
-        days_rest = (reference_date - df['game_date'].iloc[-1].to_pydatetime()).days if not df.empty else 2
-        rest_adj = -0.5 if days_rest == 0 else (0.3 if days_rest >= 3 else 0)
+        last_game_date = df['game_date'].iloc[-1].to_pydatetime() if not df.empty else None
+        date_gap = (pd.Timestamp(reference_date).normalize() - pd.Timestamp(last_game_date).normalize()).days if last_game_date else 2
+        days_rest = max(0, date_gap - 1)
+        if date_gap == 1:
+            rest_adj = -0.5  # true back-to-back
+        elif date_gap >= 4:
+            rest_adj = 0.3
+        else:
+            rest_adj = 0.0
 
         game_total = spread = None
-        try:
-            games_data = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
-                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'}).json()
-            for game in games_data:
-                if home_team in game.get('home_team', '') or home_team in game.get('away_team', ''):
-                    for bookmaker in game.get('bookmakers', []):
-                        for market in bookmaker.get('markets', []):
-                            if market['key'] == 'totals':
-                                game_total = market['outcomes'][0]['point']
-                            if market['key'] == 'spreads':
-                                for outcome in market['outcomes']:
-                                    if home_team in outcome['name']:
-                                        spread = outcome['point']
-                        break
-                    break
-        except:
-            pass
+        if as_of_date is None:  # live use only — see Points engine's comment
+            try:
+                games_data = get_live_nba_odds()
+                game_total, spread = find_game_odds(games_data, home_team, away_team)
+            except:
+                pass
 
         total_adj = max(-0.5, min(0.5, round((game_total - 225) * 0.015, 2))) if game_total else 0
         blowout_minutes_adj = -4 if (spread and abs(spread) >= 12) else (-2 if (spread and abs(spread) >= 9) else 0)
@@ -4679,6 +4710,15 @@ elif nav == "🧪 Backtest" and is_admin:
                             'FGA': fga_sum, 'FTA': fta_sum, 'OREB': oreb_sum, 'TOV': tov_sum, 'Pace': pace_val
                         })
                     st.dataframe(pd.DataFrame(rows_out), use_container_width=True)
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+        if st.button("Check Raw /games Schema (for leak-free pace rebuild)"):
+            try:
+                sample_games = bdl_get("games", {"seasons[]": 2025, "per_page": 3})
+                st.write(f"Got {len(sample_games)} games back")
+                st.json(sample_games)
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
