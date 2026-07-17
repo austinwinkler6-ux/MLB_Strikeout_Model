@@ -2529,6 +2529,15 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
         projected_fga = round((last5_fga * 0.40) + (last10_fga * 0.30) + (season_fga * 0.30), 1)
 
+        if 'fgm' in df.columns:
+            df['fgm'] = pd.to_numeric(df['fgm'], errors='coerce')
+        season_fgm = round(df['fgm'].mean(), 2) if 'fgm' in df.columns else None
+        season_fg_pct = round(season_fgm / season_fga * 100, 1) if season_fgm is not None and season_fga > 0 else None
+
+        last10_fta_val = round(df['fta'].tail(10).mean(), 2) if 'fta' in df.columns else 0
+        last10_tov_val = round(df['turnover'].tail(10).mean(), 2) if 'turnover' in df.columns else 0
+        recent_touches_per_min = round((last10_fga + 0.44 * last10_fta_val + last10_tov_val) / last10_min, 3) if last10_min > 0 else None
+
         # Usage rate: known limitation, not a real per-player estimate right
         # now. It was built on get_bdl_team_game_averages(), which relies on
         # balldontlie's team_ids[] filter — confirmed (July 2026 diagnostic)
@@ -2607,7 +2616,8 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'season_ppg': season_ppg, 'last5_avg': last5_avg, 'last10_avg': last10_avg,
             'last10_pts_std': last10_pts_std, 'season_mpg': season_mpg,
             'expected_minutes': final_expected_minutes, 'usage_rate': usage_rate,
-            'projected_fga': projected_fga,
+            'projected_fga': projected_fga, 'season_fg_pct': season_fg_pct,
+            'recent_touches_per_min': recent_touches_per_min,
             'fga_factor': fga_factor, 'opp_def_rating': opp_def_rating, 'opp_pace': opp_pace,
             'location_adj': location_adj, 'rest_adj': rest_adj, 'team_total_adj': team_total_adj,
             'minutes_pts_adj': minutes_pts_adj, 'usage_adj': usage_adj, 'def_adj': def_adj,
@@ -4824,6 +4834,24 @@ elif nav == "🧪 Backtest" and is_admin:
                                 opp_tov = pd.to_numeric(opp_team_rows['turnover'], errors='coerce').sum()
                                 opp_pace_override = round(opp_fga + 0.44 * opp_fta - opp_oreb + opp_tov, 1)
 
+                            # Real actual usage % for this specific game — same
+                            # method as pace above, just using the player's own
+                            # team instead of the opponent's.
+                            own_team_rows = box_rows_df[box_rows_df['team'].apply(lambda t: (t or {}).get('id')) == team_id]
+                            actual_usage_pct = None
+                            if not own_team_rows.empty:
+                                team_fga_sum = pd.to_numeric(own_team_rows['fga'], errors='coerce').sum()
+                                team_fta_sum = pd.to_numeric(own_team_rows['fta'], errors='coerce').sum()
+                                team_oreb_sum = pd.to_numeric(own_team_rows['oreb'], errors='coerce').sum()
+                                team_tov_sum = pd.to_numeric(own_team_rows['turnover'], errors='coerce').sum()
+                                team_min_sum = sum(bdl_parse_minutes(m) for m in own_team_rows['min'])
+                                team_poss_this_game = team_fga_sum + 0.44 * team_fta_sum - team_oreb_sum + team_tov_sum
+                                player_fta_val = row.get('fta') or 0
+                                player_tov_val = row.get('turnover') or 0
+                                player_poss_this_game = (row.get('fga') or 0) + 0.44 * player_fta_val + player_tov_val
+                                if team_poss_this_game > 0 and minutes_this_game > 0:
+                                    actual_usage_pct = round((player_poss_this_game * (team_min_sum / 5)) / (minutes_this_game * team_poss_this_game) * 100, 1)
+
                             if is_assists:
                                 result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()), opp_pace_override=opp_pace_override)
                             else:
@@ -4864,7 +4892,9 @@ elif nav == "🧪 Backtest" and is_admin:
                                     'Tier': result['confidence_tier'],
                                     'Proj Min': proj_min, 'Actual Min': round(minutes_this_game, 1), 'Min Error': min_error,
                                     'Proj FGA': proj_fga, 'Actual FGA': actual_fga, 'FGA Error': fga_error,
-                                    'Actual FG%': actual_fg_pct,
+                                    'Actual FG%': actual_fg_pct, 'Season FG%': result.get('season_fg_pct'),
+                                    'Recent Touches/Min': result.get('recent_touches_per_min'),
+                                    'Actual Usage %': actual_usage_pct,
                                     'Opp Pace': result.get('opp_pace'),
                                     'Pace Adj': result.get('pace_adj'),
                                 })
