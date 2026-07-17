@@ -2502,6 +2502,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         last5_avg = round(df['pts'].tail(5).mean(), 1)
         last10_avg = round(df['pts'].tail(10).mean(), 1)
         last5_fga = round(df['fga'].tail(5).mean(), 1)
+        last10_fga = round(df['fga'].tail(10).mean(), 1)
         last5_min = round(df['minutes_played'].tail(5).mean(), 1)
         last10_min = round(df['minutes_played'].tail(10).mean(), 1)
 
@@ -2526,6 +2527,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
 
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
+        projected_fga = round((last5_fga * 0.40) + (last10_fga * 0.30) + (season_fga * 0.30), 1)
 
         # Usage rate: known limitation, not a real per-player estimate right
         # now. It was built on get_bdl_team_game_averages(), which relies on
@@ -2605,6 +2607,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'season_ppg': season_ppg, 'last5_avg': last5_avg, 'last10_avg': last10_avg,
             'last10_pts_std': last10_pts_std, 'season_mpg': season_mpg,
             'expected_minutes': final_expected_minutes, 'usage_rate': usage_rate,
+            'projected_fga': projected_fga,
             'fga_factor': fga_factor, 'opp_def_rating': opp_def_rating, 'opp_pace': opp_pace,
             'location_adj': location_adj, 'rest_adj': rest_adj, 'team_total_adj': team_total_adj,
             'minutes_pts_adj': minutes_pts_adj, 'usage_adj': usage_adj, 'def_adj': def_adj,
@@ -4846,12 +4849,22 @@ elif nav == "🧪 Backtest" and is_admin:
                             else:
                                 error_val = round(abs(result['projection'] - actual_val), 1)
                                 error_pct = round(error_val / actual_val * 100, 1) if actual_val > 0 else None
+                                proj_min = result.get('expected_minutes')
+                                min_error = round(minutes_this_game - proj_min, 1) if proj_min is not None else None
+                                proj_fga = result.get('projected_fga')
+                                actual_fga = row.get('fga')
+                                fga_error = round(actual_fga - proj_fga, 1) if proj_fga is not None and actual_fga is not None else None
+                                actual_fgm = row.get('fgm')
+                                actual_fg_pct = round(actual_fgm / actual_fga * 100, 1) if actual_fga else None
                                 results.append({
                                     'Player': player_name,
                                     'Matchup': f"{away_name} @ {home_name}",
                                     'Projection': result['projection'], 'Actual': actual_val,
                                     'Error': error_val, 'Error %': error_pct,
                                     'Tier': result['confidence_tier'],
+                                    'Proj Min': proj_min, 'Actual Min': round(minutes_this_game, 1), 'Min Error': min_error,
+                                    'Proj FGA': proj_fga, 'Actual FGA': actual_fga, 'FGA Error': fga_error,
+                                    'Actual FG%': actual_fg_pct,
                                     'Opp Pace': result.get('opp_pace'),
                                     'Pace Adj': result.get('pace_adj'),
                                 })
