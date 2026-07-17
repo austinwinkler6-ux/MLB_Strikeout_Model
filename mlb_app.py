@@ -4637,6 +4637,32 @@ elif nav == "🧪 Backtest" and is_admin:
             st.success("Cache cleared — next run will fetch everything fresh.")
         debug_player = st.text_input("Player name", value="Nikola Jokić", key="debug_player_name")
         debug_season = st.number_input("Season (start year, e.g. 2025 for 2025-26)", value=2025, key="debug_bdl_season")
+        debug_date_for_pace = st.date_input("Date to check team pace math", value=date(2025, 12, 1), key="debug_pace_date")
+        if st.button("Check Per-Team Pace Math For This Date"):
+            try:
+                date_str_check = debug_date_for_pace.strftime('%Y-%m-%d')
+                box_check_df = get_bdl_games_for_date(date_str_check)
+                if box_check_df.empty:
+                    st.error("No games found for that date.")
+                else:
+                    box_check_df['team_id_check'] = box_check_df['team'].apply(lambda t: (t or {}).get('id'))
+                    box_check_df['team_name_check'] = box_check_df['team'].apply(lambda t: (t or {}).get('full_name'))
+                    rows_out = []
+                    for team_id_val, group in box_check_df.groupby('team_id_check'):
+                        fga_sum = pd.to_numeric(group['fga'], errors='coerce').sum()
+                        fta_sum = pd.to_numeric(group['fta'], errors='coerce').sum()
+                        oreb_sum = pd.to_numeric(group['oreb'], errors='coerce').sum()
+                        tov_sum = pd.to_numeric(group['turnover'], errors='coerce').sum()
+                        pace_val = round(fga_sum + 0.44 * fta_sum - oreb_sum + tov_sum, 1)
+                        rows_out.append({
+                            'Team': group['team_name_check'].iloc[0], 'Players': len(group),
+                            'FGA': fga_sum, 'FTA': fta_sum, 'OREB': oreb_sum, 'TOV': tov_sum, 'Pace': pace_val
+                        })
+                    st.dataframe(pd.DataFrame(rows_out), use_container_width=True)
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
         if st.button("Check Team Filter (Denver Nuggets, id=8)"):
             try:
                 team_rows = bdl_get("stats", {"team_ids[]": 8, "seasons[]": int(debug_season), "per_page": 100})
@@ -4758,6 +4784,10 @@ elif nav == "🧪 Backtest" and is_admin:
                             if not player_name or actual_val is None:
                                 skipped.append({'Player': player_name or 'Unknown', 'Reason': 'Missing name or box score stat in raw data'})
                                 continue
+                            minutes_this_game = bdl_parse_minutes(row.get('min'))
+                            if minutes_this_game <= 0:
+                                skipped.append({'Player': player_name, 'Reason': f"Didn't play (0 minutes) on {backtest_date} — excluded, not a fair test of scoring prediction"})
+                                continue
                             team_info = row.get('team') or {}
                             game_info = row.get('game') or {}
                             team_id = team_info.get('id')
@@ -4797,8 +4827,12 @@ elif nav == "🧪 Backtest" and is_admin:
                                     elif check_df.empty:
                                         reason = f"Player ID '{check_id}' resolved but game log came back empty"
                                     else:
-                                        active_count = (check_df['min'].apply(bdl_parse_minutes) > 0).sum()
-                                        reason = f"Player ID '{check_id}' found, {len(check_df)} total games, {active_count} active games (need 5)"
+                                        check_df['_active'] = check_df['min'].apply(bdl_parse_minutes) > 0
+                                        check_df['_game_date'] = pd.to_datetime(check_df['game'].apply(lambda g: (g or {}).get('date')))
+                                        before_date_df = check_df[check_df['_game_date'] < pd.Timestamp(backtest_date)]
+                                        active_before = before_date_df['_active'].sum()
+                                        active_total = check_df['_active'].sum()
+                                        reason = f"Player ID '{check_id}' found — {active_before} active games BEFORE {backtest_date} (need 5), {active_total} active games all season"
                                 except Exception as diag_e:
                                     reason = f"Diagnostic check itself failed: {diag_e}"
                                 skipped.append({'Player': player_name, 'Reason': reason})
