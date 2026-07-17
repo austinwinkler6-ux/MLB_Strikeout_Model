@@ -4844,11 +4844,13 @@ elif nav == "🧪 Backtest" and is_admin:
                                     reason = f"Diagnostic check itself failed: {diag_e}"
                                 skipped.append({'Player': player_name, 'Reason': reason})
                             else:
+                                error_val = round(abs(result['projection'] - actual_val), 1)
+                                error_pct = round(error_val / actual_val * 100, 1) if actual_val > 0 else None
                                 results.append({
                                     'Player': player_name,
                                     'Matchup': f"{away_name} @ {home_name}",
                                     'Projection': result['projection'], 'Actual': actual_val,
-                                    'Error': round(abs(result['projection'] - actual_val), 1),
+                                    'Error': error_val, 'Error %': error_pct,
                                     'Tier': result['confidence_tier'],
                                     'Opp Pace': result.get('opp_pace'),
                                     'Pace Adj': result.get('pace_adj'),
