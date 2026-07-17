@@ -2352,7 +2352,13 @@ def get_bdl_player_id(player_name):
         full_name = strip_accents(f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower())
         if full_name == name_lower:
             return p.get("id")
-    if rows:
+    # No exact match — only safe to guess if there's exactly ONE candidate
+    # (e.g. a minor formatting quirk our normalization missed). With a
+    # common surname search returning several different players and none
+    # matching exactly, silently grabbing rows[0] risks projecting a
+    # completely different person — better to return None and show up as a
+    # clear skip than to silently mis-attribute a projection (July 2026 fix).
+    if len(rows) == 1:
         return rows[0].get("id")
     return None
 
@@ -2421,29 +2427,62 @@ def bdl_parse_minutes(m):
         return 0.0
 
 @st.cache_data(ttl=3600)
-def get_bdl_team_game_averages(team_id, season):
-    """Team-level per-game averages (FGA, FTA, OREB, turnovers, total team
-    minutes, and pace) aggregated from all players' box scores for that team
-    this season. Serves both the pace estimate (opponent) and the usage-rate
-    estimate (player's own team) — ALL-STAR tier doesn't include a
-    precalculated team-totals endpoint (that's GOAT-tier), so this is built
-    ourselves from raw box-score components, same approach used for the
-    Basketball-Reference version of this model."""
+@st.cache_data(ttl=3600)
+def get_bdl_season_schedule(season):
+    """Full season schedule — every game, every team, one shared cached
+    fetch reused by every team's pace lookup. Deliberately doesn't use
+    team_ids[] (confirmed broken on /stats — no reason to trust it on
+    /games either without testing) — just seasons[] alone, which is a
+    plain, already-proven filter. Confirmed schema (July 2026 diagnostic):
+    top-level 'id', 'date' ('YYYY-MM-DD'), 'status' ('Final' when complete),
+    nested 'home_team'/'visitor_team' objects each with their own 'id'."""
+    return bdl_get("games", {"seasons[]": season, "per_page": 100})
+
+def get_bdl_team_pace_before_date(team_id, season, as_of_date, num_recent_games=10):
+    """Real, LEAK-FREE team pace estimate — built only from games that
+    happened strictly before as_of_date, using their actual completed box
+    scores. This replaces an earlier version that accidentally computed a
+    team's pace using the very game being predicted (its completed box
+    score), which is textbook look-ahead leakage — caught in a July 2026
+    code review. Uses only confirmed-working filters: seasons[] alone on
+    /games to get the schedule, then game_ids[] on /stats for the actual
+    box scores of specific past games."""
     try:
-        rows = bdl_get("stats", {"team_ids[]": team_id, "seasons[]": season, "per_page": 100})
-        if not rows:
+        schedule = get_bdl_season_schedule(season)
+        cutoff = pd.Timestamp(as_of_date).normalize()
+        team_games = []
+        for g in schedule:
+            if g.get('status') != 'Final':
+                continue
+            game_date = g.get('date')
+            if not game_date or pd.Timestamp(game_date).normalize() >= cutoff:
+                continue
+            home_id = (g.get('home_team') or {}).get('id')
+            away_id = (g.get('visitor_team') or {}).get('id')
+            if team_id not in (home_id, away_id):
+                continue
+            team_games.append(g)
+        if not team_games:
+            return None
+        team_games.sort(key=lambda g: g['date'], reverse=True)
+        recent_game_ids = [g['id'] for g in team_games[:num_recent_games]]
+        rows = []
+        for gid in recent_game_ids:
+            rows.extend(bdl_get("stats", {"game_ids[]": gid, "per_page": 100}))
+            time.sleep(0.3)
+        team_rows = [r for r in rows if (r.get('team') or {}).get('id') == team_id]
+        if not team_rows:
             return None
         game_totals = {}
-        for r in rows:
-            game_id = (r.get("game") or {}).get("id")
-            if game_id is None:
+        for r in team_rows:
+            gid = (r.get('game') or {}).get('id')
+            if gid is None:
                 continue
-            g = game_totals.setdefault(game_id, {"fga": 0, "fta": 0, "oreb": 0, "tov": 0, "min": 0.0})
-            g["fga"] += r.get("fga") or 0
-            g["fta"] += r.get("fta") or 0
-            g["oreb"] += r.get("oreb") or 0
-            g["tov"] += r.get("turnover") or 0
-            g["min"] += bdl_parse_minutes(r.get("min"))
+            gt = game_totals.setdefault(gid, {"fga": 0, "fta": 0, "oreb": 0, "tov": 0})
+            gt["fga"] += r.get("fga") or 0
+            gt["fta"] += r.get("fta") or 0
+            gt["oreb"] += r.get("oreb") or 0
+            gt["tov"] += r.get("turnover") or 0
         if not game_totals:
             return None
         n = len(game_totals)
@@ -2451,19 +2490,17 @@ def get_bdl_team_game_averages(team_id, season):
         avg_fta = sum(g["fta"] for g in game_totals.values()) / n
         avg_oreb = sum(g["oreb"] for g in game_totals.values()) / n
         avg_tov = sum(g["tov"] for g in game_totals.values()) / n
-        avg_min = sum(g["min"] for g in game_totals.values()) / n
-        pace = avg_fga + 0.44 * avg_fta - avg_oreb + avg_tov
-        return {"fga": avg_fga, "fta": avg_fta, "oreb": avg_oreb, "tov": avg_tov, "minutes": avg_min, "pace": round(pace, 1)}
+        return round(avg_fga + 0.44 * avg_fta - avg_oreb + avg_tov, 1)
     except Exception:
         return None
 
-def get_bdl_opp_pace(opp_full_name, season):
+def get_bdl_opp_pace(opp_full_name, season, as_of_date):
     team_ids = get_bdl_team_ids()
     team_id = team_ids.get(opp_full_name)
     if not team_id:
         return league_avg_pace
-    averages = get_bdl_team_game_averages(team_id, season)
-    return averages["pace"] if averages else league_avg_pace
+    pace = get_bdl_team_pace_before_date(team_id, season, as_of_date)
+    return pace if pace else league_avg_pace
 
 
 
@@ -2515,10 +2552,9 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
 
         df['pts'] = pd.to_numeric(df['pts'], errors='coerce')
         df['fga'] = pd.to_numeric(df['fga'], errors='coerce')
-        if 'fta' in df.columns:
-            df['fta'] = pd.to_numeric(df['fta'], errors='coerce')
-        if 'turnover' in df.columns:
-            df['turnover'] = pd.to_numeric(df['turnover'], errors='coerce')
+        for col in ['fta', 'turnover', 'fgm', 'fg3m', 'fg3a', 'ftm']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         df['game_date'] = pd.to_datetime(df['game'].apply(lambda g: (g or {}).get('date')))
         df['home_team_id'] = df['game'].apply(lambda g: (g or {}).get('home_team_id'))
         df['team_id'] = df['team'].apply(lambda t: (t or {}).get('id'))
@@ -2528,7 +2564,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             if len(df) < 5:
                 return None
 
-        season_ppg = round(df['pts'].mean(), 1)
+        season_ppg = round(df['pts'].mean(), 1)  # kept for display/diagnostics only — no longer feeds the projection directly
         season_mpg = round(df['minutes_played'].mean(), 1)
         season_fga = round(df['fga'].mean(), 1)
         last5_avg = round(df['pts'].tail(5).mean(), 1)
@@ -2538,9 +2574,94 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         last5_min = round(df['minutes_played'].tail(5).mean(), 1)
         last10_min = round(df['minutes_played'].tail(10).mean(), 1)
 
+        # === Scoring engine rebuild (July 2026) ===
+        # Old approach: blend recent PPG averages, then apply a projected-FGA
+        # "factor" capped at +-5% — capped so tightly it barely moved the
+        # final number regardless of how extreme the shot-volume signal was.
+        # It also double-counted recent shot volume: once implicitly through
+        # recent PPG, again (barely) through the FGA multiplier. New
+        # approach: build points bottom-up from Minutes x shots-per-minute x
+        # shooting conversion, so FGA/FTA volume actually drives the number,
+        # not just decorates it.
+        has_3pt = 'fg3a' in df.columns and 'fg3m' in df.columns
+        has_ft = 'fta' in df.columns and 'ftm' in df.columns
+
+        df['fga_per_min'] = df['fga'] / df['minutes_played']
+        if has_3pt:
+            df['fg3a_per_min'] = df['fg3a'] / df['minutes_played']
+        if has_ft:
+            df['fta_per_min'] = df['fta'] / df['minutes_played']
+
+        def _blend(col, w_season, w_l10, w_l5):
+            return (df[col].mean() * w_season) + (df[col].tail(10).mean() * w_l10) + (df[col].tail(5).mean() * w_l5)
+
+        proj_fga_per_min = _blend('fga_per_min', 0.40, 0.35, 0.25)
+        proj_3pa_per_min = _blend('fg3a_per_min', 0.50, 0.30, 0.20) if has_3pt else 0.0
+        proj_fta_per_min = _blend('fta_per_min', 0.50, 0.30, 0.20) if has_ft else 0.0
+
+        expected_minutes_raw = (season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40)
+
+        projected_fga = round(expected_minutes_raw * proj_fga_per_min, 1)
+        projected_3pa = round(expected_minutes_raw * proj_3pa_per_min, 1) if has_3pt else 0.0
+        projected_fta = round(expected_minutes_raw * proj_fta_per_min, 1) if has_ft else 0.0
+        projected_2pa = max(0.0, projected_fga - projected_3pa)
+
+        # Shooting percentages — regressed toward season average plus a
+        # league baseline, since 5-10 game shooting splits are noisy. Not
+        # projecting Cade to shoot exactly his hot/cold recent percentage.
+        league_avg_2p_pct = 0.52
+        league_avg_3p_pct = 0.36
+        league_avg_ft_pct = 0.75
+
+        if has_3pt:
+            season_2pm, season_2pa_sum = (df['fgm'] - df['fg3m']).sum(), (df['fga'] - df['fg3a']).sum()
+            season_2p_pct = season_2pm / season_2pa_sum if season_2pa_sum > 0 else league_avg_2p_pct
+            last10_2pm, last10_2pa_sum = (df['fgm'] - df['fg3m']).tail(10).sum(), (df['fga'] - df['fg3a']).tail(10).sum()
+            last10_2p_pct = last10_2pm / last10_2pa_sum if last10_2pa_sum > 0 else season_2p_pct
+            season_3p_pct = df['fg3m'].sum() / df['fg3a'].sum() if df['fg3a'].sum() > 0 else league_avg_3p_pct
+            last10_3pm, last10_3pa_sum = df['fg3m'].tail(10).sum(), df['fg3a'].tail(10).sum()
+            last10_3p_pct = last10_3pm / last10_3pa_sum if last10_3pa_sum > 0 else season_3p_pct
+        else:
+            season_2p_pct = last10_2p_pct = league_avg_2p_pct
+            season_3p_pct = last10_3p_pct = league_avg_3p_pct
+
+        projected_2p_pct = (season_2p_pct * 0.70) + (last10_2p_pct * 0.20) + (league_avg_2p_pct * 0.10)
+        projected_3p_pct = (season_3p_pct * 0.75) + (last10_3p_pct * 0.15) + (league_avg_3p_pct * 0.10)
+
+        if has_ft:
+            season_fta_sum = df['fta'].sum()
+            season_ft_pct = df['ftm'].sum() / season_fta_sum if season_fta_sum > 0 else league_avg_ft_pct
+            last10_fta_sum = df['fta'].tail(10).sum()
+            last10_ft_pct = df['ftm'].tail(10).sum() / last10_fta_sum if last10_fta_sum > 0 else season_ft_pct
+        else:
+            season_ft_pct = last10_ft_pct = league_avg_ft_pct
+        projected_ft_pct = (season_ft_pct * 0.85) + (last10_ft_pct * 0.15)
+
+        points_from_twos = projected_2pa * projected_2p_pct * 2
+        points_from_threes = projected_3pa * projected_3p_pct * 3
+        points_from_free_throws = projected_fta * projected_ft_pct
+        base = points_from_twos + points_from_threes + points_from_free_throws
+
+        if 'fgm' in df.columns:
+            season_fgm = round(df['fgm'].mean(), 2)
+            season_fg_pct = round(season_fgm / season_fga * 100, 1) if season_fga > 0 else None
+        else:
+            season_fg_pct = None
+
+        last10_fta_val = round(df['fta'].tail(10).mean(), 2) if 'fta' in df.columns else 0
+        last10_tov_val = round(df['turnover'].tail(10).mean(), 2) if 'turnover' in df.columns else 0
+        recent_touches_per_min = round((last10_fga + 0.44 * last10_fta_val + last10_tov_val) / last10_min, 3) if last10_min > 0 else None
+
+        # Scoring volatility — floor of 10 in the denominator prevents tiny-
+        # average bench players from getting an automatically-inflated CV
+        # just because their mean is small (a real, confirmed bias: a 4 PPG
+        # player with a 4-point std gets CV=1.0 "Uncertain," while a 28 PPG
+        # player with an 8-point std gets CV=0.29 "Reliable," even though
+        # the star's absolute swings are much larger — July 2026 review).
         last10_pts = df['pts'].tail(10)
+        last10_pts_mean = round(last10_pts.mean(), 2)
         last10_pts_std = round(last10_pts.std(), 2) if len(last10_pts) > 1 else 0.0
-        cv = round(last10_pts_std / round(last10_pts.mean(), 2), 3) if round(last10_pts.mean(), 2) > 0 else 1.0
+        cv = round(last10_pts_std / max(last10_pts_mean, 10), 3)
 
         if cv < 0.35: confidence_tier = "🟢 Reliable"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
@@ -2557,19 +2678,6 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         else:
             workload_tier = "🔴 Highly Volatile Minutes"
 
-        base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
-        fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
-        projected_fga = round((last5_fga * 0.40) + (last10_fga * 0.30) + (season_fga * 0.30), 1)
-
-        if 'fgm' in df.columns:
-            df['fgm'] = pd.to_numeric(df['fgm'], errors='coerce')
-        season_fgm = round(df['fgm'].mean(), 2) if 'fgm' in df.columns else None
-        season_fg_pct = round(season_fgm / season_fga * 100, 1) if season_fgm is not None and season_fga > 0 else None
-
-        last10_fta_val = round(df['fta'].tail(10).mean(), 2) if 'fta' in df.columns else 0
-        last10_tov_val = round(df['turnover'].tail(10).mean(), 2) if 'turnover' in df.columns else 0
-        recent_touches_per_min = round((last10_fga + 0.44 * last10_fta_val + last10_tov_val) / last10_min, 3) if last10_min > 0 else None
-
         # Usage rate: known limitation, not a real per-player estimate right
         # now. It was built on get_bdl_team_game_averages(), which relies on
         # balldontlie's team_ids[] filter — confirmed (July 2026 diagnostic)
@@ -2579,26 +2687,31 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         # aggregate box-score totals from this API tier.
         usage_rate = 0.20
 
-        # Known limitations: no defensive-rating equivalent at this tier —
-        # falls back to league average. Pace also falls back to league average
-        # UNLESS the caller passes a real, game-specific estimate via
-        # opp_pace_override — balldontlie's team_ids[] filter was confirmed
-        # (July 2026 diagnostic) to not actually filter anything on the /stats
-        # endpoint, so a season-long team aggregate isn't reliably buildable
-        # from a confirmed-working API call. Backtest computes a real value
-        # from the actual game's own box score instead; live props don't have
-        # that game's box score yet (game hasn't happened), so they fall back.
+        # Known limitation: no defensive-rating equivalent at this tier —
+        # falls back to league average. Pace is now a real, leak-free
+        # per-opponent estimate (July 2026 fix) — built only from games
+        # strictly before the reference date, never the game being predicted.
         opp_def_rating = league_avg_def_rating
-        opp_pace = opp_pace_override if opp_pace_override else league_avg_pace
+        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
+        pace_reference_date = as_of_date if as_of_date else datetime.today()
+        opp_pace = opp_pace_override if opp_pace_override else (
+            get_bdl_opp_pace(opp_full_name, bdl_season, pace_reference_date) if opp_full_name else league_avg_pace
+        )
 
         df['was_home'] = df['home_team_id'] == df['team_id']
         home_games = df[df['was_home'] == True]
         away_games = df[df['was_home'] == False]
         home_ppg = round(home_games['pts'].mean(), 1) if not home_games.empty else season_ppg
         away_ppg = round(away_games['pts'].mean(), 1) if not away_games.empty else season_ppg
-        location_adj = max(-2.0, min(2.0, round(home_ppg - season_ppg, 2) if home_or_away == 'home' else round(away_ppg - season_ppg, 2)))
+        raw_location_adj = (home_ppg - season_ppg) if home_or_away == 'home' else (away_ppg - season_ppg)
+        # Shrink toward zero when the home/away split is based on a small
+        # sample — early in a season, a 2-point swing from 3-4 games is
+        # mostly noise, not a real home/away effect (July 2026 fix).
+        location_games = len(home_games) if home_or_away == 'home' else len(away_games)
+        location_shrinkage = min(1.0, location_games / 20)
+        location_adj = max(-1.0, min(1.0, round(raw_location_adj * location_shrinkage, 2)))
 
-        expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
+        expected_minutes = round(expected_minutes_raw, 1)
 
         # Rest days — fixed boundary bug (July 2026 review): a genuine
         # back-to-back has a CALENDAR gap of 1 (e.g. played Nov 30, playing
@@ -2624,25 +2737,42 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             except:
                 pass
 
-        team_total_adj = blowout_minutes_adj = 0
+        team_total_adj = 0
         implied_team_total = None
+        # Blowout minutes impact scales with role, rather than a flat -4 for
+        # everyone regardless of whether they're a starter or a fringe bench
+        # player — bench players often GAIN garbage-time minutes in a
+        # blowout while starters lose 4th-quarter run (July 2026 fix).
+        # Deliberately not further tuned/optimized from one slate — would
+        # need a proper backtest across many blowout games first.
+        blowout_minutes_adj = 0
         if game_total and spread:
             if home_or_away == 'home':
                 implied_team_total = round((game_total / 2) + (abs(spread) / 2 * (1 if spread < 0 else -1)), 1)
             else:
                 implied_team_total = round((game_total / 2) - (abs(spread) / 2 * (1 if spread < 0 else -1)), 1)
             team_total_adj = round((implied_team_total - league_avg_team_score) * 0.08, 2)
-            blowout_minutes_adj = -4 if abs(spread) >= 12 else (-2 if abs(spread) >= 9 else 0)
+            if abs(spread) >= 9:
+                if expected_minutes_raw >= 32:
+                    blowout_multiplier = 1.0
+                elif expected_minutes_raw >= 24:
+                    blowout_multiplier = 0.5
+                else:
+                    blowout_multiplier = -0.25  # some bench players gain time
+                base_blowout_adj = -4 if abs(spread) >= 12 else -2
+                blowout_minutes_adj = round(base_blowout_adj * blowout_multiplier, 1)
 
         final_expected_minutes = round(expected_minutes + blowout_minutes_adj, 1)
-        pts_per_minute = round(season_ppg / season_mpg, 3) if season_mpg > 0 else 0
-        minutes_pts_adj = round((final_expected_minutes - season_mpg) * pts_per_minute, 2)
+        # Re-scale the bottom-up projection for any minutes change from the
+        # blowout adjustment, using the player's own points-per-minute rate.
+        pts_per_minute = round(base / expected_minutes_raw, 3) if expected_minutes_raw > 0 else 0
+        minutes_pts_adj = round((final_expected_minutes - expected_minutes_raw) * pts_per_minute, 2)
         usage_adj = round((usage_rate - 0.20) * 10, 2)
         def_adj = round((opp_def_rating - league_avg_def_rating) * 0.2, 2)
         pace_adj = round((opp_pace - league_avg_pace) * 0.25, 2)
 
         raw_adjustment = max(-6.0, min(6.0, usage_adj + def_adj + pace_adj + team_total_adj + location_adj + rest_adj + minutes_pts_adj))
-        final_projection = round((base + raw_adjustment) * fga_factor, 1)
+        final_projection = round(base + raw_adjustment, 1)
 
         return {
             'projection': final_projection, 'base': round(base, 2),
@@ -2651,7 +2781,9 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'expected_minutes': final_expected_minutes, 'usage_rate': usage_rate,
             'projected_fga': projected_fga, 'season_fg_pct': season_fg_pct,
             'recent_touches_per_min': recent_touches_per_min,
-            'fga_factor': fga_factor, 'opp_def_rating': opp_def_rating, 'opp_pace': opp_pace,
+            'projected_2p_pct': round(projected_2p_pct * 100, 1), 'projected_3p_pct': round(projected_3p_pct * 100, 1),
+            'projected_ft_pct': round(projected_ft_pct * 100, 1), 'projected_3pa': projected_3pa, 'projected_fta': projected_fta,
+            'opp_def_rating': opp_def_rating, 'opp_pace': opp_pace,
             'location_adj': location_adj, 'rest_adj': rest_adj, 'team_total_adj': team_total_adj,
             'minutes_pts_adj': minutes_pts_adj, 'usage_adj': usage_adj, 'def_adj': def_adj,
             'pace_adj': pace_adj, 'implied_team_total': implied_team_total, 'game_total': game_total,
@@ -2661,6 +2793,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
         return None
+
 
 # ---- NBA ASSISTS PROJECTION ENGINE ----
 def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None, opp_pace_override=None):
@@ -2736,12 +2869,15 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
 
         # Known limitations: no "potential assists" (tracking-only stat) or
         # opponent-assists-allowed equivalent at this data tier — both stay
-        # neutral. Pace falls back to league average unless the caller passes
-        # a real, game-specific estimate via opp_pace_override (see Points
-        # engine's comment for the full explanation).
+        # neutral. Pace is now a real, leak-free per-opponent estimate (see
+        # Points engine's comment for the full explanation).
         potential_assists = None
         potential_ast_adj = 0
-        opp_pace = opp_pace_override if opp_pace_override else league_avg_pace
+        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
+        pace_reference_date = as_of_date if as_of_date else datetime.today()
+        opp_pace = opp_pace_override if opp_pace_override else (
+            get_bdl_opp_pace(opp_full_name, bdl_season, pace_reference_date) if opp_full_name else league_avg_pace
+        )
         opp_ast_allowed = 25.0
         opp_ast_adj = 0
 
@@ -4870,22 +5006,14 @@ elif nav == "🧪 Backtest" and is_admin:
                             away_name = opp_name if home_or_away == 'home' else team_name
                             opp_abbrev = nba_name_to_abbrev.get(opp_name, '')
 
-                            # Real, game-specific pace estimate — computed from
-                            # this exact game's own box score (already loaded
-                            # in box_rows_df), since the season-aggregate
-                            # team_ids[] approach was confirmed broken.
-                            opp_team_rows = box_rows_df[box_rows_df['team'].apply(lambda t: (t or {}).get('id')) == opp_team_id]
-                            opp_pace_override = None
-                            if not opp_team_rows.empty:
-                                opp_fga = pd.to_numeric(opp_team_rows['fga'], errors='coerce').sum()
-                                opp_fta = pd.to_numeric(opp_team_rows['fta'], errors='coerce').sum()
-                                opp_oreb = pd.to_numeric(opp_team_rows['oreb'], errors='coerce').sum()
-                                opp_tov = pd.to_numeric(opp_team_rows['turnover'], errors='coerce').sum()
-                                opp_pace_override = round(opp_fga + 0.44 * opp_fta - opp_oreb + opp_tov, 1)
-
-                            # Real actual usage % for this specific game — same
-                            # method as pace above, just using the player's own
-                            # team instead of the opponent's.
+                            # Real actual usage % for this specific game — a
+                            # post-hoc comparison value only (not fed into the
+                            # projection itself, so no leakage concern here —
+                            # unlike the old pace override this replaced,
+                            # which DID feed the completed game's own data
+                            # into its own prediction. See July 2026 fix:
+                            # the engine now computes pace internally using
+                            # only games strictly before this date.
                             own_team_rows = box_rows_df[box_rows_df['team'].apply(lambda t: (t or {}).get('id')) == team_id]
                             actual_usage_pct = None
                             if not own_team_rows.empty:
@@ -4902,9 +5030,9 @@ elif nav == "🧪 Backtest" and is_admin:
                                     actual_usage_pct = round((player_poss_this_game * (team_min_sum / 5)) / (minutes_this_game * team_poss_this_game) * 100, 1)
 
                             if is_assists:
-                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()), opp_pace_override=opp_pace_override)
+                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
                             else:
-                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()), opp_pace_override=opp_pace_override)
+                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
                             time.sleep(1)
                             if not result:
                                 try:
