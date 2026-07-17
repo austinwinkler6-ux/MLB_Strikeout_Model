@@ -4768,8 +4768,8 @@ elif nav == "🧪 Backtest" and is_admin:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
         is_assists = backtest_sport == "NBA Assists"
         max_players = st.number_input(
-            "Max players to test", min_value=5, max_value=200, value=15, step=5,
-            help="balldontlie is a real API with a documented rate limit, but a big slate still means many sequential requests — keep this modest for a first test."
+            "Max players to test", min_value=5, max_value=500, value=15, step=5,
+            help="balldontlie is a real API with a documented rate limit, but a big slate still means many sequential requests — a run this large will genuinely take a while (each player is roughly 1-2 seconds plus retries). Keep it modest for a first test on a new date."
         )
         debug_this_run = st.checkbox("🔧 Show real errors instead of generic 'returned None' (debug)")
 
@@ -4789,6 +4789,15 @@ elif nav == "🧪 Backtest" and is_admin:
                     box_df = box_rows_df.head(int(max_players))
                     team_ids_map = get_bdl_team_ids()
                     id_to_name = {v: k for k, v in team_ids_map.items()}
+                    # Supplement with team names pulled directly from this
+                    # date's own box score data — the static team list can
+                    # occasionally mismatch for recently-traded players, but
+                    # every row's own 'team' object reliably has the correct
+                    # current full_name.
+                    for _, r in box_rows_df.iterrows():
+                        t = r.get('team') or {}
+                        if t.get('id') is not None and t.get('full_name'):
+                            id_to_name.setdefault(t.get('id'), t.get('full_name'))
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     results = []
@@ -4924,9 +4933,20 @@ elif nav == "🧪 Backtest" and is_admin:
         col3.metric("Worst Projection", f"{results_df['Error'].max()} error")
         if 'Tier' in results_df.columns:
             st.markdown("---")
-            st.subheader("🎯 MAE by Confidence Tier")
-            tier_summary = results_df.groupby('Tier').agg(Predictions=('Error', 'count'), MAE=('Error', 'mean')).reset_index()
-            tier_summary['MAE'] = tier_summary['MAE'].round(2)
+            st.subheader("🎯 Accuracy by Confidence Tier")
+            st.caption("Error % (Error ÷ Actual) is the fair comparison across players with very different scoring scales — a star missing by 8 and a bench guy missing by 2 can represent the same relative miss. Median is shown alongside mean since a few extreme outliers (very low-projection bench players) can badly skew a plain average.")
+            if 'Error %' in results_df.columns:
+                tier_summary = results_df.groupby('Tier').agg(
+                    Predictions=('Error', 'count'),
+                    MAE=('Error', 'mean'),
+                    **{'Mean Error %': ('Error %', 'mean'), 'Median Error %': ('Error %', 'median')}
+                ).reset_index()
+                tier_summary['MAE'] = tier_summary['MAE'].round(2)
+                tier_summary['Mean Error %'] = tier_summary['Mean Error %'].round(1)
+                tier_summary['Median Error %'] = tier_summary['Median Error %'].round(1)
+            else:
+                tier_summary = results_df.groupby('Tier').agg(Predictions=('Error', 'count'), MAE=('Error', 'mean')).reset_index()
+                tier_summary['MAE'] = tier_summary['MAE'].round(2)
             st.dataframe(tier_summary, use_container_width=True)
 
 # ---- SETTINGS PAGE ----
