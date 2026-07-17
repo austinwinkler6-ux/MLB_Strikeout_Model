@@ -2335,27 +2335,34 @@ def get_bdl_player_id(player_name):
     characters didn't match balldontlie's search index directly. Also strips
     common suffixes (Jr., Sr., II, III, IV) before taking 'the last word' as
     the last name — otherwise 'Ronald Holland II' searches for 'II', which
-    obviously finds nothing."""
-    try:
-        suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
-        name_parts = [p for p in player_name.strip().split(" ") if p.lower().rstrip(".") not in suffixes]
-        last_name = strip_accents(name_parts[-1] if name_parts else player_name.strip())
-        rows = bdl_get("players", {"search": last_name, "per_page": 25})
-        name_lower = strip_accents(player_name.strip().lower())
-        for p in rows:
-            full_name = strip_accents(f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower())
-            if full_name == name_lower:
-                return p.get("id")
-        if rows:
-            return rows[0].get("id")
-        return None
-    except Exception:
-        return None
+    obviously finds nothing.
+
+    Deliberately does NOT catch every exception here — a transient failure
+    (rate-limiting, a network hiccup) needs to raise and NOT get cached,
+    otherwise a single bad-timing search failure during a big batch run gets
+    permanently remembered as 'this player doesn't exist' for 24 hours. A
+    real 'no player found' (search succeeded, zero matches) is the only case
+    that's safe to cache as None."""
+    suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
+    name_parts = [p for p in player_name.strip().split(" ") if p.lower().rstrip(".") not in suffixes]
+    last_name = strip_accents(name_parts[-1] if name_parts else player_name.strip())
+    rows = bdl_get("players", {"search": last_name, "per_page": 25})
+    name_lower = strip_accents(player_name.strip().lower())
+    for p in rows:
+        full_name = strip_accents(f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower())
+        if full_name == name_lower:
+            return p.get("id")
+    if rows:
+        return rows[0].get("id")
+    return None
 
 def get_bdl_player_game_log(player_name, season):
     """A player's full-season game log — the core input for rolling averages.
     ALL-STAR tier's 'stats' endpoint, filtered by player + season."""
-    player_id = get_bdl_player_id(player_name)
+    try:
+        player_id = get_bdl_player_id(player_name)
+    except Exception:
+        return pd.DataFrame(), None
     if not player_id:
         return pd.DataFrame(), None
     try:
