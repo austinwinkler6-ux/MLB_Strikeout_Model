@@ -2352,14 +2352,19 @@ def get_bdl_player_id(player_name):
         full_name = strip_accents(f"{p.get('first_name', '')} {p.get('last_name', '')}".strip().lower())
         if full_name == name_lower:
             return p.get("id")
-    # No exact match — only safe to guess if there's exactly ONE candidate
-    # (e.g. a minor formatting quirk our normalization missed). With a
-    # common surname search returning several different players and none
-    # matching exactly, silently grabbing rows[0] risks projecting a
-    # completely different person — better to return None and show up as a
-    # clear skip than to silently mis-attribute a projection (July 2026 fix).
-    if len(rows) == 1:
-        return rows[0].get("id")
+    # No exact full-name match — since this is a last-name search, most
+    # returned rows should genuinely share the target last name; a few can
+    # be unrelated near-matches from balldontlie's own search algorithm.
+    # Narrow to rows whose LAST NAME actually matches (handles first-name
+    # formatting quirks — nicknames, extra whitespace — without the risk of
+    # matching a genuinely different surname). Only auto-accept if that
+    # narrows to exactly one candidate; real ambiguity (multiple different
+    # people sharing the surname) still correctly returns None rather than
+    # guessing (July 2026 fix, refined after it over-corrected and started
+    # rejecting real players like Isaiah Stewart and Bennedict Mathurin).
+    last_name_matches = [p for p in rows if strip_accents(p.get('last_name', '').strip().lower()) == last_name.lower()]
+    if len(last_name_matches) == 1:
+        return last_name_matches[0].get("id")
     return None
 
 def get_bdl_player_game_log(player_name, season):
