@@ -2461,7 +2461,7 @@ def get_bdl_opp_pace(opp_full_name, season):
 
 
 # ---- NBA POINTS PROJECTION ENGINE ----
-def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None):
+def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None, opp_pace_override=None):
     try:
         bdl_season = int(season.split("-")[0])  # balldontlie uses the season's start year
 
@@ -2520,24 +2520,26 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_ppg * 0.30)
         fga_factor = max(0.95, min(1.05, round(last5_fga / season_fga, 3) if season_fga > 0 else 1.0))
 
-        # Usage rate estimate — derived from this player's own team totals,
-        # per the box-score formula (ALL-STAR tier has no precalculated
-        # advanced-stats endpoint; that's GOAT-tier).
+        # Usage rate: known limitation, not a real per-player estimate right
+        # now. It was built on get_bdl_team_game_averages(), which relies on
+        # balldontlie's team_ids[] filter — confirmed (July 2026 diagnostic)
+        # to silently return ALL teams' stats instead of filtering, making
+        # that function's output unreliable. Falls back to a neutral default
+        # until there's a genuinely confirmed-working way to get a team's
+        # aggregate box-score totals from this API tier.
         usage_rate = 0.20
-        player_team_id = df['team_id'].mode().iloc[0] if not df['team_id'].empty else None
-        if player_team_id:
-            team_avgs = get_bdl_team_game_averages(player_team_id, bdl_season)
-            if team_avgs and season_mpg > 0:
-                player_poss = season_fga + 0.44 * round(df['fta'].mean(), 2) + round(df['turnover'].mean(), 2) if 'fta' in df.columns and 'turnover' in df.columns else season_fga
-                team_poss = team_avgs['fga'] + 0.44 * team_avgs['fta'] - team_avgs['oreb'] + team_avgs['tov']
-                if team_poss > 0:
-                    usage_rate = round((player_poss * (team_avgs['minutes'] / 5)) / (season_mpg * team_poss), 3)
 
-        # Known limitation: no defensive-rating equivalent at this tier — falls
-        # back to league average. Pace is a real per-opponent estimate.
+        # Known limitations: no defensive-rating equivalent at this tier —
+        # falls back to league average. Pace also falls back to league average
+        # UNLESS the caller passes a real, game-specific estimate via
+        # opp_pace_override — balldontlie's team_ids[] filter was confirmed
+        # (July 2026 diagnostic) to not actually filter anything on the /stats
+        # endpoint, so a season-long team aggregate isn't reliably buildable
+        # from a confirmed-working API call. Backtest computes a real value
+        # from the actual game's own box score instead; live props don't have
+        # that game's box score yet (game hasn't happened), so they fall back.
         opp_def_rating = league_avg_def_rating
-        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
-        opp_pace = get_bdl_opp_pace(opp_full_name, bdl_season) if opp_full_name else league_avg_pace
+        opp_pace = opp_pace_override if opp_pace_override else league_avg_pace
 
         df['was_home'] = df['home_team_id'] == df['team_id']
         home_games = df[df['was_home'] == True]
@@ -2608,7 +2610,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         return None
 
 # ---- NBA ASSISTS PROJECTION ENGINE ----
-def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None):
+def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_team, home_or_away, season='2025-26', as_of_date=None, opp_pace_override=None):
     try:
         bdl_season = int(season.split("-")[0])
 
@@ -2668,26 +2670,25 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
 
-        # Usage rate derived the same way as the Points engine. Assist % has no
-        # clean box-score-only formula (needs on-court team FG data), so it
-        # stays at a neutral default — a known limitation at this data tier.
+        # Usage rate: known limitation, not a real per-player estimate right
+        # now. It was built on get_bdl_team_game_averages(), which relies on
+        # balldontlie's team_ids[] filter — confirmed (July 2026 diagnostic)
+        # to silently return ALL teams' stats instead of filtering, making
+        # that function's output unreliable. Falls back to neutral defaults
+        # until there's a genuinely confirmed-working way to get a team's
+        # aggregate box-score totals from this API tier. Assist % has no
+        # clean box-score-only formula either way (needs on-court team FG
+        # data), so it stays neutral regardless.
         usage_rate, ast_pct = 0.20, 0.15
-        player_team_id = df['team_id'].mode().iloc[0] if not df['team_id'].empty else None
-        if player_team_id:
-            team_avgs = get_bdl_team_game_averages(player_team_id, bdl_season)
-            if team_avgs and season_mpg > 0 and 'fga' in df.columns and 'fta' in df.columns:
-                player_poss = round(df['fga'].mean(), 2) + 0.44 * round(df['fta'].mean(), 2) + season_tov
-                team_poss = team_avgs['fga'] + 0.44 * team_avgs['fta'] - team_avgs['oreb'] + team_avgs['tov']
-                if team_poss > 0:
-                    usage_rate = round((player_poss * (team_avgs['minutes'] / 5)) / (season_mpg * team_poss), 3)
 
         # Known limitations: no "potential assists" (tracking-only stat) or
         # opponent-assists-allowed equivalent at this data tier — both stay
-        # neutral. Pace is a real per-opponent estimate.
+        # neutral. Pace falls back to league average unless the caller passes
+        # a real, game-specific estimate via opp_pace_override (see Points
+        # engine's comment for the full explanation).
         potential_assists = None
         potential_ast_adj = 0
-        opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
-        opp_pace = get_bdl_opp_pace(opp_full_name, bdl_season) if opp_full_name else league_avg_pace
+        opp_pace = opp_pace_override if opp_pace_override else league_avg_pace
         opp_ast_allowed = 25.0
         opp_ast_adj = 0
 
@@ -4769,10 +4770,24 @@ elif nav == "🧪 Backtest" and is_admin:
                             home_name = team_name if home_or_away == 'home' else opp_name
                             away_name = opp_name if home_or_away == 'home' else team_name
                             opp_abbrev = nba_name_to_abbrev.get(opp_name, '')
+
+                            # Real, game-specific pace estimate — computed from
+                            # this exact game's own box score (already loaded
+                            # in box_rows_df), since the season-aggregate
+                            # team_ids[] approach was confirmed broken.
+                            opp_team_rows = box_rows_df[box_rows_df['team'].apply(lambda t: (t or {}).get('id')) == opp_team_id]
+                            opp_pace_override = None
+                            if not opp_team_rows.empty:
+                                opp_fga = pd.to_numeric(opp_team_rows['fga'], errors='coerce').sum()
+                                opp_fta = pd.to_numeric(opp_team_rows['fta'], errors='coerce').sum()
+                                opp_oreb = pd.to_numeric(opp_team_rows['oreb'], errors='coerce').sum()
+                                opp_tov = pd.to_numeric(opp_team_rows['turnover'], errors='coerce').sum()
+                                opp_pace_override = round(opp_fga + 0.44 * opp_fta - opp_oreb + opp_tov, 1)
+
                             if is_assists:
-                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
+                                result = run_nba_assists_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()), opp_pace_override=opp_pace_override)
                             else:
-                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
+                                result = run_nba_points_projection(player_name, opp_abbrev, home_name, away_name, home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()), opp_pace_override=opp_pace_override)
                             time.sleep(1)
                             if not result:
                                 try:
