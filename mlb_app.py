@@ -4879,9 +4879,13 @@ elif nav == "🧪 Backtest" and is_admin:
                 st.code(traceback.format_exc())
         if st.button("Check Raw Player Search Response"):
             try:
-                raw_rows = bdl_get("players", {"search": debug_player, "per_page": 25})
+                suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
+                name_parts = [p for p in debug_player.strip().split(" ") if p.lower().rstrip(".") not in suffixes]
+                debug_last_name = strip_accents(name_parts[-1] if name_parts else debug_player.strip())
+                st.caption(f"Searching last name only (matches real production logic): '{debug_last_name}'")
+                raw_rows = bdl_get("players", {"search": debug_last_name, "per_page": 25})
                 st.write(f"Got {len(raw_rows)} rows back")
-                st.json(raw_rows[:5] if raw_rows else raw_rows)
+                st.json(raw_rows[:10] if raw_rows else raw_rows)
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
@@ -5083,6 +5087,67 @@ elif nav == "🧪 Backtest" and is_admin:
                         except Exception as e:
                             skipped.append({'Player': player_name or 'Unknown', 'Reason': f'Exception: {e}'})
                             continue
+
+                    # Second pass: retry players who failed specifically due
+                    # to player-ID resolution or an empty game log — these
+                    # are API-flakiness failures, not real facts about the
+                    # player (unlike a genuine DNP or insufficient-games
+                    # skip, which retrying can't change). By now several
+                    # minutes have passed processing everyone else, which is
+                    # exactly the kind of gap that's already been shown to
+                    # clear this specific balldontlie flakiness (July 2026 —
+                    # a repeated "Stewart" search went from 0 results to 8
+                    # results with zero code changes, moments apart).
+                    retry_candidates = [
+                        s for s in skipped
+                        if "No player ID resolved" in s['Reason'] or "game log came back empty" in s['Reason']
+                    ]
+                    if retry_candidates:
+                        status_text.text(f"Retrying {len(retry_candidates)} players who may have hit transient API flakiness...")
+                        get_bdl_player_id.clear()  # clear ONLY this function's cache, not the whole app's
+                        for s in retry_candidates:
+                            retry_name = s['Player']
+                            retry_row = None
+                            for _, r in box_df.iterrows():
+                                pinfo = r.get('player') or {}
+                                if f"{pinfo.get('first_name', '')} {pinfo.get('last_name', '')}".strip() == retry_name:
+                                    retry_row = r
+                                    break
+                            if retry_row is None:
+                                continue
+                            try:
+                                r_team_info = retry_row.get('team') or {}
+                                r_game_info = retry_row.get('game') or {}
+                                r_team_id = r_team_info.get('id')
+                                r_home_team_id = r_game_info.get('home_team_id')
+                                r_visitor_team_id = r_game_info.get('visitor_team_id')
+                                r_home_or_away = 'home' if r_home_team_id == r_team_id else 'away'
+                                r_team_name = id_to_name.get(r_team_id, r_team_info.get('full_name', 'Unknown'))
+                                r_opp_team_id = r_visitor_team_id if r_home_or_away == 'home' else r_home_team_id
+                                r_opp_name = id_to_name.get(r_opp_team_id, 'Unknown')
+                                r_home_name = r_team_name if r_home_or_away == 'home' else r_opp_name
+                                r_away_name = r_opp_name if r_home_or_away == 'home' else r_team_name
+                                r_opp_abbrev = nba_name_to_abbrev.get(r_opp_name, '')
+                                if is_assists:
+                                    retry_result = run_nba_assists_projection(retry_name, r_opp_abbrev, r_home_name, r_away_name, r_home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
+                                else:
+                                    retry_result = run_nba_points_projection(retry_name, r_opp_abbrev, r_home_name, r_away_name, r_home_or_away, backtest_season_nba, as_of_date=datetime.combine(backtest_date, datetime.min.time()))
+                                if retry_result:
+                                    r_actual_val = retry_row.get('ast') if is_assists else retry_row.get('pts')
+                                    r_error_val = round(abs(retry_result['projection'] - r_actual_val), 1)
+                                    r_error_pct = round(r_error_val / r_actual_val * 100, 1) if r_actual_val > 0 else None
+                                    results.append({
+                                        'Player': retry_name, 'Matchup': f"{r_away_name} @ {r_home_name}",
+                                        'Projection': retry_result['projection'], 'Actual': r_actual_val,
+                                        'Error': r_error_val, 'Error %': r_error_pct,
+                                        'Tier': retry_result['confidence_tier'],
+                                        'Opp Pace': retry_result.get('opp_pace'), 'Pace Adj': retry_result.get('pace_adj'),
+                                    })
+                                    skipped.remove(s)
+                            except Exception:
+                                pass  # still failed on retry — leave it in skipped as-is
+                            time.sleep(1)
+
                     st.session_state['backtest_results'] = results
                     st.session_state['backtest_skipped'] = skipped
                     st.session_state['backtest_date'] = backtest_date.strftime('%Y-%m-%d')
