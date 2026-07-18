@@ -2413,26 +2413,146 @@ def get_bdl_team_ids():
     except Exception:
         return {}
 
-@st.cache_data(ttl=900)
-def get_bdl_player_injury_status(player_id):
-    """Current NBA injury report for one player — confirmed real endpoint
-    (GET /v1/player_injuries, ALL-STAR tier) via balldontlie's docs. This is
-    LIVE data only — no date parameter exists, so there's no way to ask
-    'who was hurt as of December 1st.' Only meaningful for live props, never
-    for backtesting a historical date. Cached for 15 minutes rather than the
-    usual hour, since injury status can change same-day."""
+@st.cache_data(ttl=300)
+def get_bdl_team_injuries(team_id):
+    """Current injury report for one NBA team — confirmed real endpoint
+    (GET /v1/player_injuries, ALL-STAR tier, filter verified working via
+    live diagnostic) via balldontlie's docs. This is a LIVE snapshot only —
+    no date parameter exists, so there's no way to ask 'who was hurt as of
+    December 1st.' Only meaningful for live props, never for backtesting a
+    historical date, unless daily snapshots are separately archived."""
+    if not team_id:
+        return []
     try:
-        rows = bdl_get("player_injuries", {"player_ids[]": player_id, "per_page": 100})
-        if not rows:
+        return bdl_get("player_injuries", {"team_ids[]": team_id, "per_page": 100})
+    except Exception:
+        return []
+
+def normalize_injury_status(status):
+    status = str(status or "").strip().lower()
+    if status in {"out", "inactive", "suspended"}:
+        return "out"
+    if status in {"doubtful"}:
+        return "doubtful"
+    if status in {"questionable", "game time decision", "game-time decision", "gtd"}:
+        return "questionable"
+    if status in {"probable", "available"}:
+        return "probable"
+    return "unknown"
+
+# Starting assumptions, not proven-optimal values — worth tracking real
+# outcomes and tuning these once there's enough data to backtest against.
+INJURY_PLAY_PROBABILITY = {
+    "out": 0.00, "doubtful": 0.15, "questionable": 0.50,
+    "probable": 0.90, "unknown": 0.75,
+}
+
+def build_team_injury_lookup(team_id):
+    """player_id -> full injury info for every currently-injured player on
+    one team, keyed for fast lookup by both the projected player's own
+    status check and the teammate-absence redistribution below."""
+    rows = get_bdl_team_injuries(team_id)
+    lookup = {}
+    for row in rows:
+        player = row.get("player") or {}
+        player_id = player.get("id")
+        if player_id is None:
+            continue
+        normalized_status = normalize_injury_status(row.get("status"))
+        lookup[player_id] = {
+            "player_id": player_id,
+            "player_name": f"{player.get('first_name', '')} {player.get('last_name', '')}".strip(),
+            "status": row.get("status"),
+            "normalized_status": normalized_status,
+            "play_probability": INJURY_PLAY_PROBABILITY.get(normalized_status, 0.75),
+            "description": row.get("description"),
+            "return_date": row.get("return_date"),
+        }
+    return lookup
+
+@st.cache_data(ttl=3600)
+def get_player_role_profile(player_id, season, as_of_date_str=None):
+    """A player's recent role — minutes, FGA, FTA, points per game over
+    their last 10 real games — used to estimate how much offensive
+    opportunity disappears from a team when this specific player is out.
+    Respects as_of_date_str so this stays leak-free if ever reused for
+    something date-sensitive, though the injury feature itself is
+    live-only regardless."""
+    try:
+        rows = _cached_bdl_player_stats(player_id, season)
+        df = pd.DataFrame(rows)
+        if df.empty:
             return None
-        entry = rows[0]
+        df["minutes_played"] = df["min"].apply(bdl_parse_minutes)
+        df["game_date"] = pd.to_datetime(df["game"].apply(lambda g: (g or {}).get("date")))
+        if as_of_date_str:
+            cutoff = pd.Timestamp(as_of_date_str)
+            df = df[df["game_date"] < cutoff]
+        df = df[df["minutes_played"] > 0].copy()
+        for col in ["fga", "fta", "pts"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            else:
+                df[col] = 0
+        if len(df) < 5:
+            return None
+        recent = df.tail(10)
         return {
-            'status': entry.get('status'),
-            'description': entry.get('description'),
-            'return_date': entry.get('return_date'),
+            "minutes": recent["minutes_played"].mean(),
+            "fga": recent["fga"].mean(),
+            "fta": recent["fta"].mean(),
+            "points": recent["pts"].mean(),
         }
     except Exception:
         return None
+
+def calculate_team_absence_load(injury_lookup, season, as_of_date_str=None):
+    """Total estimated minutes/FGA/FTA missing from a team right now,
+    weighted by how likely each injured player actually is to miss the
+    game (Out counts fully; Questionable counts partially; Probable barely
+    counts at all)."""
+    absent_minutes = absent_fga = absent_fta = 0.0
+    unavailable_players = []
+    for injury in injury_lookup.values():
+        status = injury["normalized_status"]
+        if status not in {"out", "doubtful", "questionable"}:
+            continue
+        profile = get_player_role_profile(injury["player_id"], season, as_of_date_str)
+        if not profile:
+            continue
+        absence_probability = 1.0 - injury["play_probability"]
+        absent_minutes += profile["minutes"] * absence_probability
+        absent_fga += profile["fga"] * absence_probability
+        absent_fta += profile["fta"] * absence_probability
+        unavailable_players.append({
+            "name": injury["player_name"], "status": status,
+            "minutes_removed": round(profile["minutes"] * absence_probability, 1),
+            "fga_removed": round(profile["fga"] * absence_probability, 1),
+        })
+    return {
+        "absent_minutes": absent_minutes, "absent_fga": absent_fga, "absent_fta": absent_fta,
+        "players": unavailable_players,
+    }
+
+def calculate_injury_opportunity_adjustment(player_minutes, absence_load):
+    """How much of the missing opportunity a specific player picks up,
+    scaled by their own role — starters absorb more redistributed workload
+    than bench players, since they're the ones a coach actually trusts
+    with a bigger role on short notice. Capped so one absence can't
+    unrealistically inflate a single player's line."""
+    absent_minutes = absence_load["absent_minutes"]
+    absent_fga = absence_load["absent_fga"]
+    if player_minutes >= 32:
+        minutes_share, fga_share = 0.10, 0.16
+    elif player_minutes >= 24:
+        minutes_share, fga_share = 0.07, 0.10
+    elif player_minutes >= 15:
+        minutes_share, fga_share = 0.05, 0.06
+    else:
+        minutes_share, fga_share = 0.03, 0.03
+    added_minutes = min(absent_minutes * minutes_share, 4.0)
+    added_fga = min(absent_fga * fga_share, 3.5)
+    return {"added_minutes": added_minutes, "added_fga": added_fga}
 
 def bdl_parse_minutes(m):
     """balldontlie's 'min' field is a string, sometimes 'MM:SS', sometimes
@@ -2656,18 +2776,27 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         # Injury status — LIVE USE ONLY. balldontlie's injury endpoint has
         # no date parameter (confirmed via their docs), so there's no way
         # to check historical status for a backtest date — only "right
-        # now." If a player is confirmed Out, there's no meaningful
-        # projection to make; anything else (Questionable/Doubtful) doesn't
-        # block, but gets surfaced for display rather than silently guessed
-        # at (July 2026 addition).
+        # now." Out means no meaningful projection is possible. Doubtful/
+        # Questionable don't naively multiply the projection by a play
+        # probability (a "50% questionable" player doesn't play half a
+        # normal game — they either play close to normally or not at all),
+        # so instead this flags injury_pass_recommended for the caller to
+        # act on, while still returning a real "if active" number.
+        team_ids_for_injury = get_bdl_team_ids()
+        player_team_full_name = home_team if home_or_away == 'home' else away_team
+        player_team_id = team_ids_for_injury.get(player_team_full_name)
+        injury_lookup = build_team_injury_lookup(player_team_id) if (as_of_date is None and player_team_id) else {}
+        player_injury = injury_lookup.get(player_id)
+
         injury_status, injury_description = None, None
-        if as_of_date is None:
-            injury_info = get_bdl_player_injury_status(player_id)
-            if injury_info:
-                injury_status = injury_info.get('status')
-                injury_description = injury_info.get('description')
-                if injury_status and injury_status.strip().lower() == 'out':
-                    return None
+        injury_pass_recommended = False
+        if player_injury:
+            injury_status = player_injury['normalized_status']
+            injury_description = player_injury['description']
+            if injury_status == 'out':
+                return None
+            if injury_status in ('doubtful', 'questionable'):
+                injury_pass_recommended = True
 
         df['minutes_played'] = df['min'].apply(bdl_parse_minutes)
         df = df[df['minutes_played'] > 0]  # drop DNPs before any averaging
@@ -2958,6 +3087,24 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
                 base_blowout_adj = -4 if abs(spread) >= 12 else -2
                 blowout_minutes_adj = round(base_blowout_adj * blowout_multiplier, 1)
 
+        # Teammate absence redistribution — live only, same constraint as
+        # the player's own injury status above. Estimates how much
+        # opportunity (minutes, shots) is missing from the team due to
+        # OTHER injured players, and redistributes a share of it to this
+        # player based on their own role (starters absorb more than bench
+        # players). A simple first version — a real teammate-out empirical
+        # split (this player's actual FGA/min specifically when a given
+        # teammate has missed games) would be more precise but costs a lot
+        # more API calls; worth building later for a short list of
+        # genuinely important absences.
+        injury_minutes_adj = injury_fga_adj = 0.0
+        team_absence_load = None
+        if as_of_date is None and player_team_id and injury_lookup:
+            team_absence_load = calculate_team_absence_load(injury_lookup, bdl_season, None)
+            injury_adjustment = calculate_injury_opportunity_adjustment(expected_minutes_raw, team_absence_load)
+            injury_minutes_adj = injury_adjustment['added_minutes']
+            injury_fga_adj = injury_adjustment['added_fga']
+
         # Final minutes -> final attempts -> final scoring base (July 2026
         # review, round 3). Previously, projected FGA/3PA/FTA were computed
         # from PRE-blowout minutes, then only a secondary points-per-minute
@@ -2965,14 +3112,20 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         # meaning the returned "projected FGA" never actually reflected the
         # blowout-adjusted minutes shown alongside it. Now minutes are
         # finalized FIRST, and every downstream number is built from that
-        # single, coherent number.
-        final_expected_minutes_raw = max(0.0, expected_minutes_raw + blowout_minutes_adj)
+        # single, coherent number — including any teammate-injury bump.
+        final_expected_minutes_raw = max(0.0, expected_minutes_raw + blowout_minutes_adj + injury_minutes_adj)
         final_expected_minutes = round(final_expected_minutes_raw, 1)
 
-        projected_fga = round(final_expected_minutes_raw * proj_fga_per_min, 1)
-        projected_3pa = round(final_expected_minutes_raw * proj_3pa_per_min, 1) if has_3pt else 0.0
+        # Extra shots from teammate absences preserve this player's normal
+        # shot mix (3PA share, FT rate) rather than assuming every added
+        # shot is a two.
+        three_share = (proj_3pa_per_min / proj_fga_per_min) if proj_fga_per_min > 0 else 0.0
+        fta_per_fga = (proj_fta_per_min / proj_fga_per_min) if proj_fga_per_min > 0 else 0.0
+
+        projected_fga = round(final_expected_minutes_raw * proj_fga_per_min + injury_fga_adj, 1)
+        projected_3pa = round(final_expected_minutes_raw * proj_3pa_per_min + injury_fga_adj * three_share, 1) if has_3pt else 0.0
         projected_3pa = min(projected_3pa, projected_fga)
-        projected_fta = round(final_expected_minutes_raw * proj_fta_per_min, 1) if has_ft else 0.0
+        projected_fta = round(final_expected_minutes_raw * proj_fta_per_min + injury_fga_adj * fta_per_fga * 0.50, 1) if has_ft else 0.0
         projected_2pa = max(0.0, projected_fga - projected_3pa)
 
         points_from_twos = projected_2pa * projected_2p_pct * 2
@@ -3042,6 +3195,9 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'scoring_volatility_tier': scoring_volatility_tier, 'workload_reliability_tier': workload_reliability_tier,
             'confidence_score': confidence_score,
             'injury_status': injury_status, 'injury_description': injury_description,
+            'injury_pass_recommended': injury_pass_recommended,
+            'injury_minutes_adj': round(injury_minutes_adj, 1), 'injury_fga_adj': round(injury_fga_adj, 1),
+            'unavailable_teammates': team_absence_load['players'] if team_absence_load else [],
         }
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
@@ -3058,15 +3214,25 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             return None
 
         # Injury status — LIVE USE ONLY, same reasoning as the Points
-        # engine (see its comment for the full explanation).
+        # engine (see its comment for the full explanation). Uses the same
+        # normalized team-wide lookup, but doesn't attempt teammate-
+        # opportunity redistribution here — that logic is built around
+        # FGA/shot-volume, which doesn't map cleanly onto assists.
+        team_ids_for_injury = get_bdl_team_ids()
+        player_team_full_name = home_team if home_or_away == 'home' else away_team
+        player_team_id = team_ids_for_injury.get(player_team_full_name)
+        injury_lookup = build_team_injury_lookup(player_team_id) if (as_of_date is None and player_team_id) else {}
+        player_injury = injury_lookup.get(player_id)
+
         injury_status, injury_description = None, None
-        if as_of_date is None:
-            injury_info = get_bdl_player_injury_status(player_id)
-            if injury_info:
-                injury_status = injury_info.get('status')
-                injury_description = injury_info.get('description')
-                if injury_status and injury_status.strip().lower() == 'out':
-                    return None
+        injury_pass_recommended = False
+        if player_injury:
+            injury_status = player_injury['normalized_status']
+            injury_description = player_injury['description']
+            if injury_status == 'out':
+                return None
+            if injury_status in ('doubtful', 'questionable'):
+                injury_pass_recommended = True
 
         df['minutes_played'] = df['min'].apply(bdl_parse_minutes)
         df = df[df['minutes_played'] > 0]
@@ -3261,6 +3427,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             'scoring_volatility_tier': scoring_volatility_tier, 'workload_reliability_tier': workload_reliability_tier,
             'confidence_score': confidence_score,
             'injury_status': injury_status, 'injury_description': injury_description,
+            'injury_pass_recommended': injury_pass_recommended,
         }
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
