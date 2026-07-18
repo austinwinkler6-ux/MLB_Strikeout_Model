@@ -2017,6 +2017,7 @@ def get_starters_for_date(game_date_str):
     except:
         return []
 
+
 def get_actual_strikeouts(game_pk, pitcher_name):
     try:
         url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
@@ -3623,13 +3624,28 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
 
 def load_mlb_props_data():
     """Fetches today's MLB pitcher-strikeout props from FanDuel/DraftKings.
-    Returns an all_pitchers dict (empty on failure) — same shape used throughout the app."""
+    Returns an all_pitchers dict (empty on failure) — same shape used throughout the app.
+    Skips any game whose commence_time has already passed — a game already
+    in progress would otherwise keep showing the same pre-game projection
+    all day, paired against odds that DO shift with the live game state,
+    creating genuinely inconsistent-looking props (caught in review, July
+    2026)."""
     try:
         events_data = requests.get("https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
             params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
         all_pitchers = {}
+        now_utc = datetime.now(ZoneInfo("UTC"))
 
         for event in events_data:
+            commence_time_str = event.get('commence_time')
+            if commence_time_str:
+                try:
+                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
+                    if commence_time <= now_utc:
+                        continue  # game has already started — a pre-game projection is stale, not just less accurate
+                except (ValueError, TypeError):
+                    pass  # if the timestamp can't be parsed, don't block the whole event over it
+
             home = event['home_team']
             away = event['away_team']
             event_id = event['id']
@@ -3647,7 +3663,7 @@ def load_mlb_props_data():
                                 pitcher = outcome['description']
                                 if pitcher not in all_pitchers:
                                     all_pitchers[pitcher] = {
-                                        'home': home, 'away': away,
+                                        'home': home, 'away': away, 'commence_time': commence_time_str,
                                         'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
                                         'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
                                         'Projection': None, 'Edge': None, 'Play': None,
@@ -4429,6 +4445,27 @@ elif nav == "⚾ MLB Models":
         all_pitchers = st.session_state['all_pitchers']
         season = st.session_state.get('season', '2026')
         pitcher_results = st.session_state.get('pitcher_results', {})
+
+        # Warn if any loaded game has since started — the props were pulled
+        # at load time, but if enough time has passed, a game that hadn't
+        # started yet then may have started since, meaning its projection
+        # is now stale relative to the actual live game state (July 2026).
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        started_since_load = []
+        for pname, pdata in all_pitchers.items():
+            ct_str = pdata.get('commence_time')
+            if not ct_str:
+                continue
+            try:
+                ct = datetime.fromisoformat(ct_str.replace('Z', '+00:00'))
+                if ct <= now_utc:
+                    started_since_load.append(pname)
+            except (ValueError, TypeError):
+                pass
+        if started_since_load:
+            names_preview = ", ".join(started_since_load[:5])
+            more = f" and {len(started_since_load) - 5} more" if len(started_since_load) > 5 else ""
+            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"Load Today's Props\"** again to refresh.")
 
         manual_run_order = st.session_state.get('manual_run_order', {})
 
