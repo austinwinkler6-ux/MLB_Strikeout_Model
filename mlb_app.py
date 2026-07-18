@@ -3333,12 +3333,25 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         df_rate_games = df[df['minutes_played'] >= 8].copy()
         if len(df_rate_games) < 5:
             df_rate_games = df.copy()
-        df_rate_games['ast_per_min'] = df_rate_games['assists'] / df_rate_games['minutes_played']
 
-        def _blend_ast(w_season, w_l10, w_l5):
-            return (df_rate_games['ast_per_min'].mean() * w_season) + (df_rate_games['ast_per_min'].tail(10).mean() * w_l10) + (df_rate_games['ast_per_min'].tail(5).mean() * w_l5)
+        # Rate weighted by actual minutes played, not an equal average of
+        # per-game rates (July 2026 review — a legitimate model correction,
+        # not just a nice-to-have). Averaging individual game rates treats
+        # an 8-minute game and a 36-minute game as equally strong evidence,
+        # e.g. 1 assist in 8 minutes (0.125/min) counted the same as 6
+        # assists in 36 minutes (0.167/min) despite the second game
+        # representing 4.5x more actual playing-time evidence. Summing
+        # makes and minutes separately, then dividing, correctly weights
+        # by real exposure.
+        def _weighted_ast_rate(sub_df):
+            total_min = sub_df['minutes_played'].sum()
+            return sub_df['assists'].sum() / total_min if total_min > 0 else 0.0
 
-        projected_ast_per_min = _blend_ast(0.45, 0.35, 0.20)
+        season_ast_per_min = _weighted_ast_rate(df_rate_games)
+        last10_ast_per_min = _weighted_ast_rate(df_rate_games.tail(10))
+        last5_ast_per_min = _weighted_ast_rate(df_rate_games.tail(5))
+
+        projected_ast_per_min = (season_ast_per_min * 0.45) + (last10_ast_per_min * 0.35) + (last5_ast_per_min * 0.20)
         projected_ast_per_min = max(0.0, min(projected_ast_per_min, 0.6))  # safety bound, not an intended cap
 
         # tov_factor kept as an informational diagnostic only — never
@@ -3378,9 +3391,19 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         df['was_home'] = df['home_team_id'] == df['team_id']
         home_games = df[df['was_home'] == True]
         away_games = df[df['was_home'] == False]
-        home_apg = round(home_games['assists'].mean(), 1) if not home_games.empty else season_apg
-        away_apg = round(away_games['assists'].mean(), 1) if not away_games.empty else season_apg
-        location_adj = max(-1.5, min(1.5, round(home_apg - season_apg, 2) if home_or_away == 'home' else round(away_apg - season_apg, 2)))
+        # Location now uses assist RATE difference, not raw APG (July 2026
+        # review) — raw home/away APG reflects both assist rate AND
+        # minutes played at home/away, and since expected minutes are
+        # already modeled separately in the core formula, using raw APG
+        # here would reintroduce the exact minutes double-counting that
+        # was just removed from the base calculation. Actual point value
+        # is computed later once final_expected_minutes_raw exists.
+        relevant_games = home_games if home_or_away == 'home' else away_games
+        relevant_min_sum = relevant_games['minutes_played'].sum()
+        location_ast_rate = (relevant_games['assists'].sum() / relevant_min_sum) if relevant_min_sum > 0 else projected_ast_per_min
+        location_rate_difference = location_ast_rate - season_ast_per_min
+        location_games = len(relevant_games)
+        location_shrinkage = min(1.0, location_games / 20)
 
         # Role-sensitive minutes weighting — same reasoning as the Points
         # engine: a rock-stable role should trust the longer season sample
@@ -3450,6 +3473,15 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         final_expected_minutes_raw = max(0.0, expected_minutes_raw + blowout_minutes_adj)
         final_expected_minutes = round(final_expected_minutes_raw, 1)
         base = final_expected_minutes_raw * projected_ast_per_min
+
+        # Location adjustment finalized here now that final minutes exist —
+        # shrunk toward zero for a small home/away sample (July 2026
+        # review), same reasoning as the Points engine's location
+        # shrinkage. Capped tighter than before (+-0.5 vs the old +-1.5),
+        # since a home/away split this large was never realistic for an
+        # assist prop specifically.
+        raw_location_adj = final_expected_minutes_raw * location_rate_difference
+        location_adj = max(-0.5, min(0.5, round(raw_location_adj * location_shrinkage, 2)))
 
         # Pace is multiplicative on the base, not flat additive — see
         # Points engine's comment for the full explanation. Dampened at a
