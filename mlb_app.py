@@ -2559,7 +2559,7 @@ def get_bdl_season_baselines(season, as_of_date_str=None):
         return fallback
 
 
-
+def get_bdl_matchup_pace(team_full_name, opp_full_name, season, as_of_date):
     """Expected game pace — blends BOTH teams' recent pace, not just the
     opponent's. A fast team facing a very slow one won't necessarily play a
     fully fast-paced game (July 2026 review). Uses a geometric mean rather
