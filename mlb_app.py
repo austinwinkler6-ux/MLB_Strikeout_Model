@@ -2413,6 +2413,27 @@ def get_bdl_team_ids():
     except Exception:
         return {}
 
+@st.cache_data(ttl=900)
+def get_bdl_player_injury_status(player_id):
+    """Current NBA injury report for one player — confirmed real endpoint
+    (GET /v1/player_injuries, ALL-STAR tier) via balldontlie's docs. This is
+    LIVE data only — no date parameter exists, so there's no way to ask
+    'who was hurt as of December 1st.' Only meaningful for live props, never
+    for backtesting a historical date. Cached for 15 minutes rather than the
+    usual hour, since injury status can change same-day."""
+    try:
+        rows = bdl_get("player_injuries", {"player_ids[]": player_id, "per_page": 100})
+        if not rows:
+            return None
+        entry = rows[0]
+        return {
+            'status': entry.get('status'),
+            'description': entry.get('description'),
+            'return_date': entry.get('return_date'),
+        }
+    except Exception:
+        return None
+
 def bdl_parse_minutes(m):
     """balldontlie's 'min' field is a string, sometimes 'MM:SS', sometimes
     just 'MM', sometimes empty for a DNP."""
@@ -2631,6 +2652,22 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         df, player_id = get_bdl_player_game_log(player_name, bdl_season)
         if df.empty or not player_id:
             return None
+
+        # Injury status — LIVE USE ONLY. balldontlie's injury endpoint has
+        # no date parameter (confirmed via their docs), so there's no way
+        # to check historical status for a backtest date — only "right
+        # now." If a player is confirmed Out, there's no meaningful
+        # projection to make; anything else (Questionable/Doubtful) doesn't
+        # block, but gets surfaced for display rather than silently guessed
+        # at (July 2026 addition).
+        injury_status, injury_description = None, None
+        if as_of_date is None:
+            injury_info = get_bdl_player_injury_status(player_id)
+            if injury_info:
+                injury_status = injury_info.get('status')
+                injury_description = injury_info.get('description')
+                if injury_status and injury_status.strip().lower() == 'out':
+                    return None
 
         df['minutes_played'] = df['min'].apply(bdl_parse_minutes)
         df = df[df['minutes_played'] > 0]  # drop DNPs before any averaging
@@ -3004,6 +3041,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             'min_cv': min_cv, 'workload_tier': workload_tier, 'role_status': role_status,
             'scoring_volatility_tier': scoring_volatility_tier, 'workload_reliability_tier': workload_reliability_tier,
             'confidence_score': confidence_score,
+            'injury_status': injury_status, 'injury_description': injury_description,
         }
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
@@ -3018,6 +3056,17 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         df, player_id = get_bdl_player_game_log(player_name, bdl_season)
         if df.empty or not player_id:
             return None
+
+        # Injury status — LIVE USE ONLY, same reasoning as the Points
+        # engine (see its comment for the full explanation).
+        injury_status, injury_description = None, None
+        if as_of_date is None:
+            injury_info = get_bdl_player_injury_status(player_id)
+            if injury_info:
+                injury_status = injury_info.get('status')
+                injury_description = injury_info.get('description')
+                if injury_status and injury_status.strip().lower() == 'out':
+                    return None
 
         df['minutes_played'] = df['min'].apply(bdl_parse_minutes)
         df = df[df['minutes_played'] > 0]
@@ -3211,6 +3260,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             'min_cv': min_cv, 'workload_tier': workload_tier, 'role_status': role_status,
             'scoring_volatility_tier': scoring_volatility_tier, 'workload_reliability_tier': workload_reliability_tier,
             'confidence_score': confidence_score,
+            'injury_status': injury_status, 'injury_description': injury_description,
         }
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
@@ -5130,6 +5180,31 @@ elif nav == "🧪 Backtest" and is_admin:
                 sample_games = bdl_get("games", {"seasons[]": 2025, "per_page": 3})
                 st.write(f"Got {len(sample_games)} games back")
                 st.json(sample_games)
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+        if st.button("Check Injuries Endpoint + player_ids[] Filter"):
+            try:
+                all_injuries = bdl_get("player_injuries", {"per_page": 100})
+                st.write(f"Got {len(all_injuries)} total injury rows back (unfiltered)")
+                if all_injuries:
+                    st.json(all_injuries[:3])
+                    test_player = all_injuries[0].get('player', {})
+                    test_id = test_player.get('id')
+                    test_name = f"{test_player.get('first_name')} {test_player.get('last_name')}"
+                    st.write(f"Now testing player_ids[] filter using **{test_name}** (id={test_id})...")
+                    filtered = bdl_get("player_injuries", {"player_ids[]": test_id, "per_page": 100})
+                    filtered_names = set()
+                    for r in filtered:
+                        p = r.get('player', {})
+                        filtered_names.add(f"{p.get('first_name')} {p.get('last_name')}")
+                    if filtered_names == {test_name}:
+                        st.success(f"✅ Filter works correctly — only got {test_name} back ({len(filtered)} row(s)).")
+                    else:
+                        st.error(f"❌ Filter did NOT work as documented — got {len(filtered)} rows for these players instead of just {test_name}: {filtered_names}")
+                else:
+                    st.warning("No injuries currently on the report — can't test the filter without at least one entry. Try again another day.")
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
