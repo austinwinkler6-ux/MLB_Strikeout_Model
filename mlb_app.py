@@ -3448,8 +3448,6 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             except:
                 pass
 
-        total_adj = max(-0.5, min(0.5, round((game_total - 225) * 0.015, 2))) if game_total is not None else 0
-
         # Blowout minutes impact now scales with role, matching the Points
         # engine — a flat -4 for everyone regardless of role didn't account
         # for bench players often GAINING garbage-time minutes in a
@@ -3492,6 +3490,19 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         base = base * pace_factor
         pace_adj = round(base - base_before_pace, 2)
 
+        # Game total is now multiplicative too, not flat additive (July
+        # 2026 review) — the old version added the same absolute value to
+        # a 2.5-assist bench player and a 10-assist primary creator, which
+        # doesn't reflect how possessions actually scale. A higher-total
+        # game means more possessions for everyone, proportionally, not
+        # the same flat assist bump regardless of role.
+        total_factor = 1.0
+        if game_total is not None:
+            total_factor = 1 + ((game_total / 225) - 1) * 0.25
+        base_before_total = base
+        base = base * total_factor
+        total_adj = round(base - base_before_total, 2)
+
         # Fixed a real bug (July 2026 review): ast_pct was a static 0.15
         # placeholder, so ast_pct_adj = (0.15 - 0.25) * 6 = -0.60 for
         # EVERY single projection, always, regardless of the player — not
@@ -3500,7 +3511,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         # percentage data exists.
         ast_pct_adj = 0.0
 
-        raw_adjustment = max(-3.0, min(3.0, location_adj + rest_adj + ast_pct_adj + opp_ast_adj + total_adj + potential_ast_adj))
+        raw_adjustment = max(-3.0, min(3.0, location_adj + rest_adj + ast_pct_adj + opp_ast_adj + potential_ast_adj))
         final_projection = max(0, round(base + raw_adjustment, 1))
 
         confidence_score = 100.0
