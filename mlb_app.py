@@ -5136,11 +5136,38 @@ elif nav == "🧪 Backtest" and is_admin:
                                     r_actual_val = retry_row.get('ast') if is_assists else retry_row.get('pts')
                                     r_error_val = round(abs(retry_result['projection'] - r_actual_val), 1)
                                     r_error_pct = round(r_error_val / r_actual_val * 100, 1) if r_actual_val > 0 else None
+                                    r_minutes_this_game = bdl_parse_minutes(retry_row.get('min'))
+                                    r_proj_min = retry_result.get('expected_minutes')
+                                    r_min_error = round(r_minutes_this_game - r_proj_min, 1) if r_proj_min is not None else None
+                                    r_proj_fga = retry_result.get('projected_fga')
+                                    r_actual_fga = retry_row.get('fga')
+                                    r_fga_error = round(r_actual_fga - r_proj_fga, 1) if r_proj_fga is not None and r_actual_fga is not None else None
+                                    r_actual_fgm = retry_row.get('fgm')
+                                    r_actual_fg_pct = round(r_actual_fgm / r_actual_fga * 100, 1) if r_actual_fga else None
+                                    r_own_team_rows = box_rows_df[box_rows_df['team'].apply(lambda t: (t or {}).get('id')) == r_team_id]
+                                    r_actual_usage_pct = None
+                                    if not r_own_team_rows.empty:
+                                        rt_fga_sum = pd.to_numeric(r_own_team_rows['fga'], errors='coerce').sum()
+                                        rt_fta_sum = pd.to_numeric(r_own_team_rows['fta'], errors='coerce').sum()
+                                        rt_oreb_sum = pd.to_numeric(r_own_team_rows['oreb'], errors='coerce').sum()
+                                        rt_tov_sum = pd.to_numeric(r_own_team_rows['turnover'], errors='coerce').sum()
+                                        rt_min_sum = sum(bdl_parse_minutes(m) for m in r_own_team_rows['min'])
+                                        rt_poss_this_game = rt_fga_sum + 0.44 * rt_fta_sum - rt_oreb_sum + rt_tov_sum
+                                        r_player_fta_val = retry_row.get('fta') or 0
+                                        r_player_tov_val = retry_row.get('turnover') or 0
+                                        r_player_poss_this_game = (retry_row.get('fga') or 0) + 0.44 * r_player_fta_val + r_player_tov_val
+                                        if rt_poss_this_game > 0 and r_minutes_this_game > 0:
+                                            r_actual_usage_pct = round((r_player_poss_this_game * (rt_min_sum / 5)) / (r_minutes_this_game * rt_poss_this_game) * 100, 1)
                                     results.append({
                                         'Player': retry_name, 'Matchup': f"{r_away_name} @ {r_home_name}",
                                         'Projection': retry_result['projection'], 'Actual': r_actual_val,
                                         'Error': r_error_val, 'Error %': r_error_pct,
                                         'Tier': retry_result['confidence_tier'],
+                                        'Proj Min': r_proj_min, 'Actual Min': round(r_minutes_this_game, 1), 'Min Error': r_min_error,
+                                        'Proj FGA': r_proj_fga, 'Actual FGA': r_actual_fga, 'FGA Error': r_fga_error,
+                                        'Actual FG%': r_actual_fg_pct, 'Season FG%': retry_result.get('season_fg_pct'),
+                                        'Recent Touches/Min': retry_result.get('recent_touches_per_min'),
+                                        'Actual Usage %': r_actual_usage_pct,
                                         'Opp Pace': retry_result.get('opp_pace'), 'Pace Adj': retry_result.get('pace_adj'),
                                     })
                                     skipped.remove(s)
