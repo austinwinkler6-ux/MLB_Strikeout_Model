@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import requests
+import statistics
 import unicodedata
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -2505,7 +2506,60 @@ def get_bdl_team_pace_before_date(team_id, season, as_of_date_str, num_recent_ga
     except Exception:
         return None
 
-def get_bdl_matchup_pace(team_full_name, opp_full_name, season, as_of_date):
+@st.cache_data(ttl=86400)
+def get_bdl_season_baselines(season, as_of_date_str=None):
+    """Real, season-specific league averages (2P%, 3P%, FT%, team score),
+    computed from a sample of that season's actual completed games, rather
+    than fixed constants that assume every NBA season shoots and scores the
+    same way (July 2026 review). Sampled rather than exhaustive to keep
+    this affordable — ~40 games spread evenly across the available season
+    is a large enough sample for a stable league-wide average, and this is
+    cached for a day per (season, date) combo. Falls back to sensible fixed
+    constants if the dynamic computation fails or the season has too few
+    completed games yet (e.g. very early in a new season)."""
+    fallback = {'two_pct': 0.52, 'three_pct': 0.36, 'ft_pct': 0.75, 'team_score': 112.0}
+    try:
+        schedule = get_bdl_season_schedule(season)
+        completed = [g for g in schedule if g.get('status') == 'Final']
+        if as_of_date_str:
+            cutoff = pd.Timestamp(as_of_date_str).normalize()
+            completed = [g for g in completed if g.get('date') and pd.Timestamp(g['date']).normalize() < cutoff]
+        if len(completed) < 20:  # too early in a season for a stable sample
+            return fallback
+        sample_size = min(40, len(completed))
+        step = max(1, len(completed) // sample_size)
+        sample_games = completed[::step][:sample_size]
+        rows = []
+        for g in sample_games:
+            rows.extend(bdl_get("stats", {"game_ids[]": g['id'], "per_page": 100}))
+            time.sleep(0.3)
+        if not rows:
+            return fallback
+        total_fgm = sum(r.get('fgm') or 0 for r in rows)
+        total_fga = sum(r.get('fga') or 0 for r in rows)
+        total_fg3m = sum(r.get('fg3m') or 0 for r in rows)
+        total_fg3a = sum(r.get('fg3a') or 0 for r in rows)
+        total_ftm = sum(r.get('ftm') or 0 for r in rows)
+        total_fta = sum(r.get('fta') or 0 for r in rows)
+        two_pct = (total_fgm - total_fg3m) / (total_fga - total_fg3a) if (total_fga - total_fg3a) > 0 else fallback['two_pct']
+        three_pct = total_fg3m / total_fg3a if total_fg3a > 0 else fallback['three_pct']
+        ft_pct = total_ftm / total_fta if total_fta > 0 else fallback['ft_pct']
+        scores = []
+        for g in sample_games:
+            if g.get('home_team_score') is not None:
+                scores.append(g['home_team_score'])
+            if g.get('visitor_team_score') is not None:
+                scores.append(g['visitor_team_score'])
+        team_score = sum(scores) / len(scores) if scores else fallback['team_score']
+        return {
+            'two_pct': round(two_pct, 3), 'three_pct': round(three_pct, 3),
+            'ft_pct': round(ft_pct, 3), 'team_score': round(team_score, 1),
+        }
+    except Exception:
+        return fallback
+
+
+
     """Expected game pace — blends BOTH teams' recent pace, not just the
     opponent's. A fast team facing a very slow one won't necessarily play a
     fully fast-paced game (July 2026 review). Uses a geometric mean rather
@@ -2547,7 +2601,6 @@ def find_game_odds(games_data, home_team, away_team):
     the MEDIAN across every available bookmaker rather than stopping at the
     first one — protects against one stale or unusual number skewing the
     projection (July 2026 review)."""
-    import statistics
     requested = {home_team, away_team}
     for game in games_data:
         if {game.get('home_team'), game.get('away_team')} == requested:
@@ -2598,6 +2651,28 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             if len(df) < 5:
                 return None
 
+        # Defensive data cleaning (July 2026 review) — a single malformed
+        # value could otherwise silently propagate through the whole
+        # projection. Essential columns must be real; optional box-score
+        # fields default to 0 rather than leaving NaN; and a few logical
+        # consistency checks (can't make more 3s than 3PA, etc.) guard
+        # against any raw data weirdness from the API.
+        df = df.dropna(subset=['pts', 'fga', 'minutes_played', 'game_date']).copy()
+        if len(df) < 5:
+            return None
+        for col in ['fta', 'ftm', 'fgm', 'fg3m', 'fg3a', 'turnover']:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+        if 'fg3a' in df.columns:
+            df['fg3a'] = df['fg3a'].clip(lower=0)
+            df['fg3a'] = df[['fg3a', 'fga']].min(axis=1)
+        if 'fg3m' in df.columns and 'fg3a' in df.columns:
+            df['fg3m'] = df['fg3m'].clip(lower=0)
+            df['fg3m'] = df[['fg3m', 'fg3a']].min(axis=1)
+        if 'ftm' in df.columns and 'fta' in df.columns:
+            df['ftm'] = df['ftm'].clip(lower=0)
+            df['ftm'] = df[['ftm', 'fta']].min(axis=1)
+
         season_ppg = round(df['pts'].mean(), 1)  # kept for display/diagnostics only — no longer feeds the projection directly
         season_mpg = round(df['minutes_played'].mean(), 1)
         season_fga = round(df['fga'].mean(), 1)
@@ -2620,14 +2695,26 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         has_3pt = 'fg3a' in df.columns and 'fg3m' in df.columns
         has_ft = 'fta' in df.columns and 'ftm' in df.columns
 
-        df['fga_per_min'] = df['fga'] / df['minutes_played']
-        if has_3pt:
-            df['fg3a_per_min'] = df['fg3a'] / df['minutes_played']
-        if has_ft:
-            df['fta_per_min'] = df['fta'] / df['minutes_played']
+        # Separate dataset for RATE calculations (FGA/min, 3PA/min, FTA/min,
+        # shooting efficiency) that excludes likely injury-exit games — a
+        # player who leaves after 2 minutes hurt shouldn't distort his
+        # per-minute shot rate the same way a real, full game does. Keep
+        # using the FULL played-games dataset (df) for availability,
+        # workload volatility, and confidence signals, since an early exit
+        # is still real, relevant information for those (July 2026 review).
+        df_rate_games = df[df['minutes_played'] >= 8].copy()
+        if len(df_rate_games) < 5:
+            df_rate_games = df.copy()  # not enough full games yet — fall back rather than break
 
-        def _blend(col, w_season, w_l10, w_l5):
-            return (df[col].mean() * w_season) + (df[col].tail(10).mean() * w_l10) + (df[col].tail(5).mean() * w_l5)
+        df_rate_games['fga_per_min'] = df_rate_games['fga'] / df_rate_games['minutes_played']
+        if has_3pt:
+            df_rate_games['fg3a_per_min'] = df_rate_games['fg3a'] / df_rate_games['minutes_played']
+        if has_ft:
+            df_rate_games['fta_per_min'] = df_rate_games['fta'] / df_rate_games['minutes_played']
+
+        def _blend(col, w_season, w_l10, w_l5, source_df=None):
+            source_df = source_df if source_df is not None else df_rate_games
+            return (source_df[col].mean() * w_season) + (source_df[col].tail(10).mean() * w_l10) + (source_df[col].tail(5).mean() * w_l5)
 
         proj_fga_per_min = _blend('fga_per_min', 0.40, 0.35, 0.25)
         proj_3pa_per_min = _blend('fg3a_per_min', 0.50, 0.30, 0.20) if has_3pt else 0.0
@@ -2639,16 +2726,34 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         proj_3pa_per_min = max(0.0, min(proj_3pa_per_min, proj_fga_per_min))
         proj_fta_per_min = max(0.0, min(proj_fta_per_min, 0.7))
 
-        expected_minutes_raw = (season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40)
+        # Minutes volatility computed early so it can drive role-sensitive
+        # weighting below, instead of always using the same fixed 30/30/40
+        # split regardless of whether a player has a rock-stable role or a
+        # recently-changing one (July 2026 review).
+        last10_min_series = df['minutes_played'].tail(10)
+        last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
+        min_cv = round(last10_min_std / last10_min, 3) if last10_min > 0 else 1.0
 
-        projected_fga = round(expected_minutes_raw * proj_fga_per_min, 1)
-        projected_3pa = round(expected_minutes_raw * proj_3pa_per_min, 1) if has_3pt else 0.0
-        # Clamp 3PA to FGA — projected independently with different weights,
-        # so an unusual sample could otherwise produce more projected
-        # threes than total shots (July 2026 review).
-        projected_3pa = min(projected_3pa, projected_fga)
-        projected_fta = round(expected_minutes_raw * proj_fta_per_min, 1) if has_ft else 0.0
-        projected_2pa = max(0.0, projected_fga - projected_3pa)
+        if min_cv < 0.12:
+            # Very stable role — trust the longer, less noisy sample more.
+            expected_minutes_raw = (season_mpg * 0.45) + (last10_min * 0.35) + (last5_min * 0.20)
+        elif min_cv < 0.25:
+            # Normal rotation variation — close to the original fixed split.
+            expected_minutes_raw = (season_mpg * 0.30) + (last10_min * 0.35) + (last5_min * 0.35)
+        else:
+            # Role may genuinely be changing — trust recent games more.
+            expected_minutes_raw = (season_mpg * 0.15) + (last10_min * 0.30) + (last5_min * 0.55)
+
+        # Explicit role-change flag — the NBA equivalent of a pitcher who
+        # just moved from the bullpen to the rotation. Informational only
+        # right now, not yet fed into the projection math.
+        role_change_ratio = (last5_min / season_mpg) if season_mpg > 0 else 1.0
+        if role_change_ratio >= 1.25:
+            role_status = "📈 Recently Expanded"
+        elif role_change_ratio <= 0.75:
+            role_status = "📉 Recently Reduced"
+        else:
+            role_status = "➡️ Stable"
 
         # Shooting percentages — Bayesian shrinkage toward a league baseline
         # using pseudo-attempts, replacing a previous fixed-weight blend
@@ -2656,18 +2761,24 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         # season identically to a 300-attempt one. Shrinkage naturally
         # regresses small samples harder without needing a separate,
         # arbitrarily-tuned recency blend (July 2026 review).
-        league_avg_2p_pct = 0.52
-        league_avg_3p_pct = 0.36
-        league_avg_ft_pct = 0.75
+        #
+        # League baselines are now season-specific (July 2026 review round
+        # 4) — computed from a real sample of that season's actual games,
+        # rather than one fixed constant assumed to apply to every season.
+        baseline_date_str = pd.Timestamp(as_of_date if as_of_date else datetime.today()).strftime("%Y-%m-%d")
+        season_baselines = get_bdl_season_baselines(bdl_season, baseline_date_str)
+        league_avg_2p_pct = season_baselines['two_pct']
+        league_avg_3p_pct = season_baselines['three_pct']
+        league_avg_ft_pct = season_baselines['ft_pct']
 
         def _shrunk_pct(makes, attempts, league_pct, prior_attempts):
             return (makes + league_pct * prior_attempts) / (attempts + prior_attempts) if (attempts + prior_attempts) > 0 else league_pct
 
         if has_3pt:
-            season_2pm = (df['fgm'] - df['fg3m']).sum()
-            season_2pa_sum = (df['fga'] - df['fg3a']).sum()
-            season_3pm = df['fg3m'].sum()
-            season_3pa_sum = df['fg3a'].sum()
+            season_2pm = (df_rate_games['fgm'] - df_rate_games['fg3m']).sum()
+            season_2pa_sum = (df_rate_games['fga'] - df_rate_games['fg3a']).sum()
+            season_3pm = df_rate_games['fg3m'].sum()
+            season_3pa_sum = df_rate_games['fg3a'].sum()
         else:
             season_2pm = season_2pa_sum = season_3pm = season_3pa_sum = 0
 
@@ -2675,20 +2786,16 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         projected_3p_pct = _shrunk_pct(season_3pm, season_3pa_sum, league_avg_3p_pct, prior_attempts=100)
 
         if has_ft:
-            season_ftm = df['ftm'].sum()
-            season_fta_sum = df['fta'].sum()
+            season_ftm = df_rate_games['ftm'].sum()
+            season_fta_sum = df_rate_games['fta'].sum()
         else:
             season_ftm = season_fta_sum = 0
         projected_ft_pct = _shrunk_pct(season_ftm, season_fta_sum, league_avg_ft_pct, prior_attempts=50)
 
-        points_from_twos = projected_2pa * projected_2p_pct * 2
-        points_from_threes = projected_3pa * projected_3p_pct * 3
-        points_from_free_throws = projected_fta * projected_ft_pct
-        base = points_from_twos + points_from_threes + points_from_free_throws
-
-        if 'fgm' in df.columns:
-            season_fgm = round(df['fgm'].mean(), 2)
-            season_fg_pct = round(season_fgm / season_fga * 100, 1) if season_fga > 0 else None
+        if 'fgm' in df_rate_games.columns:
+            season_fgm = round(df_rate_games['fgm'].mean(), 2)
+            rate_season_fga = round(df_rate_games['fga'].mean(), 2)
+            season_fg_pct = round(season_fgm / rate_season_fga * 100, 1) if rate_season_fga > 0 else None
         else:
             season_fg_pct = None
 
@@ -2711,32 +2818,37 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
-        last10_min_series = df['minutes_played'].tail(10)
-        last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
-        min_cv = round(last10_min_std / last10_min, 3) if last10_min > 0 else 1.0
+        # scoring_volatility_tier / workload_reliability_tier / confidence_score:
+        # NEW, additive fields (July 2026 review round 3) — confidence_tier's
+        # existing string values are left completely untouched, since
+        # calculate_mm_stake and get_risk_level_label substring-match on
+        # them app-wide and renaming risks silently breaking real stake
+        # sizing. These new fields give a more precise, separated view
+        # (scoring volatility vs. workload reliability) without that risk.
+        if cv < 0.35: scoring_volatility_tier = "🟢 Low Scoring Variance"
+        elif cv < 0.50: scoring_volatility_tier = "🟠 Moderate Scoring Variance"
+        else: scoring_volatility_tier = "🔴 High Scoring Variance"
 
+        # min_cv already computed earlier (drives role-sensitive minutes
+        # weighting above) — reused here for the workload tier label.
         if min_cv < 0.20:
             workload_tier = "🟢 Stable Rotation Player"
         elif min_cv < 0.35:
             workload_tier = "🟡 Changing Role"
         else:
             workload_tier = "🔴 Highly Volatile Minutes"
+        workload_reliability_tier = workload_tier
 
-        # Usage rate: known limitation, not a real per-player estimate right
-        # now. It was built on get_bdl_team_game_averages(), which relies on
-        # balldontlie's team_ids[] filter — confirmed (July 2026 diagnostic)
-        # to silently return ALL teams' stats instead of filtering, making
-        # that function's output unreliable. Falls back to a neutral default
-        # until there's a genuinely confirmed-working way to get a team's
-        # aggregate box-score totals from this API tier.
+        # Usage rate / defensive rating: known limitations, not real
+        # per-player estimates right now — both stay at a neutral fallback.
+        # Explicit status fields so the output doesn't imply the model
+        # incorporated usage or matchup defense when it actually didn't
+        # (July 2026 review).
         usage_rate = 0.20
-
-        # Known limitation: no defensive-rating equivalent at this tier —
-        # falls back to league average. Pace now blends BOTH teams' recent
-        # pace (July 2026 review), not just the opponent's — built only
-        # from games strictly before the reference date, never the game
-        # being predicted.
         opp_def_rating = league_avg_def_rating
+        usage_data_status = "Unavailable — neutral fallback"
+        defense_data_status = "Unavailable — neutral fallback"
+
         team_full_name = home_team if home_or_away == 'home' else away_team
         opp_full_name = nba_abbrev_to_name.get(opponent_abbrev, '')
         pace_reference_date = as_of_date if as_of_date else datetime.today()
@@ -2756,8 +2868,6 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         location_games = len(home_games) if home_or_away == 'home' else len(away_games)
         location_shrinkage = min(1.0, location_games / 20)
         location_adj = max(-1.0, min(1.0, round(raw_location_adj * location_shrinkage, 2)))
-
-        expected_minutes = round(expected_minutes_raw, 1)
 
         # Rest days — fixed boundary bug (July 2026 review): a genuine
         # back-to-back has a CALENDAR gap of 1 (e.g. played Nov 30, playing
@@ -2785,7 +2895,6 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             except:
                 pass
 
-        team_total_adj = 0
         implied_team_total = None
         # Blowout minutes impact scales with role, rather than a flat -4 for
         # everyone regardless of whether they're a starter or a fringe bench
@@ -2802,7 +2911,6 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
                 implied_team_total = round((game_total / 2) + (abs(spread) / 2 * (1 if spread < 0 else -1)), 1)
             else:
                 implied_team_total = round((game_total / 2) - (abs(spread) / 2 * (1 if spread < 0 else -1)), 1)
-            team_total_adj = round((implied_team_total - league_avg_team_score) * 0.08, 2)
             if abs(spread) >= 9:
                 if expected_minutes_raw >= 32:
                     blowout_multiplier = 1.0
@@ -2813,44 +2921,89 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
                 base_blowout_adj = -4 if abs(spread) >= 12 else -2
                 blowout_minutes_adj = round(base_blowout_adj * blowout_multiplier, 1)
 
-        final_expected_minutes = round(expected_minutes + blowout_minutes_adj, 1)
-        # Re-scale the bottom-up projection for any minutes change from the
-        # blowout adjustment, using the player's own points-per-minute rate.
-        pts_per_minute = round(base / expected_minutes_raw, 3) if expected_minutes_raw > 0 else 0
-        minutes_pts_adj = round((final_expected_minutes - expected_minutes_raw) * pts_per_minute, 2)
+        # Final minutes -> final attempts -> final scoring base (July 2026
+        # review, round 3). Previously, projected FGA/3PA/FTA were computed
+        # from PRE-blowout minutes, then only a secondary points-per-minute
+        # patch (minutes_pts_adj) tried to correct for the blowout change —
+        # meaning the returned "projected FGA" never actually reflected the
+        # blowout-adjusted minutes shown alongside it. Now minutes are
+        # finalized FIRST, and every downstream number is built from that
+        # single, coherent number.
+        final_expected_minutes_raw = max(0.0, expected_minutes_raw + blowout_minutes_adj)
+        final_expected_minutes = round(final_expected_minutes_raw, 1)
+
+        projected_fga = round(final_expected_minutes_raw * proj_fga_per_min, 1)
+        projected_3pa = round(final_expected_minutes_raw * proj_3pa_per_min, 1) if has_3pt else 0.0
+        projected_3pa = min(projected_3pa, projected_fga)
+        projected_fta = round(final_expected_minutes_raw * proj_fta_per_min, 1) if has_ft else 0.0
+        projected_2pa = max(0.0, projected_fga - projected_3pa)
+
+        points_from_twos = projected_2pa * projected_2p_pct * 2
+        points_from_threes = projected_3pa * projected_3p_pct * 3
+        points_from_free_throws = projected_fta * projected_ft_pct
+        base = points_from_twos + points_from_threes + points_from_free_throws
+
         usage_adj = round((usage_rate - 0.20) * 10, 2)
         def_adj = round((opp_def_rating - league_avg_def_rating) * 0.2, 2)
 
-        # Pace is now a multiplicative scale on the base projection, not a
-        # flat additive point value — a flat +/- gave a 5-point bench player
-        # and a 30-point star the exact same adjustment, which doesn't make
-        # sense (July 2026 review). Dampened at 70% rather than a full 1:1
-        # scale, since pace's relationship to any one player's own scoring
-        # isn't perfectly proportional either. pace_adj is kept as a
-        # display-only value showing how many points this was worth.
+        # Pace and implied team total are now BOTH multiplicative scales on
+        # the base projection, not flat additive point values — a flat +/-
+        # gave a 5-point bench player and a 30-point star the exact same
+        # adjustment, which doesn't make sense (July 2026 review). Both
+        # dampened rather than a full 1:1 scale. pace_adj/team_total_adj are
+        # kept as display-only values showing how many points each was
+        # worth, for backward compatibility with existing Backtest columns.
         pace_factor = 1 + ((opp_pace / league_avg_pace) - 1) * 0.70
         base_before_pace = base
         base = base * pace_factor
         pace_adj = round(base - base_before_pace, 2)
 
-        raw_adjustment = max(-6.0, min(6.0, usage_adj + def_adj + team_total_adj + location_adj + rest_adj + minutes_pts_adj))
+        team_total_factor = 1.0
+        if implied_team_total is not None:
+            team_total_factor = 1 + ((implied_team_total / season_baselines['team_score']) - 1) * 0.60
+        base_before_team_total = base
+        base = base * team_total_factor
+        team_total_adj = round(base - base_before_team_total, 2)
+
+        raw_adjustment = max(-6.0, min(6.0, usage_adj + def_adj + location_adj + rest_adj))
         final_projection = round(base + raw_adjustment, 1)
+
+        # Confidence score (July 2026 review, round 3) — combines scoring
+        # volatility AND workload reliability into one number, rather than
+        # letting points CV alone drive real bankroll sizing through
+        # confidence_tier. Additive/informational only right now — does
+        # NOT replace confidence_tier's existing thresholds or strings.
+        confidence_score = 100.0
+        confidence_score -= min(30, cv * 45)
+        confidence_score -= min(35, min_cv * 100)
+        if len(df) < 10:
+            confidence_score -= 10
+        if final_expected_minutes < 18:
+            confidence_score -= 10
+        confidence_score = round(max(0, min(100, confidence_score)), 1)
 
         return {
             'projection': final_projection, 'base': round(base, 2),
             'season_ppg': season_ppg, 'last5_avg': last5_avg, 'last10_avg': last10_avg,
             'last10_pts_std': last10_pts_std, 'season_mpg': season_mpg,
             'expected_minutes': final_expected_minutes, 'usage_rate': usage_rate,
+            'usage_data_status': usage_data_status, 'defense_data_status': defense_data_status,
             'projected_fga': projected_fga, 'season_fg_pct': season_fg_pct,
             'recent_touches_per_min': recent_touches_per_min,
             'projected_2p_pct': round(projected_2p_pct * 100, 1), 'projected_3p_pct': round(projected_3p_pct * 100, 1),
-            'projected_ft_pct': round(projected_ft_pct * 100, 1), 'projected_3pa': projected_3pa, 'projected_fta': projected_fta,
+            'projected_ft_pct': round(projected_ft_pct * 100, 1), 'projected_2pa': projected_2pa,
+            'projected_3pa': projected_3pa, 'projected_fta': projected_fta,
+            'points_from_twos': round(points_from_twos, 2), 'points_from_threes': round(points_from_threes, 2),
+            'points_from_free_throws': round(points_from_free_throws, 2),
             'opp_def_rating': opp_def_rating, 'opp_pace': opp_pace,
+            'pace_factor': round(pace_factor, 3), 'team_total_factor': round(team_total_factor, 3),
             'location_adj': location_adj, 'rest_adj': rest_adj, 'team_total_adj': team_total_adj,
-            'minutes_pts_adj': minutes_pts_adj, 'usage_adj': usage_adj, 'def_adj': def_adj,
+            'usage_adj': usage_adj, 'def_adj': def_adj,
             'pace_adj': pace_adj, 'implied_team_total': implied_team_total, 'game_total': game_total,
             'cv': cv, 'confidence_tier': confidence_tier, 'days_rest': days_rest,
-            'min_cv': min_cv, 'workload_tier': workload_tier,
+            'min_cv': min_cv, 'workload_tier': workload_tier, 'role_status': role_status,
+            'scoring_volatility_tier': scoring_volatility_tier, 'workload_reliability_tier': workload_reliability_tier,
+            'confidence_score': confidence_score,
         }
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
@@ -2886,6 +3039,15 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             if len(df) < 5:
                 return None
 
+        # Defensive data cleaning (July 2026 review) — same reasoning as the
+        # Points engine: a single malformed value shouldn't silently
+        # propagate through the whole projection.
+        df = df.dropna(subset=['assists', 'minutes_played', 'game_date']).copy()
+        if len(df) < 5:
+            return None
+        if 'turnover' in df.columns:
+            df['turnovers'] = df['turnovers'].fillna(0)
+
         season_apg = round(df['assists'].mean(), 1)
         season_mpg = round(df['minutes_played'].mean(), 1)
         season_tov = round(df['turnovers'].mean(), 1)
@@ -2898,11 +3060,21 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         last10_ast = df['assists'].tail(10)
         last10_ast_avg = round(last10_ast.mean(), 2)
         last10_ast_std = round(last10_ast.std(), 2) if len(last10_ast) > 1 else 0.0
-        cv = round(last10_ast_std / last10_ast_avg, 3) if last10_ast_avg > 0 else 1.0
+        # Floor of 4 in the denominator — same reasoning as the Points
+        # engine's floor of 10, scaled down since assist totals are
+        # naturally smaller numbers than points. This fix was applied to
+        # the Points engine earlier but never carried over to Assists,
+        # which still had the same bias against low-assist bench players
+        # (caught reviewing this engine for the July 2026 round 3 fixes).
+        cv = round(last10_ast_std / max(last10_ast_avg, 4), 3)
 
         if cv < 0.35: confidence_tier = "🟢 Reliable"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
+
+        if cv < 0.35: scoring_volatility_tier = "🟢 Low Scoring Variance"
+        elif cv < 0.50: scoring_volatility_tier = "🟠 Moderate Scoring Variance"
+        else: scoring_volatility_tier = "🔴 High Scoring Variance"
 
         last10_min_series = df['minutes_played'].tail(10)
         last10_min_std = round(last10_min_series.std(), 2) if len(last10_min_series) > 1 else 0.0
@@ -2914,6 +3086,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             workload_tier = "🟡 Changing Role"
         else:
             workload_tier = "🔴 Highly Volatile Minutes"
+        workload_reliability_tier = workload_tier
 
         base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
@@ -2928,6 +3101,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         # clean box-score-only formula either way (needs on-court team FG
         # data), so it stays neutral regardless.
         usage_rate, ast_pct = 0.20, 0.15
+        usage_data_status = "Unavailable — neutral fallback"
 
         # Known limitations: no "potential assists" (tracking-only stat) or
         # opponent-assists-allowed equivalent at this data tier — both stay
@@ -2950,7 +3124,25 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         away_apg = round(away_games['assists'].mean(), 1) if not away_games.empty else season_apg
         location_adj = max(-1.5, min(1.5, round(home_apg - season_apg, 2) if home_or_away == 'home' else round(away_apg - season_apg, 2)))
 
-        expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.30) + (last5_min * 0.40), 1)
+        # Role-sensitive minutes weighting — same reasoning as the Points
+        # engine: a rock-stable role should trust the longer season sample
+        # more, while a recently-changing role should trust recent games
+        # more, instead of always using a fixed 30/30/40 split regardless
+        # (July 2026 review).
+        if min_cv < 0.12:
+            expected_minutes = round((season_mpg * 0.45) + (last10_min * 0.35) + (last5_min * 0.20), 1)
+        elif min_cv < 0.25:
+            expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.35) + (last5_min * 0.35), 1)
+        else:
+            expected_minutes = round((season_mpg * 0.15) + (last10_min * 0.30) + (last5_min * 0.55), 1)
+
+        role_change_ratio = (last5_min / season_mpg) if season_mpg > 0 else 1.0
+        if role_change_ratio >= 1.25:
+            role_status = "📈 Recently Expanded"
+        elif role_change_ratio <= 0.75:
+            role_status = "📉 Recently Reduced"
+        else:
+            role_status = "➡️ Stable"
 
         # Rest days — same boundary-bug fix as the Points engine (see its
         # comment for the full explanation).
@@ -2993,12 +3185,22 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         raw_adjustment = max(-3.0, min(3.0, location_adj + rest_adj + minutes_ast_adj + ast_pct_adj + opp_ast_adj + total_adj + potential_ast_adj))
         final_projection = max(0, round(base + raw_adjustment, 1))
 
+        confidence_score = 100.0
+        confidence_score -= min(30, cv * 45)
+        confidence_score -= min(35, min_cv * 100)
+        if len(df) < 10:
+            confidence_score -= 10
+        if final_expected_minutes < 18:
+            confidence_score -= 10
+        confidence_score = round(max(0, min(100, confidence_score)), 1)
+
         return {
             'projection': final_projection, 'base': round(base, 2),
             'season_apg': season_apg, 'last5_avg': last5_avg, 'last10_avg': last10_avg,
             'last10_ast_std': last10_ast_std, 'season_mpg': season_mpg,
             'expected_minutes': final_expected_minutes, 'blowout_minutes_adj': blowout_minutes_adj,
-            'usage_rate': usage_rate, 'ast_pct': ast_pct, 'ast_pct_adj': ast_pct_adj,
+            'usage_rate': usage_rate, 'usage_data_status': usage_data_status,
+            'ast_pct': ast_pct, 'ast_pct_adj': ast_pct_adj,
             'tov_factor': tov_factor, 'potential_assists': potential_assists,
             'potential_ast_adj': potential_ast_adj, 'opp_pace': opp_pace,
             'location_adj': location_adj, 'rest_adj': rest_adj, 'minutes_ast_adj': minutes_ast_adj,
@@ -3006,7 +3208,9 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             'total_adj': total_adj, 'raw_adjustment': round(raw_adjustment, 2),
             'game_total': game_total, 'spread': spread, 'cv': cv,
             'confidence_tier': confidence_tier, 'days_rest': days_rest,
-            'min_cv': min_cv, 'workload_tier': workload_tier,
+            'min_cv': min_cv, 'workload_tier': workload_tier, 'role_status': role_status,
+            'scoring_volatility_tier': scoring_volatility_tier, 'workload_reliability_tier': workload_reliability_tier,
+            'confidence_score': confidence_score,
         }
     except Exception as e:
         if st.session_state.get("_nba_debug_mode"): raise
