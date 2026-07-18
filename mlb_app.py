@@ -3280,7 +3280,7 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         if 'turnover' in df.columns:
             df['turnovers'] = df['turnovers'].fillna(0)
 
-        season_apg = round(df['assists'].mean(), 1)
+        season_apg = round(df['assists'].mean(), 1)  # kept for display/diagnostics only — no longer feeds the projection directly
         season_mpg = round(df['minutes_played'].mean(), 1)
         season_tov = round(df['turnovers'].mean(), 1)
         last5_avg = round(df['assists'].tail(5).mean(), 1)
@@ -3320,7 +3320,33 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             workload_tier = "🔴 Highly Volatile Minutes"
         workload_reliability_tier = workload_tier
 
-        base = (last5_avg * 0.40) + (last10_avg * 0.30) + (season_apg * 0.30)
+        # === Core rebuild (July 2026, round 4) ===
+        # Old approach: blend recent APG averages directly — the exact same
+        # double-counting problem Points used to have, since recent APG
+        # already reflects recent minutes, then a separate minutes_ast_adj
+        # tried to patch for any minutes change on top of that. New
+        # approach, matching Points: assists per minute (which separates
+        # playmaking rate from playing time) x final expected minutes.
+        # balldontlie doesn't expose potential assists at this tier, so
+        # this isn't the ideal tracking-data model, but it's structurally
+        # better than a blended APG average regardless.
+        df_rate_games = df[df['minutes_played'] >= 8].copy()
+        if len(df_rate_games) < 5:
+            df_rate_games = df.copy()
+        df_rate_games['ast_per_min'] = df_rate_games['assists'] / df_rate_games['minutes_played']
+
+        def _blend_ast(w_season, w_l10, w_l5):
+            return (df_rate_games['ast_per_min'].mean() * w_season) + (df_rate_games['ast_per_min'].tail(10).mean() * w_l10) + (df_rate_games['ast_per_min'].tail(5).mean() * w_l5)
+
+        projected_ast_per_min = _blend_ast(0.45, 0.35, 0.20)
+        projected_ast_per_min = max(0.0, min(projected_ast_per_min, 0.6))  # safety bound, not an intended cap
+
+        # tov_factor kept as an informational diagnostic only — never
+        # multiplied into the projection. A high-turnover primary
+        # ballhandler often ALSO generates a lot of assists (they're
+        # correlated, not inversely related), so there's no good evidence
+        # base to justify discounting assists by recent turnover rate
+        # (July 2026 review).
         tov_factor = max(0.95, min(1.05, round(last5_tov / season_tov, 3) if season_tov > 0 else 1.0))
 
         # Usage rate: known limitation, not a real per-player estimate right
@@ -3362,11 +3388,11 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         # more, instead of always using a fixed 30/30/40 split regardless
         # (July 2026 review).
         if min_cv < 0.12:
-            expected_minutes = round((season_mpg * 0.45) + (last10_min * 0.35) + (last5_min * 0.20), 1)
+            expected_minutes_raw = (season_mpg * 0.45) + (last10_min * 0.35) + (last5_min * 0.20)
         elif min_cv < 0.25:
-            expected_minutes = round((season_mpg * 0.30) + (last10_min * 0.35) + (last5_min * 0.35), 1)
+            expected_minutes_raw = (season_mpg * 0.30) + (last10_min * 0.35) + (last5_min * 0.35)
         else:
-            expected_minutes = round((season_mpg * 0.15) + (last10_min * 0.30) + (last5_min * 0.55), 1)
+            expected_minutes_raw = (season_mpg * 0.15) + (last10_min * 0.30) + (last5_min * 0.55)
 
         role_change_ratio = (last5_min / season_mpg) if season_mpg > 0 else 1.0
         if role_change_ratio >= 1.25:
@@ -3400,8 +3426,32 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
                 pass
 
         total_adj = max(-0.5, min(0.5, round((game_total - 225) * 0.015, 2))) if game_total is not None else 0
-        blowout_minutes_adj = -4 if (spread is not None and abs(spread) >= 12) else (-2 if (spread is not None and abs(spread) >= 9) else 0)
-        # Pace is now multiplicative on the base, not flat additive — see
+
+        # Blowout minutes impact now scales with role, matching the Points
+        # engine — a flat -4 for everyone regardless of role didn't account
+        # for bench players often GAINING garbage-time minutes in a
+        # blowout while starters lose 4th-quarter run (July 2026 review).
+        blowout_minutes_adj = 0
+        if spread is not None and abs(spread) >= 9:
+            if expected_minutes_raw >= 32:
+                blowout_multiplier = 1.0
+            elif expected_minutes_raw >= 24:
+                blowout_multiplier = 0.5
+            else:
+                blowout_multiplier = -0.25  # some bench players gain time
+            base_blowout_adj = -4 if abs(spread) >= 12 else -2
+            blowout_minutes_adj = round(base_blowout_adj * blowout_multiplier, 1)
+
+        # Final minutes -> final base, same order-of-operations fix as the
+        # Points engine: minutes are finalized FIRST (including blowout),
+        # then the assists projection is built from that single, coherent
+        # number — instead of building from pre-blowout minutes and
+        # patching with a separate minutes_ast_adj afterward.
+        final_expected_minutes_raw = max(0.0, expected_minutes_raw + blowout_minutes_adj)
+        final_expected_minutes = round(final_expected_minutes_raw, 1)
+        base = final_expected_minutes_raw * projected_ast_per_min
+
+        # Pace is multiplicative on the base, not flat additive — see
         # Points engine's comment for the full explanation. Dampened at a
         # smaller percentage here to roughly preserve pace's original,
         # smaller relative weight on assists vs. points.
@@ -3409,12 +3459,16 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
         base_before_pace = base
         base = base * pace_factor
         pace_adj = round(base - base_before_pace, 2)
-        final_expected_minutes = round(expected_minutes + blowout_minutes_adj, 1)
-        ast_per_minute = round(season_apg / season_mpg, 3) if season_mpg > 0 else 0
-        minutes_ast_adj = round((final_expected_minutes - season_mpg) * ast_per_minute, 2)
-        ast_pct_adj = max(-1.5, min(1.5, round((ast_pct - 0.25) * 6, 2)))
 
-        raw_adjustment = max(-3.0, min(3.0, location_adj + rest_adj + minutes_ast_adj + ast_pct_adj + opp_ast_adj + total_adj + potential_ast_adj))
+        # Fixed a real bug (July 2026 review): ast_pct was a static 0.15
+        # placeholder, so ast_pct_adj = (0.15 - 0.25) * 6 = -0.60 for
+        # EVERY single projection, always, regardless of the player — not
+        # a limitation, a straightforward bug quietly subtracting 0.6
+        # assists from every projection. Zeroed out until real assist
+        # percentage data exists.
+        ast_pct_adj = 0.0
+
+        raw_adjustment = max(-3.0, min(3.0, location_adj + rest_adj + ast_pct_adj + opp_ast_adj + total_adj + potential_ast_adj))
         final_projection = max(0, round(base + raw_adjustment, 1))
 
         confidence_score = 100.0
@@ -3431,11 +3485,12 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             'season_apg': season_apg, 'last5_avg': last5_avg, 'last10_avg': last10_avg,
             'last10_ast_std': last10_ast_std, 'season_mpg': season_mpg,
             'expected_minutes': final_expected_minutes, 'blowout_minutes_adj': blowout_minutes_adj,
+            'projected_ast_per_min': round(projected_ast_per_min, 3),
             'usage_rate': usage_rate, 'usage_data_status': usage_data_status,
             'ast_pct': ast_pct, 'ast_pct_adj': ast_pct_adj,
             'tov_factor': tov_factor, 'potential_assists': potential_assists,
             'potential_ast_adj': potential_ast_adj, 'opp_pace': opp_pace,
-            'location_adj': location_adj, 'rest_adj': rest_adj, 'minutes_ast_adj': minutes_ast_adj,
+            'location_adj': location_adj, 'rest_adj': rest_adj,
             'pace_adj': pace_adj, 'opp_ast_adj': opp_ast_adj, 'opp_ast_allowed': opp_ast_allowed,
             'total_adj': total_adj, 'raw_adjustment': round(raw_adjustment, 2),
             'game_total': game_total, 'spread': spread, 'cv': cv,
