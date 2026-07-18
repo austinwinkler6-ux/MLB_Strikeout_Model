@@ -627,12 +627,21 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
 
         opp_factor = result.get('opp_factor')
         if opp_factor:
+            # Always describes the matchup from the PITCHER's strikeout-
+            # friendliness (a high opponent K% is genuinely favorable for
+            # strikeouts, full stop) — the icon alone conveys whether
+            # that's good or bad news for THIS specific bet direction.
+            # The old version flipped "favorable"/"tougher" based on
+            # over/under, which read as backwards baseball intuition when
+            # taken out of that context (e.g. "Opponent K% is above
+            # average — tougher matchup" on an Under bet correctly meant
+            # "tougher for the Under," but reads like "tougher for the
+            # pitcher to get strikeouts," which is the opposite of true —
+            # caught in review, July 2026).
             if opp_factor >= 1.05:
-                matchup_word = "favorable" if direction == 'over' else "tougher"
-                lines.append(f"{_dir_icon(True)} Opponent K% is **above average** — {matchup_word} matchup")
+                lines.append(f"{_dir_icon(True)} Opponent K% is **above average** — favorable matchup for strikeouts")
             elif opp_factor <= 0.95:
-                matchup_word = "tougher" if direction == 'over' else "favorable"
-                lines.append(f"{_dir_icon(False)} Opponent K% is **below average** — {matchup_word} matchup")
+                lines.append(f"{_dir_icon(False)} Opponent K% is **below average** — tougher matchup for strikeouts")
             else:
                 lines.append(f"➖ Opponent K% is near league average")
 
