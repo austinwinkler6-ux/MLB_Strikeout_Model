@@ -2506,16 +2506,33 @@ def get_player_role_profile(player_id, season, as_of_date_str=None):
     except Exception:
         return None
 
-def calculate_team_absence_load(injury_lookup, season, as_of_date_str=None):
+def calculate_team_absence_load(injury_lookup, season, as_of_date_str=None, projected_player_id=None):
     """Total estimated minutes/FGA/FTA missing from a team right now,
     weighted by how likely each injured player actually is to miss the
-    game (Out counts fully; Questionable counts partially; Probable barely
-    counts at all)."""
+    game. Two fixes from initial version (caught in review):
+
+    1. Excludes the projected player themselves — without this, a player
+       who is themselves Doubtful/Questionable would have their own
+       missing minutes/FGA counted into the team's "missing opportunity,"
+       then partially redistributed back to... themselves. Mathematically
+       inconsistent, even though injury_pass_recommended already flags
+       this player as unresolved separately.
+
+    2. Only redistributes from Out and Doubtful, not Questionable.
+       Questionable is close to a coin flip and frequently resolves to
+       playing normally — redistributing shots away from a 50/50 case
+       risks inflating every teammate's projection, then reversing
+       entirely once that player is confirmed active shortly before tip.
+       Out and Doubtful are meaningfully more likely to actually be
+       missing, so redistributing from those specifically has a much
+       better hit rate."""
     absent_minutes = absent_fga = absent_fta = 0.0
     unavailable_players = []
     for injury in injury_lookup.values():
+        if projected_player_id is not None and injury["player_id"] == projected_player_id:
+            continue
         status = injury["normalized_status"]
-        if status not in {"out", "doubtful", "questionable"}:
+        if status not in {"out", "doubtful"}:
             continue
         profile = get_player_role_profile(injury["player_id"], season, as_of_date_str)
         if not profile:
@@ -3100,7 +3117,7 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
         injury_minutes_adj = injury_fga_adj = 0.0
         team_absence_load = None
         if as_of_date is None and player_team_id and injury_lookup:
-            team_absence_load = calculate_team_absence_load(injury_lookup, bdl_season, None)
+            team_absence_load = calculate_team_absence_load(injury_lookup, bdl_season, None, projected_player_id=player_id)
             injury_adjustment = calculate_injury_opportunity_adjustment(expected_minutes_raw, team_absence_load)
             injury_minutes_adj = injury_adjustment['added_minutes']
             injury_fga_adj = injury_adjustment['added_fga']
