@@ -5893,6 +5893,30 @@ elif nav == "🧪 Backtest" and is_admin:
             tier_summary = tier_summary.merge(hit_rates, on='Tier')
             st.dataframe(tier_summary, use_container_width=True)
 
+            st.markdown("---")
+            st.subheader("📏 MAE by Projection Size")
+            st.caption("Buckets by how big the model's own projection was, not by confidence tier — this can reveal a systematic bias the tier breakdown alone wouldn't show (e.g. great on role players but consistently off on stars, or vice versa).")
+            if backtest_sport == "NBA Assists":
+                bins = [-0.01, 3, 5, 7, 9, 999]
+                labels = ["0-3 AST", "3-5 AST", "5-7 AST", "7-9 AST", "9+ AST"]
+            elif backtest_sport == "NBA Points":
+                bins = [-0.01, 10, 15, 20, 25, 999]
+                labels = ["0-10 PTS", "10-15 PTS", "15-20 PTS", "20-25 PTS", "25+ PTS"]
+            else:  # MLB Strikeouts
+                bins = [-0.01, 3, 5, 7, 9, 999]
+                labels = ["0-3 K", "3-5 K", "5-7 K", "7-9 K", "9+ K"]
+            size_col = 'Projection'
+            results_df['Projection Bucket'] = pd.cut(results_df[size_col], bins=bins, labels=labels)
+            size_summary = results_df.groupby('Projection Bucket', observed=True).agg(
+                Predictions=('Error', 'count'), MAE=('Error', 'mean')
+            ).reset_index()
+            size_summary['MAE'] = size_summary['MAE'].round(2)
+            size_hit_rates = results_df.groupby('Projection Bucket', observed=True)['Error'].agg(
+                **{'Within 2pts %': lambda x: round((x <= 2).mean() * 100, 1)}
+            ).reset_index()
+            size_summary = size_summary.merge(size_hit_rates, on='Projection Bucket')
+            st.dataframe(size_summary, use_container_width=True)
+
 # ---- SETTINGS PAGE ----
 elif nav == "⚙️ Settings":
     st.title("⚙️ Settings")
