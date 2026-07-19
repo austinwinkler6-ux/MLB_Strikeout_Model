@@ -4723,68 +4723,84 @@ elif nav == "🏈 NFL Models":
             </div>
         """, unsafe_allow_html=True)
     else:
-        st.info("🔧 **Admin-only build-in-progress view.** NFL data layer is being built against `nfl_data_py` (the nflverse community dataset). Since this can't be tested from the development sandbox (no internet access there), this panel exists to verify the REAL schema live, in this deployed app, before any projection formulas get built on top of assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
+        st.info("🔧 **Admin-only build-in-progress view.** NFL data layer uses `nflreadpy` — the actively-maintained nflverse package. We initially tried `nfl_data_py` (a different, older package with a similar name) and hit a 404 — turned out nflverse officially deprecated it in favor of nflreadpy, so its hardcoded data URLs are permanently stale and will never be fixed. Since this can't be tested from the development sandbox (no internet access there), this panel verifies the REAL schema live, in this deployed app, before any projection formulas get built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
 
         st.subheader("🔍 Schema Verification (do this before anything else)")
         nfl_test_year = st.number_input("Season to test", value=2025, key="nfl_schema_test_year")
 
-        if st.button("Check import_weekly_data() Schema"):
+        if st.button("Check load_player_stats() Schema"):
             try:
-                import nfl_data_py as nfl
-                weekly_df = nfl.import_weekly_data([int(nfl_test_year)])
+                import nflreadpy as nfl
+                weekly_df = nfl.load_player_stats([int(nfl_test_year)]).to_pandas()
                 st.success(f"✅ Got {len(weekly_df)} rows back")
                 st.write("Columns:", weekly_df.columns.tolist())
                 st.dataframe(weekly_df.head(5))
             except ImportError:
-                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
-        if st.button("Check import_pbp_data() Schema (for PROE/pace — this is a bigger, slower download)"):
+        if st.button("Check load_pbp() Schema (for PROE/pace — this is a bigger, slower download)"):
             try:
-                import nfl_data_py as nfl
-                pbp_df = nfl.import_pbp_data([int(nfl_test_year)], downcast=True)
+                import nflreadpy as nfl
+                pbp_df = nfl.load_pbp([int(nfl_test_year)]).to_pandas()
                 st.success(f"✅ Got {len(pbp_df)} rows back")
                 st.write(f"Total columns: {len(pbp_df.columns)}")
                 relevant_cols = [c for c in pbp_df.columns if any(k in c.lower() for k in ['pass', 'xpass', 'epa', 'wp', 'down', 'qtr', 'score_differential'])]
                 st.write("Columns relevant to Opportunity/PROE specifically:", relevant_cols)
                 st.dataframe(pbp_df[relevant_cols].head(5) if relevant_cols else pbp_df.head(5))
             except ImportError:
-                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
-        if st.button("Check import_schedules() Schema (for spread, dome/outdoor, weather)"):
+        st.caption("Schedules and injuries function names weren't explicitly confirmed in research (only load_player_stats/load_pbp/load_team_stats were) — these two buttons try the most likely name matching nflreadpy's established 'load_' convention, and will show a clear error if the real name is different.")
+        if st.button("Check load_schedules() Schema (for spread, dome/outdoor, weather)"):
             try:
-                import nfl_data_py as nfl
-                sched_df = nfl.import_schedules([int(nfl_test_year)])
+                import nflreadpy as nfl
+                sched_df = nfl.load_schedules([int(nfl_test_year)]).to_pandas()
                 st.success(f"✅ Got {len(sched_df)} rows back")
                 st.write("Columns:", sched_df.columns.tolist())
                 st.dataframe(sched_df.head(5))
             except ImportError:
-                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+            except AttributeError as e:
+                st.error(f"❌ Function name guess was wrong: {e}. Run `import nflreadpy as nfl; print([f for f in dir(nfl) if f.startswith('load_')])` somewhere to see the real function list.")
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
-        if st.button("Check import_injuries() Schema"):
+        if st.button("Check load_injuries() Schema"):
             try:
-                import nfl_data_py as nfl
-                inj_df = nfl.import_injuries([int(nfl_test_year)])
+                import nflreadpy as nfl
+                inj_df = nfl.load_injuries([int(nfl_test_year)]).to_pandas()
                 st.success(f"✅ Got {len(inj_df)} rows back")
                 st.write("Columns:", inj_df.columns.tolist())
                 st.dataframe(inj_df.head(5))
             except ImportError:
-                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+            except AttributeError as e:
+                st.error(f"❌ Function name guess was wrong: {e}. Run the dir() check above to see the real function list.")
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
+
+        if st.button("📋 List EVERY real load_ function available (use this instead of guessing)"):
+            try:
+                import nflreadpy as nfl
+                real_functions = [f for f in dir(nfl) if f.startswith('load_')]
+                st.success(f"✅ Found {len(real_functions)} real functions")
+                st.write(real_functions)
+            except ImportError:
+                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+            except Exception as e:
+                st.error(f"Real error: {e}")
 
         st.markdown("---")
         nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
