@@ -3607,6 +3607,82 @@ def nba_bet_sport_label(sport_key):
     to the sport label used consistently across bets/predictions ('NBA'/'NBA_AST')."""
     return 'NBA' if sport_key == 'nba_points' else 'NBA_AST'
 
+# ============================================================
+# NFL DATA LAYER — built on nflreadpy (nflverse), confirmed working
+# (July 2026). nfl_data_py, an older similarly-named package, is
+# officially deprecated by nflverse — its hardcoded data URLs are
+# permanently stale. All 4 core functions confirmed live in the
+# deployed app: load_player_stats, load_pbp, load_schedules,
+# load_injuries.
+# ============================================================
+
+@st.cache_data(ttl=86400)
+def get_nfl_player_stats(seasons):
+    """Weekly player stats — confirmed columns include attempts,
+    completions, receptions, targets, target_share, passing_cpoe,
+    wopr, air_yards_share, sacks_suffered, and more. This is the core
+    box-score input for all three NFL models."""
+    import nflreadpy as nfl
+    return nfl.load_player_stats(seasons).to_pandas()
+
+@st.cache_data(ttl=86400)
+def get_nfl_pbp(seasons):
+    """Play-by-play data — confirmed columns include pass_attempt,
+    complete_pass, incomplete_pass, xpass, pass_oe, down, qtr, wp,
+    score_differential, epa, and 396 total columns. This is the
+    biggest, slowest download of the four — used to derive team-level
+    pace and PROE, which aren't directly available as a single stat
+    anywhere else."""
+    import nflreadpy as nfl
+    return nfl.load_pbp(seasons).to_pandas()
+
+@st.cache_data(ttl=86400)
+def get_nfl_schedules(seasons):
+    """Game schedules — confirmed columns include spread_line,
+    total_line, moneylines, over/under odds, home_qb_id/away_qb_id
+    (confirmed starters per game), home_rest/away_rest, roof, surface,
+    temp, wind. A genuinely rich single source covering most of the
+    Game Environment category and real historical odds."""
+    import nflreadpy as nfl
+    return nfl.load_schedules(seasons).to_pandas()
+
+@st.cache_data(ttl=3600)
+def get_nfl_injuries(seasons):
+    """Weekly injury reports — confirmed columns include report_status
+    (Out/Doubtful/Questionable) and practice_status (a leading
+    indicator of how a questionable tag is likely to resolve).
+    Shorter cache than the others since injury status changes
+    frequently during the week."""
+    import nflreadpy as nfl
+    return nfl.load_injuries(seasons).to_pandas()
+
+@st.cache_data(ttl=86400)
+def get_nfl_team_game_pace_proe(seasons):
+    """Team-level pace (plays/game) and PROE (Pass Rate Over Expected),
+    derived from play-by-play data since neither is available as a
+    single ready-made stat anywhere else. Computed once per team-game
+    (identified by posteam + game_id) and cached — this is genuinely
+    the most expensive computation in the NFL pipeline, since it
+    requires the full play-by-play download.
+
+    PROE = actual team pass rate - average xpass for that team-game,
+    restricted to real offensive plays (pass_attempt or rush_attempt),
+    matching the standard, published definition of PROE."""
+    pbp = get_nfl_pbp(seasons)
+    if 'posteam' not in pbp.columns or 'game_id' not in pbp.columns:
+        return pd.DataFrame()
+    offensive_plays = pbp[(pbp.get('pass_attempt', 0) == 1) | (pbp.get('rush_attempt', 0) == 1)].copy()
+    if offensive_plays.empty:
+        return pd.DataFrame()
+    grouped = offensive_plays.groupby(['posteam', 'game_id', 'season', 'week'], as_index=False).agg(
+        total_plays=('pass_attempt', 'count'),
+        pass_attempts=('pass_attempt', 'sum'),
+        avg_xpass=('xpass', 'mean') if 'xpass' in offensive_plays.columns else ('pass_attempt', 'mean'),
+    )
+    grouped['actual_pass_rate'] = grouped['pass_attempts'] / grouped['total_plays']
+    grouped['proe'] = grouped['actual_pass_rate'] - grouped['avg_xpass']
+    return grouped.rename(columns={'posteam': 'team'})
+
 # ---- CLOSING LINE / CLV TRACKING ----
 def get_odds_api_sport_and_market(sport):
     if sport == 'MLB':
@@ -4092,6 +4168,156 @@ with st.sidebar:
     if st.button("Logout", use_container_width=True):
         sign_out()
         st.rerun()
+
+# ---- NFL DATA LAYER ----
+league_avg_plays_per_game = 64.0  # rough NFL-wide baseline, refined by real data at runtime where possible
+
+@st.cache_data(ttl=21600)  # 6 hours — nflverse updates weekly during the season, no need to hit this constantly
+def get_nfl_weekly_stats(season):
+    """Weekly player stats (attempts, completions, receptions, targets, and
+    real pre-computed efficiency metrics like passing_cpoe/target_share/
+    wopr) for one season, via nflreadpy — the actively-maintained nflverse
+    package (nfl_data_py, a similarly-named but DIFFERENT package, is
+    officially deprecated and permanently broken — confirmed July 2026)."""
+    import nflreadpy as nfl
+    return nfl.load_player_stats([int(season)]).to_pandas()
+
+@st.cache_data(ttl=21600)
+def get_nfl_pbp(season):
+    """Full play-by-play for one season — the bigger, slower download, but
+    needed for team-level pace and PROE (Pass Rate Over Expected), since
+    those aren't in the weekly stats table and have to be derived
+    ourselves from individual play data (pass_attempt, xpass, pass_oe
+    columns — all confirmed present via live schema check, July 2026)."""
+    import nflreadpy as nfl
+    return nfl.load_pbp([int(season)]).to_pandas()
+
+@st.cache_data(ttl=21600)
+def get_nfl_schedules(season):
+    """Game-level schedule data — spread_line, total_line, QB starters
+    (away_qb_name/home_qb_name), rest days, and weather (roof/surface/
+    temp/wind), all confirmed present via live schema check."""
+    import nflreadpy as nfl
+    return nfl.load_schedules([int(season)]).to_pandas()
+
+@st.cache_data(ttl=21600)
+def get_nfl_injuries(season):
+    """Weekly injury reports — report_status (game-day designation) and
+    practice_status (a real leading indicator of how a Questionable tag
+    is likely to resolve, which NBA's data tier didn't have an equivalent
+    for)."""
+    import nflreadpy as nfl
+    return nfl.load_injuries([int(season)]).to_pandas()
+
+def get_team_pace_and_proe(season, team, as_of_week=None):
+    """A team's plays/game and Pass Rate Over Expected, built ONLY from
+    games strictly before as_of_week when backtesting — same leak-free
+    principle as the NBA pace rebuild (never use the game being predicted,
+    or future games, to estimate a team's tendencies). Returns
+    (plays_per_game, proe) — proe is the team's actual pass rate minus the
+    average of the real xpass column across their offensive plays, using
+    pass_oe directly where available since it's a real, pre-computed
+    equivalent."""
+    try:
+        pbp = get_nfl_pbp(season)
+        team_plays = pbp[pbp['posteam'] == team].copy()
+        if as_of_week is not None:
+            team_plays = team_plays[team_plays['week'] < as_of_week]
+        if team_plays.empty:
+            return None, None
+        games_played = team_plays['game_id'].nunique()
+        offensive_plays = team_plays[team_plays['play_type'].isin(['pass', 'run'])] if 'play_type' in team_plays.columns else team_plays
+        plays_per_game = len(offensive_plays) / games_played if games_played > 0 else None
+        if 'pass_oe' in team_plays.columns:
+            proe = team_plays['pass_oe'].mean()
+        elif 'xpass' in team_plays.columns and 'pass' in team_plays.columns:
+            proe = (team_plays['pass'].mean() - team_plays['xpass'].mean()) * 100
+        else:
+            proe = None
+        return plays_per_game, proe
+    except Exception:
+        return None, None
+
+def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
+    """How much an opponent's defense tends to face more or fewer pass
+    attempts than league average — a real 'pass funnel' signal (e.g. a
+    defense that stops the run well but is vulnerable through the air
+    tends to face more passing volume, regardless of the opposing team's
+    own natural tendencies). Leak-free — only games strictly before
+    as_of_week when backtesting."""
+    try:
+        pbp = get_nfl_pbp(season)
+        opp_faced = pbp[pbp['defteam'] == opponent].copy()
+        if as_of_week is not None:
+            opp_faced = opp_faced[opp_faced['week'] < as_of_week]
+        if opp_faced.empty:
+            return None
+        games_faced = opp_faced['game_id'].nunique()
+        pass_attempts_faced = opp_faced['pass_attempt'].sum() if 'pass_attempt' in opp_faced.columns else None
+        if pass_attempts_faced is None or games_faced == 0:
+            return None
+        return pass_attempts_faced / games_faced
+    except Exception:
+        return None
+
+def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None):
+    """v1 Pass Attempts model — QB's own recency-blended attempts, adjusted
+    by team pace and opponent pass-funnel tendency. Deliberately does NOT
+    include completion% or any accuracy-related variable (per the agreed
+    build plan) — this model answers ONE question: how many times will
+    this team throw the ball. Leak-free when as_of_week is set: only uses
+    games strictly before that week, same principle as every NBA engine
+    built today."""
+    try:
+        weekly = get_nfl_weekly_stats(season)
+        qb_rows = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
+        if as_of_week is not None:
+            qb_rows = qb_rows[qb_rows['week'] < as_of_week]
+        qb_rows = qb_rows.sort_values('week')
+        if len(qb_rows) < 3:
+            return None
+
+        season_attempts_avg = qb_rows['attempts'].mean()
+        last3_attempts_avg = qb_rows['attempts'].tail(3).mean()
+        base_attempts = (season_attempts_avg * 0.5) + (last3_attempts_avg * 0.5)
+
+        team_pace, team_proe = get_team_pace_and_proe(season, team, as_of_week)
+        opp_pass_funnel = get_opponent_pass_funnel_factor(season, opponent, as_of_week)
+
+        # Team pace factor — multiplicative, dampened, same reasoning as
+        # every NBA pace adjustment built today (a flat point value
+        # doesn't scale sensibly across very different baseline volumes).
+        pace_factor = 1.0
+        if team_pace:
+            pace_factor = 1 + ((team_pace / league_avg_plays_per_game) - 1) * 0.5
+
+        # Opponent pass-funnel factor — same multiplicative/dampened
+        # approach. league_avg_pass_attempts_faced is a rough placeholder
+        # baseline (~33/game is a reasonable modern-NFL estimate) —
+        # ideally this gets replaced with a real computed league average
+        # once we're testing against real season data, not assumed.
+        opp_factor = 1.0
+        league_avg_pass_attempts_faced = 33.0
+        if opp_pass_funnel:
+            opp_factor = 1 + ((opp_pass_funnel / league_avg_pass_attempts_faced) - 1) * 0.4
+
+        projected_attempts = base_attempts * pace_factor * opp_factor
+
+        return {
+            'projection': round(projected_attempts, 1),
+            'base_attempts': round(base_attempts, 1),
+            'season_attempts_avg': round(season_attempts_avg, 1),
+            'last3_attempts_avg': round(last3_attempts_avg, 1),
+            'team_pace': round(team_pace, 1) if team_pace else None,
+            'team_proe': round(team_proe, 2) if team_proe else None,
+            'opp_pass_attempts_faced_per_game': round(opp_pass_funnel, 1) if opp_pass_funnel else None,
+            'pace_factor': round(pace_factor, 3),
+            'opp_factor': round(opp_factor, 3),
+            'games_used': len(qb_rows),
+        }
+    except Exception as e:
+        if st.session_state.get("_nfl_debug_mode"): raise
+        return None
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
@@ -4711,6 +4937,8 @@ elif nav == "⚾ MLB Models":
             st.divider()
 
 # ---- NFL PAGE ----
+
+
 elif nav == "🏈 NFL Models":
     st.title("🏈 NFL Models")
     st.markdown("---")
@@ -4805,11 +5033,39 @@ elif nav == "🏈 NFL Models":
                 st.error(f"Real error: {e}")
 
         st.markdown("---")
+        st.subheader("🏈 Pass Attempts Model (v1) — Live Test")
+        st.caption("v1 = QB's own recency-blended attempts x team pace factor x opponent pass-funnel factor. Deliberately excludes completion% and any accuracy-related variable — this model answers ONE question: how many times will this team throw. Test this before we build Completions/Receptions on top of it.")
+
+        nfl_qb_name = st.text_input("QB full name (must match nflverse's player_display_name exactly)", value="Patrick Mahomes", key="nfl_qb_test_name")
+        nfl_qb_team = st.text_input("QB's team abbreviation", value="KC", key="nfl_qb_test_team")
+        nfl_qb_opponent = st.text_input("Opponent abbreviation", value="BUF", key="nfl_qb_test_opp")
+        nfl_test_season = st.number_input("Season", value=2025, key="nfl_pa_test_season")
+        nfl_test_as_of_week = st.number_input("as_of_week (leave 0 for 'use all available data, live mode')", value=0, min_value=0, max_value=22, key="nfl_pa_test_week")
+        nfl_debug_check = st.checkbox("Show real errors instead of generic None (debug)", key="nfl_debug_checkbox")
+
+        if st.button("Run Pass Attempts Projection"):
+            st.session_state['_nfl_debug_mode'] = nfl_debug_check
+            try:
+                week_arg = int(nfl_test_as_of_week) if nfl_test_as_of_week > 0 else None
+                pa_result = run_nfl_pass_attempts_projection(nfl_qb_name, nfl_qb_team, nfl_qb_opponent, int(nfl_test_season), as_of_week=week_arg)
+                if pa_result:
+                    st.success(f"✅ Worked! Projected attempts: {pa_result['projection']}")
+                    st.json(pa_result)
+                else:
+                    st.warning("Returned None — either fewer than 3 games of history found for this QB/season/week combo, or the name didn't match exactly. Check debug mode + the schema buttons above to confirm the exact player_display_name spelling.")
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+            finally:
+                st.session_state['_nfl_debug_mode'] = False
+
+        st.markdown("---")
         nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
         st.markdown("""
             <div style='text-align: center; padding: 40px 0;'>
-                <h3>🚧 Projection engine not built yet</h3>
-                <p style='color: #64748B; font-size: 16px;'>Waiting on real schema confirmation from the buttons above before writing any formulas — same discipline that saved real debugging time on the NBA rebuild.</p>
+                <h3>🚧 Completions and Receptions not built yet</h3>
+                <p style='color: #64748B; font-size: 16px;'>Pass Attempts (above) needs to work and get validated first — Completions depends directly on it (Projected Attempts x Completion%), per the agreed build order.</p>
             </div>
         """, unsafe_allow_html=True)
 
