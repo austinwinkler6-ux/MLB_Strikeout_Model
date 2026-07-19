@@ -6172,6 +6172,10 @@ elif nav == "🧪 Backtest" and is_admin:
                         nfl_results_df['Model Side'] = nfl_results_df.apply(_nfl_model_side, axis=1)
                         nfl_results_df['Bet Result'] = nfl_results_df.apply(_nfl_did_win, axis=1)
                         matched_nfl = nfl_results_df['Sportsbook Line'].notna().sum()
+                        if checked_games_nfl == 0:
+                            st.error("0 games matched — likely a team name format mismatch (nflverse uses abbreviations like 'KC', The Odds API uses full names like 'Kansas City Chiefs'). Diagnostic below:")
+                            st.write("Our Matchup strings (from nflverse):", list(nfl_results_df['Matchup'].unique()))
+                            st.write("Real event team names (from The Odds API):", [(ev.get('away_team'), ev.get('home_team')) for ev in events])
                         st.success(f"✅ Checked {checked_games_nfl} game(s), matched real lines for {matched_nfl}/{len(nfl_results_df)} QBs.")
                         line_results_nfl = nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][['QB', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']]
                         st.dataframe(line_results_nfl, use_container_width=True)
