@@ -5812,19 +5812,29 @@ elif nav == "🧪 Backtest" and is_admin:
                             skipped.append({'Player': player_name or 'Unknown', 'Reason': f'Exception: {e}'})
                             continue
 
-                    # Second pass: retry players who failed specifically due
-                    # to player-ID resolution or an empty game log — these
-                    # are API-flakiness failures, not real facts about the
-                    # player (unlike a genuine DNP or insufficient-games
-                    # skip, which retrying can't change). By now several
-                    # minutes have passed processing everyone else, which is
-                    # exactly the kind of gap that's already been shown to
-                    # clear this specific balldontlie flakiness (July 2026 —
-                    # a repeated "Stewart" search went from 0 results to 8
-                    # results with zero code changes, moments apart).
+                    # Second pass: retry players who failed for reasons that
+                    # can plausibly be transient API flakiness rather than a
+                    # real fact about the player. Originally just player-ID
+                    # resolution / empty game log failures — expanded (July
+                    # 2026) after directly proving a player showing "20
+                    # active games (need 5)" can STILL be a transient
+                    # failure: re-running that exact player in isolation
+                    # worked perfectly and produced a real projection. Only
+                    # retries "insufficient games" cases where the
+                    # diagnostic's OWN reported count actually contradicts
+                    # the None result (>=5) — a genuine "2 games, need 5"
+                    # skip is a real fact retrying can't change, so those
+                    # are deliberately left alone.
+                    import re
+                    def _is_contradictory_insufficient_games(reason):
+                        m = re.search(r'(\d+) active games BEFORE .+ \(need 5\)', reason)
+                        return bool(m) and int(m.group(1)) >= 5
+
                     retry_candidates = [
                         s for s in skipped
-                        if "No player ID resolved" in s['Reason'] or "game log came back empty" in s['Reason']
+                        if "No player ID resolved" in s['Reason']
+                        or "game log came back empty" in s['Reason']
+                        or _is_contradictory_insufficient_games(s['Reason'])
                     ]
                     if retry_candidates:
                         status_text.text(f"Retrying {len(retry_candidates)} players who may have hit transient API flakiness...")
