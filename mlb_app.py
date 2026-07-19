@@ -4226,30 +4226,139 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
     defense that stops the run well but is vulnerable through the air
     tends to face more passing volume, regardless of the opposing team's
     own natural tendencies). Leak-free — only games strictly before
-    as_of_week when backtesting."""
+    as_of_week when backtesting.
+
+    Returns a dict with THREE components (July 2026 review) rather than
+    pass attempts faced alone — that single number can mislead if an
+    opponent's schedule happened to include several pass-heavy teams by
+    chance, rather than reflecting a real defensive tendency:
+      - pass_attempts_faced_per_game
+      - proe_allowed (opponent's defense tends to face more/fewer passes
+        than expected, independent of pace)
+      - plays_allowed_per_game (opponent's own defensive pace)
+    """
     try:
         pbp = get_nfl_pbp([int(season)])
         opp_faced = pbp[pbp['defteam'] == opponent].copy()
         if as_of_week is not None:
             opp_faced = opp_faced[opp_faced['week'] < as_of_week]
         if opp_faced.empty:
-            return None
+            return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
         games_faced = opp_faced['game_id'].nunique()
+        if games_faced == 0:
+            return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
+
         pass_attempts_faced = opp_faced['pass_attempt'].sum() if 'pass_attempt' in opp_faced.columns else None
-        if pass_attempts_faced is None or games_faced == 0:
+        pass_attempts_faced_per_game = pass_attempts_faced / games_faced if pass_attempts_faced is not None else None
+
+        offensive_plays_faced = opp_faced[(opp_faced.get('pass_attempt', 0) == 1) | (opp_faced.get('rush_attempt', 0) == 1)]
+        plays_allowed_per_game = len(offensive_plays_faced) / games_faced if games_faced > 0 else None
+
+        proe_allowed = None
+        if 'pass_oe' in opp_faced.columns:
+            proe_allowed = opp_faced['pass_oe'].mean() * 100
+
+        return {
+            'pass_attempts_faced_per_game': pass_attempts_faced_per_game,
+            'proe_allowed': proe_allowed,
+            'plays_allowed_per_game': plays_allowed_per_game,
+        }
+    except Exception:
+        return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
+
+def get_qb_rush_tendency(season, qb_name, as_of_week=None):
+    """A QB's own rushing volume relative to league-average QB rushing —
+    computed from real carries data rather than a hardcoded list of known
+    'running QBs' (a hardcoded list would need constant manual upkeep as
+    rosters and player tendencies change; a computed signal doesn't).
+    Running QBs often finish games with fewer pass attempts than a
+    similar-volume pocket passer, since some passing situations turn into
+    scrambles instead of pass attempts (July 2026 review). Returns
+    carries/game for this QB, or None if unavailable."""
+    try:
+        weekly = get_nfl_player_stats([int(season)])
+        qb_rows = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
+        if as_of_week is not None:
+            qb_rows = qb_rows[qb_rows['week'] < as_of_week]
+        if qb_rows.empty or 'carries' not in qb_rows.columns:
             return None
-        return pass_attempts_faced / games_faced
+        return qb_rows['carries'].mean()
     except Exception:
         return None
 
+def get_nfl_game_context(season, team, opponent, as_of_week):
+    """Real Vegas lines (spread, total) and situational context (rest days,
+    weather, dome/outdoor) for one specific team's game in a specific
+    week — pulled from schedules, which has all of this confirmed
+    available. Returns None if the game can't be found (e.g. testing a
+    future/hypothetical matchup with no real scheduled game)."""
+    try:
+        schedules = get_nfl_schedules([int(season)])
+        game_row = schedules[
+            (schedules['week'] == as_of_week) &
+            (((schedules['home_team'] == team) & (schedules['away_team'] == opponent)) |
+             ((schedules['away_team'] == team) & (schedules['home_team'] == opponent)))
+        ]
+        if game_row.empty:
+            return None
+        row = game_row.iloc[0]
+        is_home = row['home_team'] == team
+        # spread_line convention: negative means the HOME team is favored.
+        # Translate to "this team's own spread" regardless of home/away.
+        team_spread = row.get('spread_line') if is_home else (-row.get('spread_line') if pd.notna(row.get('spread_line')) else None)
+        team_rest = row.get('home_rest') if is_home else row.get('away_rest')
+        return {
+            'spread': team_spread, 'total': row.get('total_line'),
+            'rest_days': team_rest, 'weekday': row.get('weekday'),
+            'roof': row.get('roof'), 'wind': row.get('wind'), 'temp': row.get('temp'),
+            'is_home': is_home,
+        }
+    except Exception:
+        return None
+
+
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None):
-    """v1 Pass Attempts model — QB's own recency-blended attempts, adjusted
-    by team pace and opponent pass-funnel tendency. Deliberately does NOT
-    include completion% or any accuracy-related variable (per the agreed
-    build plan) — this model answers ONE question: how many times will
-    this team throw the ball. Leak-free when as_of_week is set: only uses
-    games strictly before that week, same principle as every NBA engine
-    built today."""
+    """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
+    recency-blended attempts as the base, layered with Vegas game script,
+    actually-used PROE, a blended opponent factor, home/away, QB rushing
+    tendency, rest, and weather. Deliberately still excludes completion%
+    (per the original build plan) — this model answers ONE question: how
+    many times will this team throw the ball. Leak-free when as_of_week
+    is set: only uses games/lines/context strictly before that week.
+
+    Round 1 -> Round 2 changes, all from direct review feedback:
+      - Base weighting changed from a noisy 50% season / 50% last-3 to a
+        steadier 45% season / 35% last-5 / 20% last-10 — 3 games is very
+        noisy in the NFL (weather, injury, unusual game script can all
+        swing it hard).
+      - Vegas (spread, total) added as a real adjustment — a large
+        favorite tends to throw less, a large underdog more; a high total
+        (shootout expected) tends to mean more attempts, a low total
+        fewer. This was flagged as the single biggest missing variable.
+      - PROE was being COMPUTED but never actually used anywhere in the
+        projection — a real bug, the same "calculated but dead" pattern
+        found in the NBA Assists tov_factor earlier. Now genuinely
+        multiplied into the projection.
+      - Opponent adjustment is now a blend (40% pass attempts faced / 30%
+        PROE allowed / 30% pace allowed) instead of pass-attempts-faced
+        alone, which can mislead if an opponent's schedule happened to
+        include several pass-heavy teams by chance.
+      - Home/away split added, shrunk toward zero for a small sample —
+        same shrinkage principle as the NBA location adjustment.
+      - QB rushing tendency added as a small (2-4%) reduction — computed
+        from real carries/game rather than a hardcoded list of "known
+        running QBs," so it doesn't need manual upkeep as tendencies
+        change.
+      - Rest (days rest, Thursday/Monday context) and weather (wind)
+        added as small adjustments, both using schedule data already
+        being pulled for the Vegas lines.
+      - expected_plays / expected_pass_rate are now ALSO returned as
+        transparency fields (Expected Plays x Expected Pass Rate =
+        Attempts, per review) — informational alongside the base for now
+        rather than fully replacing the tested QB-history-based base,
+        since that would be a bigger, untested structural change to make
+        all at once.
+    """
     try:
         weekly = get_nfl_player_stats([int(season)])
         qb_rows = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
@@ -4259,43 +4368,160 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         if len(qb_rows) < 3:
             return None
 
+        # Base weighting — steadier than the old 50/50 season/last-3 split
+        # (July 2026 review: 3 games is very noisy in the NFL).
         season_attempts_avg = qb_rows['attempts'].mean()
-        last3_attempts_avg = qb_rows['attempts'].tail(3).mean()
-        base_attempts = (season_attempts_avg * 0.5) + (last3_attempts_avg * 0.5)
+        last5_attempts_avg = qb_rows['attempts'].tail(5).mean()
+        last10_attempts_avg = qb_rows['attempts'].tail(10).mean()
+        base_attempts = (season_attempts_avg * 0.45) + (last5_attempts_avg * 0.35) + (last10_attempts_avg * 0.20)
 
         team_pace, team_proe = get_team_pace_and_proe(season, team, as_of_week)
-        opp_pass_funnel = get_opponent_pass_funnel_factor(season, opponent, as_of_week)
+        opp_profile = get_opponent_pass_funnel_factor(season, opponent, as_of_week)
+        opp_pass_funnel = opp_profile.get('pass_attempts_faced_per_game')
+        opp_proe_allowed = opp_profile.get('proe_allowed')
+        opp_plays_allowed = opp_profile.get('plays_allowed_per_game')
+        game_context = get_nfl_game_context(season, team, opponent, as_of_week) if as_of_week is not None else None
 
         # Team pace factor — multiplicative, dampened, same reasoning as
-        # every NBA pace adjustment built today (a flat point value
-        # doesn't scale sensibly across very different baseline volumes).
+        # every NBA pace adjustment (a flat point value doesn't scale
+        # sensibly across very different baseline volumes).
         pace_factor = 1.0
         if team_pace:
             pace_factor = 1 + ((team_pace / league_avg_plays_per_game) - 1) * 0.5
 
-        # Opponent pass-funnel factor — same multiplicative/dampened
-        # approach. league_avg_pass_attempts_faced is a rough placeholder
-        # baseline (~33/game is a reasonable modern-NFL estimate) —
-        # ideally this gets replaced with a real computed league average
-        # once we're testing against real season data, not assumed.
+        # Opponent factor — now a real blend (July 2026 review) instead of
+        # pass-attempts-faced alone.
         opp_factor = 1.0
-        league_avg_pass_attempts_faced = 33.0
+        league_avg_pass_attempts_faced = 33.0  # still a rough placeholder — flagged as a known follow-up
+        component_ratios = []
         if opp_pass_funnel:
-            opp_factor = 1 + ((opp_pass_funnel / league_avg_pass_attempts_faced) - 1) * 0.4
+            component_ratios.append((opp_pass_funnel / league_avg_pass_attempts_faced, 0.40))
+        if opp_proe_allowed is not None:
+            component_ratios.append((1 + (opp_proe_allowed / 100), 0.30))
+        if opp_plays_allowed:
+            component_ratios.append((opp_plays_allowed / league_avg_plays_per_game, 0.30))
+        if component_ratios:
+            total_weight = sum(w for _, w in component_ratios)
+            blended_ratio = sum(r * w for r, w in component_ratios) / total_weight
+            opp_factor = 1 + (blended_ratio - 1) * 0.4
 
-        projected_attempts = base_attempts * pace_factor * opp_factor
+        # PROE now genuinely used (July 2026 review — was computed but
+        # dead code before). Dampened since PROE alone doesn't map 1:1 to
+        # attempt volume (a team can be pass-tilted but also slow-paced).
+        proe_factor = 1.0
+        if team_proe is not None:
+            proe_factor = 1 + (team_proe / 100) * 0.5
+
+        # Vegas — the single biggest missing variable per review. A big
+        # favorite tends to lean run-heavy late to protect a lead; a big
+        # underdog throws more trying to catch up; a high total implies
+        # a shootout (more attempts), a low total implies a grind-it-out
+        # game (fewer). Both dampened and capped to avoid overreacting to
+        # an extreme single-game line.
+        vegas_factor = 1.0
+        home_away_adj = 0.0
+        rest_adj = 0.0
+        weather_adj = 0.0
+        if game_context:
+            spread = game_context.get('spread')
+            total = game_context.get('total')
+            if spread is not None:
+                spread_component = max(-0.08, min(0.08, -spread * 0.008))
+                vegas_factor += spread_component
+            if total is not None:
+                league_avg_total = 45.0  # rough placeholder, same caveat as the other league-average constants
+                total_component = max(-0.05, min(0.05, (total - league_avg_total) * 0.004))
+                vegas_factor += total_component
+
+            rest_days = game_context.get('rest_days')
+            weekday = game_context.get('weekday')
+            if rest_days is not None and rest_days <= 4:
+                rest_adj = -0.02  # short week (e.g. Thursday game) — less practice time, often a simpler game plan
+            elif rest_days is not None and rest_days >= 10:
+                rest_adj = 0.01  # extra rest — more prep time
+
+            wind = game_context.get('wind')
+            roof = game_context.get('roof')
+            if roof in ('outdoors', 'open') and wind is not None and wind >= 15:
+                weather_adj = -0.04  # real wind, real passing-volume impact
+
+        # QB rushing tendency — computed from real carries data, not a
+        # hardcoded "known running QBs" list that would need manual
+        # upkeep. Small, capped adjustment per review (2-4%).
+        qb_rush_factor = 1.0
+        qb_carries_per_game = get_qb_rush_tendency(season, qb_name, as_of_week)
+        league_avg_qb_carries = 3.0  # rough placeholder — most pocket passers run ~1-3 times/game
+        if qb_carries_per_game is not None and qb_carries_per_game > league_avg_qb_carries:
+            excess_rushing = qb_carries_per_game - league_avg_qb_carries
+            qb_rush_factor = max(0.96, 1 - (excess_rushing * 0.01))  # capped at -4%
+
+        # Home/away — shrunk toward zero for a small sample, same
+        # principle as the NBA location adjustment. Kept intentionally
+        # light in this round (shrinkage-scaled flat tilt, not a full
+        # historical home/away attempts split) — a fuller version is a
+        # natural next step once this simpler version is validated.
+        if game_context is not None and game_context.get('is_home') is not None:
+            location_shrinkage = min(1.0, len(qb_rows) / 10)
+            home_away_adj = (0.015 if game_context.get('is_home') else -0.015) * location_shrinkage
+
+        # Expected Plays x Expected Pass Rate — added as a transparency
+        # layer per review (this is conceptually how the model SHOULD be
+        # structured; not yet fully replacing the QB-history-based base,
+        # which is tested, in favor of an untested full rebuild).
+        expected_plays = team_pace if team_pace else league_avg_plays_per_game
+        league_baseline_pass_rate = 0.58  # rough modern-NFL baseline
+        expected_pass_rate = league_baseline_pass_rate * proe_factor
+        expected_plays_x_rate = round(expected_plays * expected_pass_rate, 1) if expected_plays else None
+
+        total_adjustment_factor = pace_factor * opp_factor * proe_factor * vegas_factor * qb_rush_factor * (1 + home_away_adj) * (1 + rest_adj) * (1 + weather_adj)
+        projected_attempts = base_attempts * total_adjustment_factor
+
+        # Confidence tiers — built in from this round rather than added
+        # later, per review (this made real validation easier for MLB and
+        # should do the same here). Based on real, checkable signals:
+        # sample size, attempts stability (CV across recent games), dome
+        # vs outdoor, and weather risk. Deliberately simple in this round
+        # — injury/backup-WR/rookie-QB signals from the review are real,
+        # good ideas but need their own verified data source before being
+        # trusted in a tier that could affect real bet sizing.
+        attempts_history = qb_rows['attempts'].tail(10)
+        attempts_cv = (attempts_history.std() / attempts_history.mean()) if len(attempts_history) > 1 and attempts_history.mean() > 0 else 1.0
+        is_dome = game_context.get('roof') in ('dome', 'closed') if game_context else None
+        high_wind_risk = (game_context.get('wind') or 0) >= 15 if game_context else False
+
+        if len(qb_rows) >= 8 and attempts_cv < 0.18 and not high_wind_risk:
+            confidence_tier = "🟢 Reliable"
+        elif len(qb_rows) < 4 or attempts_cv > 0.30 or high_wind_risk:
+            confidence_tier = "🔴 Volatile — Consider Pass"
+        else:
+            confidence_tier = "🟠 Moderate"
 
         return {
             'projection': round(projected_attempts, 1),
             'base_attempts': round(base_attempts, 1),
             'season_attempts_avg': round(season_attempts_avg, 1),
-            'last3_attempts_avg': round(last3_attempts_avg, 1),
+            'last5_attempts_avg': round(last5_attempts_avg, 1),
+            'last10_attempts_avg': round(last10_attempts_avg, 1),
             'team_pace': round(team_pace, 1) if team_pace else None,
             'team_proe': round(team_proe, 2) if team_proe else None,
             'opp_pass_attempts_faced_per_game': round(opp_pass_funnel, 1) if opp_pass_funnel else None,
+            'opp_proe_allowed': round(opp_proe_allowed, 2) if opp_proe_allowed is not None else None,
+            'opp_plays_allowed_per_game': round(opp_plays_allowed, 1) if opp_plays_allowed else None,
             'pace_factor': round(pace_factor, 3),
             'opp_factor': round(opp_factor, 3),
+            'proe_factor': round(proe_factor, 3),
+            'vegas_factor': round(vegas_factor, 3),
+            'qb_rush_factor': round(qb_rush_factor, 3),
+            'qb_carries_per_game': round(qb_carries_per_game, 1) if qb_carries_per_game is not None else None,
+            'home_away_adj': round(home_away_adj, 3),
+            'rest_adj': round(rest_adj, 3),
+            'weather_adj': round(weather_adj, 3),
+            'game_context': game_context,
+            'expected_plays': round(expected_plays, 1) if expected_plays else None,
+            'expected_pass_rate': round(expected_pass_rate, 3),
+            'expected_plays_x_rate': expected_plays_x_rate,
             'games_used': len(qb_rows),
+            'confidence_tier': confidence_tier, 'attempts_cv': round(attempts_cv, 3),
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
