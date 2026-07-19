@@ -2762,6 +2762,50 @@ def get_live_nba_odds():
     return requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
         params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'}).json()
 
+@st.cache_data(ttl=2592000)  # 30 days — historical odds never change, so a re-run never re-costs quota
+def get_historical_nba_events_for_date(date_str):
+    """Historical NBA events (games) for one specific date — the first step
+    needed before pulling historical player-prop odds, since those require
+    a specific event_id. Uses The Odds API's historical events endpoint,
+    which costs real quota (opt-in feature, only ever called when the user
+    explicitly asks for it in Backtest — never automatically)."""
+    try:
+        snapshot = f"{date_str}T12:00:00Z"
+        resp = requests.get(
+            "https://api.the-odds-api.com/v4/historical/sports/basketball_nba/events",
+            params={'apiKey': ODDS_API_KEY, 'date': snapshot}
+        ).json()
+        return resp.get('data', [])
+    except Exception:
+        return []
+
+@st.cache_data(ttl=2592000)  # 30 days — same reasoning as above
+def get_historical_prop_lines_for_game(event_id, market_key, date_str):
+    """Historical sportsbook line for every player in one specific game and
+    market (e.g. 'player_assists') — one query returns ALL players' lines
+    at once, so cost scales with GAMES tested, not players. Real quota
+    cost: 10 units per region per market per event (The Odds API pricing).
+    Returns {player_name: line}."""
+    try:
+        snapshot = f"{date_str}T23:00:00Z"  # late enough in the day to catch a closing-ish line before tipoff
+        resp = requests.get(
+            f"https://api.the-odds-api.com/v4/historical/sports/basketball_nba/events/{event_id}/odds",
+            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': market_key, 'oddsFormat': 'american', 'date': snapshot}
+        ).json()
+        lines = {}
+        game_data = resp.get('data', {})
+        for bookmaker in game_data.get('bookmakers', []):
+            for market in bookmaker.get('markets', []):
+                if market.get('key') == market_key:
+                    for outcome in market.get('outcomes', []):
+                        pname = outcome.get('description')
+                        point = outcome.get('point')
+                        if pname and point is not None and pname not in lines:
+                            lines[pname] = point
+        return lines
+    except Exception:
+        return {}
+
 def find_game_odds(games_data, home_team, away_team):
     """Matches on BOTH teams as an exact set, not a fragile 'is home_team a
     substring of this field' check — the old version could false-match on
@@ -5925,6 +5969,76 @@ elif nav == "🧪 Backtest" and is_admin:
         st.subheader(f"📋 Results for {st.session_state.get('backtest_date', '')}")
         results_df = pd.DataFrame(st.session_state['backtest_results'])
         st.dataframe(results_df.sort_values('Error'), use_container_width=True)
+
+        if backtest_sport in ("NBA Points", "NBA Assists") and 'Matchup' in results_df.columns:
+            st.markdown("---")
+            st.subheader("💰 Check Against Real Historical Sportsbook Lines")
+            unique_games = results_df['Matchup'].nunique()
+            st.caption(f"This is a genuinely different question than accuracy alone: did the model's recommended side (Over/Under vs. the ACTUAL sportsbook line, not just the true result) actually win? This uses real API quota — costs ~10 units per game, per The Odds API's historical pricing. **This test has {unique_games} unique game(s), so it would cost roughly {unique_games * 10} quota units.** Opt-in only — never runs automatically.")
+            if st.button(f"Check Historical Lines (~{unique_games * 10} quota units)"):
+                market_key = "player_assists" if backtest_sport == "NBA Assists" else "player_points"
+                bt_date_str = st.session_state.get('backtest_date', '')
+                with st.spinner("Fetching historical events and lines..."):
+                    events = get_historical_nba_events_for_date(bt_date_str)
+                    matchup_to_event = {}
+                    for ev in events:
+                        h, a = ev.get('home_team'), ev.get('away_team')
+                        if h and a:
+                            matchup_to_event[f"{a} @ {h}"] = ev.get('id')
+                    all_lines = {}
+                    checked_games = 0
+                    for matchup in results_df['Matchup'].unique():
+                        event_id = matchup_to_event.get(matchup)
+                        if not event_id:
+                            continue
+                        game_lines = get_historical_prop_lines_for_game(event_id, market_key, bt_date_str)
+                        all_lines.update(game_lines)
+                        checked_games += 1
+                        time.sleep(0.5)
+
+                    def _line_lookup(pname):
+                        return all_lines.get(pname)
+                    results_df['Sportsbook Line'] = results_df['Player'].apply(_line_lookup)
+
+                    def _model_side(row):
+                        if pd.isna(row['Sportsbook Line']):
+                            return None
+                        return 'Over' if row['Projection'] > row['Sportsbook Line'] else ('Under' if row['Projection'] < row['Sportsbook Line'] else 'Push')
+
+                    def _did_win(row):
+                        if pd.isna(row['Sportsbook Line']) or row['Sportsbook Line'] is None:
+                            return None
+                        if row['Actual'] > row['Sportsbook Line']:
+                            actual_side = 'Over'
+                        elif row['Actual'] < row['Sportsbook Line']:
+                            actual_side = 'Under'
+                        else:
+                            return 'Push'
+                        model_side = _model_side(row)
+                        if model_side in (None, 'Push'):
+                            return None
+                        return 'Win' if model_side == actual_side else 'Loss'
+
+                    results_df['Model Side'] = results_df.apply(_model_side, axis=1)
+                    results_df['Bet Result'] = results_df.apply(_did_win, axis=1)
+                    matched = results_df['Sportsbook Line'].notna().sum()
+                    st.success(f"✅ Checked {checked_games} game(s), matched real lines for {matched}/{len(results_df)} players.")
+                    line_results_df = results_df[results_df['Sportsbook Line'].notna()][['Player', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']]
+                    st.dataframe(line_results_df, use_container_width=True)
+                    graded = line_results_df[line_results_df['Bet Result'].isin(['Win', 'Loss'])]
+                    if not graded.empty:
+                        win_rate = round((graded['Bet Result'] == 'Win').mean() * 100, 1)
+                        st.metric("Win rate vs. real historical lines", f"{win_rate}% ({len(graded)} graded bets)")
+                        st.caption("A win rate meaningfully above ~52.4% (the standard -110 breakeven point) across a real sample would be a genuine signal of edge — though treat this cautiously until it holds up across many more dates, same as any other backtest metric here.")
+
+                        result_counts = line_results_df['Bet Result'].fillna('No Bet/Push').value_counts()
+                        st.bar_chart(result_counts)
+
+                        st.caption("Projection vs. Actual result, colored by whether that bet would have won or lost — points sitting on the diagonal are perfect calls; the further off the line, the bigger the miss. Green = win, red = loss.")
+                        chart_df = line_results_df[line_results_df['Bet Result'].isin(['Win', 'Loss'])].copy()
+                        chart_df['Result Color'] = chart_df['Bet Result'].map({'Win': '#2ecc71', 'Loss': '#e74c3c'})
+                        st.scatter_chart(chart_df, x='Projection', y='Actual', color='Result Color')
+
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
         col1.metric("Avg Error (MAE)", f"{round(results_df['Error'].mean(), 2)}")
