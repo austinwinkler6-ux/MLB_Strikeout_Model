@@ -5616,12 +5616,22 @@ elif nav == "🧪 Backtest" and is_admin:
                 else:
                     st.write(f"{len(debug_df)} games found. Columns:", debug_df.columns.tolist())
                     st.dataframe(debug_df.head(3))
+        debug_sport = st.radio("Sport to test", ["NBA Points", "NBA Assists"], key="debug_sport_radio", horizontal=True)
+        debug_use_backtest_date = st.checkbox("Test in backtest mode (use the trace date above as as_of_date)", key="debug_use_backtest_mode")
         if st.button("Run Full Projection (show real error if it fails)"):
             st.session_state['_nba_debug_mode'] = True
             try:
-                debug_result = run_nba_points_projection(debug_player, '', 'Houston Rockets', 'Denver Nuggets', 'home', f"{int(debug_season)}-{str(int(debug_season)+1)[2:]}")
-                st.success(f"✅ Worked! Projection: {debug_result['projection']}")
-                st.json(debug_result)
+                test_as_of_date = datetime.combine(debug_trace_date, datetime.min.time()) if debug_use_backtest_date else None
+                season_str = f"{int(debug_season)}-{str(int(debug_season)+1)[2:]}"
+                if debug_sport == "NBA Assists":
+                    debug_result = run_nba_assists_projection(debug_player, '', 'Houston Rockets', 'Denver Nuggets', 'home', season_str, as_of_date=test_as_of_date)
+                else:
+                    debug_result = run_nba_points_projection(debug_player, '', 'Houston Rockets', 'Denver Nuggets', 'home', season_str, as_of_date=test_as_of_date)
+                if debug_result:
+                    st.success(f"✅ Worked! Projection: {debug_result['projection']}")
+                    st.json(debug_result)
+                else:
+                    st.error("Returned None cleanly (no exception raised) — the failure is a normal 'return None' somewhere in the function, not a crash. Debug mode only reveals actual exceptions, so this confirms it's hitting an intentional early-return check we haven't found yet, not a bug that throws an error.")
             except Exception as e:
                 st.error(f"❌ Real error: {e}")
                 import traceback
