@@ -4735,8 +4735,10 @@ elif nav == "🏈 NFL Models":
                 st.success(f"✅ Got {len(weekly_df)} rows back")
                 st.write("Columns:", weekly_df.columns.tolist())
                 st.dataframe(weekly_df.head(5))
-            except ImportError:
-                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+            except ImportError as e:
+                st.error(f"❌ Real ImportError: {e}")
+                import traceback
+                st.code(traceback.format_exc())
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
