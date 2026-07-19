@@ -4714,13 +4714,86 @@ elif nav == "⚾ MLB Models":
 elif nav == "🏈 NFL Models":
     st.title("🏈 NFL Models")
     st.markdown("---")
-    nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
-    st.markdown("""
-        <div style='text-align: center; padding: 80px 0;'>
-            <h2>🚧 Coming Soon</h2>
-            <p style='color: #64748B; font-size: 18px;'>NFL models are currently in development.<br>Check back when the season starts!</p>
-        </div>
-    """, unsafe_allow_html=True)
+
+    if not is_admin:
+        st.markdown("""
+            <div style='text-align: center; padding: 80px 0;'>
+                <h2>🚧 Coming Soon</h2>
+                <p style='color: #64748B; font-size: 18px;'>NFL models are currently in development.<br>Check back when the season starts!</p>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.info("🔧 **Admin-only build-in-progress view.** NFL data layer is being built against `nfl_data_py` (the nflverse community dataset). Since this can't be tested from the development sandbox (no internet access there), this panel exists to verify the REAL schema live, in this deployed app, before any projection formulas get built on top of assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
+
+        st.subheader("🔍 Schema Verification (do this before anything else)")
+        nfl_test_year = st.number_input("Season to test", value=2025, key="nfl_schema_test_year")
+
+        if st.button("Check import_weekly_data() Schema"):
+            try:
+                import nfl_data_py as nfl
+                weekly_df = nfl.import_weekly_data([int(nfl_test_year)])
+                st.success(f"✅ Got {len(weekly_df)} rows back")
+                st.write("Columns:", weekly_df.columns.tolist())
+                st.dataframe(weekly_df.head(5))
+            except ImportError:
+                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        if st.button("Check import_pbp_data() Schema (for PROE/pace — this is a bigger, slower download)"):
+            try:
+                import nfl_data_py as nfl
+                pbp_df = nfl.import_pbp_data([int(nfl_test_year)], downcast=True)
+                st.success(f"✅ Got {len(pbp_df)} rows back")
+                st.write(f"Total columns: {len(pbp_df.columns)}")
+                relevant_cols = [c for c in pbp_df.columns if any(k in c.lower() for k in ['pass', 'xpass', 'epa', 'wp', 'down', 'qtr', 'score_differential'])]
+                st.write("Columns relevant to Opportunity/PROE specifically:", relevant_cols)
+                st.dataframe(pbp_df[relevant_cols].head(5) if relevant_cols else pbp_df.head(5))
+            except ImportError:
+                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        if st.button("Check import_schedules() Schema (for spread, dome/outdoor, weather)"):
+            try:
+                import nfl_data_py as nfl
+                sched_df = nfl.import_schedules([int(nfl_test_year)])
+                st.success(f"✅ Got {len(sched_df)} rows back")
+                st.write("Columns:", sched_df.columns.tolist())
+                st.dataframe(sched_df.head(5))
+            except ImportError:
+                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        if st.button("Check import_injuries() Schema"):
+            try:
+                import nfl_data_py as nfl
+                inj_df = nfl.import_injuries([int(nfl_test_year)])
+                st.success(f"✅ Got {len(inj_df)} rows back")
+                st.write("Columns:", inj_df.columns.tolist())
+                st.dataframe(inj_df.head(5))
+            except ImportError:
+                st.error("❌ nfl_data_py isn't installed yet — add `nfl_data_py` to requirements.txt and redeploy.")
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        st.markdown("---")
+        nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
+        st.markdown("""
+            <div style='text-align: center; padding: 40px 0;'>
+                <h3>🚧 Projection engine not built yet</h3>
+                <p style='color: #64748B; font-size: 16px;'>Waiting on real schema confirmation from the buttons above before writing any formulas — same discipline that saved real debugging time on the NBA rebuild.</p>
+            </div>
+        """, unsafe_allow_html=True)
 
 # ---- NBA PAGE ----
 elif nav == "🏀 NBA Models":
