@@ -5956,7 +5956,7 @@ elif nav == "🧪 Backtest" and is_admin:
 
             st.markdown("---")
             st.subheader("📏 MAE by Projection Size")
-            st.caption("Buckets by how big the model's own projection was, not by confidence tier — this can reveal a systematic bias the tier breakdown alone wouldn't show (e.g. great on role players but consistently off on stars, or vice versa).")
+            st.caption("Buckets by how big the model's own projection was, not by confidence tier — this can reveal a systematic bias the tier breakdown alone wouldn't show (e.g. great on role players but consistently off on stars, or vice versa). 'Bias' is the signed average error (Projection − Actual) — a high MAE with bias near zero means the model is unbiased but those players are just genuinely volatile; a high MAE with a strong bias means there's a real systematic issue (consistently over- or under-projecting) worth fixing.")
             if backtest_sport == "NBA Assists":
                 bins = [-0.01, 3, 5, 7, 9, 999]
                 labels = ["0-3 AST", "3-5 AST", "5-7 AST", "7-9 AST", "9+ AST"]
@@ -5968,15 +5968,35 @@ elif nav == "🧪 Backtest" and is_admin:
                 labels = ["0-3 K", "3-5 K", "5-7 K", "7-9 K", "9+ K"]
             size_col = 'Projection'
             results_df['Projection Bucket'] = pd.cut(results_df[size_col], bins=bins, labels=labels)
+            results_df['Signed Error'] = results_df['Projection'] - results_df['Actual']
             size_summary = results_df.groupby('Projection Bucket', observed=True).agg(
-                Predictions=('Error', 'count'), MAE=('Error', 'mean')
+                Predictions=('Error', 'count'), MAE=('Error', 'mean'),
+                **{'Bias (Avg Error)': ('Signed Error', 'mean')}
             ).reset_index()
             size_summary['MAE'] = size_summary['MAE'].round(2)
+            size_summary['Bias (Avg Error)'] = size_summary['Bias (Avg Error)'].round(2)
             size_hit_rates = results_df.groupby('Projection Bucket', observed=True)['Error'].agg(
                 **{'Within 2pts %': lambda x: round((x <= 2).mean() * 100, 1)}
             ).reset_index()
             size_summary = size_summary.merge(size_hit_rates, on='Projection Bucket')
             st.dataframe(size_summary, use_container_width=True)
+
+            if 'Proj Min' in results_df.columns and results_df['Proj Min'].notna().any():
+                st.markdown("---")
+                st.subheader("🏀 MAE by Role (Starter vs. Bench)")
+                st.caption("Real starting-lineup data isn't available at this data tier, so this uses projected minutes as a proxy for role (24+ minutes ≈ starter-level workload) — an approximation, not a confirmed starter/bench designation. If bench players are meaningfully worse, expected-minutes logic for rotation players may still need work. If starters and bench are similar, that's reassuring.")
+                results_df['Role (proxy)'] = results_df['Proj Min'].apply(lambda m: 'Starter (24+ min)' if pd.notna(m) and m >= 24 else 'Bench (<24 min)')
+                role_summary = results_df.groupby('Role (proxy)').agg(
+                    Predictions=('Error', 'count'), MAE=('Error', 'mean'),
+                    **{'Bias (Avg Error)': ('Signed Error', 'mean')}
+                ).reset_index()
+                role_summary['MAE'] = role_summary['MAE'].round(2)
+                role_summary['Bias (Avg Error)'] = role_summary['Bias (Avg Error)'].round(2)
+                role_hit_rates = results_df.groupby('Role (proxy)')['Error'].agg(
+                    **{'Within 2pts %': lambda x: round((x <= 2).mean() * 100, 1)}
+                ).reset_index()
+                role_summary = role_summary.merge(role_hit_rates, on='Role (proxy)')
+                st.dataframe(role_summary, use_container_width=True)
 
 # ---- SETTINGS PAGE ----
 elif nav == "⚙️ Settings":
