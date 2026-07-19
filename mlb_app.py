@@ -274,6 +274,13 @@ def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
         return max(5.0, projection * 0.22)
     elif sport == 'nba_assists':
         return max(1.5, projection * 0.25)
+    elif sport == 'nfl_pass_attempts':
+        if cv >= 0.30:
+            return max(6.0, projection * 0.22)
+        elif cv >= 0.18:
+            return max(4.5, projection * 0.16)
+        else:
+            return max(3.5, projection * 0.12)
     return max(1.5, projection * 0.25)
 
 def remove_vig(over_odds, under_odds):
@@ -4377,6 +4384,61 @@ def get_nfl_game_context(season, team, opponent, as_of_week):
         return None
 
 
+@st.cache_data(ttl=300)
+def get_live_nfl_pass_attempts_odds():
+    """Live player_pass_attempts odds for upcoming NFL games — same
+    events + event-odds pattern as MLB's live props, including the same
+    fix: skips any game whose commence_time has already passed, so an
+    in-progress game never shows a stale pre-game projection next to
+    odds that DO shift with the live game state (the exact bug caught
+    and fixed for MLB earlier — applied here from the start instead of
+    needing a second incident to catch it). Returns {qb_name: {'line':
+    ..., 'home_team':..., 'away_team':..., 'commence_time':...}}."""
+    try:
+        events_data = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
+        all_qbs = {}
+        now_utc = datetime.now(ZoneInfo("UTC"))
+
+        for event in events_data:
+            commence_time_str = event.get('commence_time')
+            if commence_time_str:
+                try:
+                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
+                    if commence_time <= now_utc:
+                        continue  # game already started — a pre-game projection would be stale
+                except (ValueError, TypeError):
+                    pass
+
+            home = event['home_team']
+            away = event['away_team']
+            event_id = event['id']
+            props_data = requests.get(
+                f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
+                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_pass_attempts', 'oddsFormat': 'american'}
+            ).json()
+
+            for bookmaker in props_data.get('bookmakers', []):
+                for market in bookmaker.get('markets', []):
+                    if market.get('key') == 'player_pass_attempts':
+                        for outcome in market.get('outcomes', []):
+                            qb_name = outcome.get('description')
+                            if not qb_name:
+                                continue
+                            if qb_name not in all_qbs:
+                                all_qbs[qb_name] = {
+                                    'home_team': home, 'away_team': away, 'commence_time': commence_time_str,
+                                    'line': None, 'over_odds': None, 'under_odds': None,
+                                }
+                            all_qbs[qb_name]['line'] = outcome.get('point')
+                            if outcome.get('name') == 'Over':
+                                all_qbs[qb_name]['over_odds'] = outcome.get('price')
+                            elif outcome.get('name') == 'Under':
+                                all_qbs[qb_name]['under_odds'] = outcome.get('price')
+        return all_qbs
+    except Exception:
+        return {}
+
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
     recency-blended attempts as the base, layered with Vegas game script,
@@ -5375,6 +5437,112 @@ elif nav == "🏈 NFL Models":
                 st.code(traceback.format_exc())
             finally:
                 st.session_state['_nfl_debug_mode'] = False
+
+        st.markdown("---")
+        st.subheader("🎯 This Week's NFL Pass Attempts Card")
+        st.caption("The real, live version — pulls actual upcoming games (skips any already started), runs the model automatically for every QB with a real market, and ranks them using the same tier/EV/stake infrastructure as MLB and NBA.")
+
+        nfl_card_season = st.number_input("Season", value=datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1, key="nfl_card_season")
+        nfl_card_debug = st.checkbox("🔧 Show real errors instead of generic 'returned None' (debug)", key="nfl_card_debug")
+
+        if st.button("🔍 Load This Week's NFL Card", use_container_width=True):
+            st.session_state['_nfl_debug_mode'] = nfl_card_debug
+            with st.spinner("Loading live odds and running projections..."):
+                try:
+                    live_odds = get_live_nfl_pass_attempts_odds()
+                    if not live_odds:
+                        st.warning("No live NFL pass_attempts props found right now — either it's off-season, too early in the week for lines to be posted, or every game this week has already started.")
+                    else:
+                        weekly_all = get_nfl_player_stats([int(nfl_card_season)])
+                        name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+                        card_results = []
+                        card_skipped = []
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        qb_names = list(live_odds.keys())
+
+                        for i, qb_name in enumerate(qb_names):
+                            status_text.text(f"Running {qb_name} ({i+1} of {len(qb_names)})")
+                            progress_bar.progress((i+1) / len(qb_names))
+                            odds_info = live_odds[qb_name]
+                            line = odds_info.get('line')
+                            over_odds = odds_info.get('over_odds')
+                            under_odds = odds_info.get('under_odds')
+                            if line is None or over_odds is None or under_odds is None:
+                                card_skipped.append({'QB': qb_name, 'Reason': 'Incomplete odds (missing line or one side)'})
+                                continue
+
+                            qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+                            if qb_recent.empty:
+                                card_skipped.append({'QB': qb_name, 'Reason': 'No recent game log found — name may not match nflverse exactly'})
+                                continue
+                            qb_team_abbrev = qb_recent.iloc[-1]['team']
+
+                            home_full, away_full = odds_info['home_team'], odds_info['away_team']
+                            home_abbrev = name_to_abbrev.get(home_full)
+                            away_abbrev = name_to_abbrev.get(away_full)
+                            if qb_team_abbrev == home_abbrev:
+                                opponent_abbrev = away_abbrev
+                            elif qb_team_abbrev == away_abbrev:
+                                opponent_abbrev = home_abbrev
+                            else:
+                                card_skipped.append({'QB': qb_name, 'Reason': f"QB's recent team ({qb_team_abbrev}) doesn't match either side of this game ({away_abbrev} @ {home_abbrev}) — possible recent trade or name mismatch"})
+                                continue
+
+                            try:
+                                result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opponent_abbrev, int(nfl_card_season), as_of_week=None)
+                            except Exception as e:
+                                card_skipped.append({'QB': qb_name, 'Reason': f'Exception: {e}'})
+                                continue
+                            if not result:
+                                card_skipped.append({'QB': qb_name, 'Reason': 'Fewer than 3 games of history — insufficient for a projection'})
+                                continue
+
+                            projection = result['projection']
+                            cv = result['attempts_cv']
+                            std_dev = get_min_std_dev(cv, projection, sport='nfl_pass_attempts')
+                            no_vig_over, no_vig_under = remove_vig(over_odds, under_odds)
+                            over_prob = projection_to_probability(projection, line, std_dev, direction='over')
+                            under_prob = projection_to_probability(projection, line, std_dev, direction='under')
+
+                            over_edge = projection - line
+                            under_edge = line - projection
+                            if over_prob > no_vig_over:
+                                direction, model_prob, odds, edge = 'Over', over_prob, over_odds, over_edge
+                            else:
+                                direction, model_prob, odds, edge = 'Under', under_prob, under_odds, under_edge
+
+                            ev_pct = calculate_ev_pct(model_prob, odds)
+                            mm_tier = get_tier(edge, ev_pct, cv, sport='nfl_pass_attempts', workload_tier=None)
+
+                            card_results.append({
+                                'QB': qb_name, 'Matchup': f"{away_full} @ {home_full}",
+                                'Projection': projection, 'Line': line, 'Direction': direction,
+                                'Odds': odds, 'Model Prob': model_prob, 'EV%': ev_pct,
+                                'Edge': round(edge, 1), 'MM Tier': mm_tier,
+                                'Confidence': result['confidence_tier'],
+                                'Warnings': '; '.join(result['data_quality_warnings']) if result['data_quality_warnings'] else '',
+                            })
+
+                        st.session_state['nfl_card_results'] = card_results
+                        st.session_state['nfl_card_skipped'] = card_skipped
+                        status_text.text(f"✅ Done! {len(card_results)} QBs projected, {len(card_skipped)} skipped.")
+                        progress_bar.progress(1.0)
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                finally:
+                    st.session_state['_nfl_debug_mode'] = False
+
+        if 'nfl_card_results' in st.session_state and st.session_state['nfl_card_results']:
+            card_df = pd.DataFrame(st.session_state['nfl_card_results'])
+            tier_order = {"🟢 Best Bet": 0, "🔵 Worth a Look": 1, "🟡 Lean": 2, "🔴 Pass": 3}
+            card_df['_sort'] = card_df['MM Tier'].map(tier_order)
+            st.dataframe(card_df.sort_values(['_sort', 'EV%'], ascending=[True, False]).drop(columns='_sort'), use_container_width=True)
+        if 'nfl_card_skipped' in st.session_state and st.session_state['nfl_card_skipped']:
+            with st.expander(f"Skipped ({len(st.session_state['nfl_card_skipped'])})"):
+                st.dataframe(pd.DataFrame(st.session_state['nfl_card_skipped']), use_container_width=True)
 
         st.markdown("---")
         nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
