@@ -3627,14 +3627,22 @@ def get_nfl_player_stats(seasons):
 
 @st.cache_data(ttl=86400)
 def get_nfl_pbp(seasons):
-    """Play-by-play data — confirmed columns include pass_attempt,
-    complete_pass, incomplete_pass, xpass, pass_oe, down, qtr, wp,
-    score_differential, epa, and 396 total columns. This is the
-    biggest, slowest download of the four — used to derive team-level
-    pace and PROE, which aren't directly available as a single stat
-    anywhere else."""
+    """Play-by-play data — confirmed 396 total columns available, but we
+    only ever need ~10 of them (pass_attempt, rush_attempt, xpass,
+    pass_oe, posteam, defteam, game_id, season, week, play_type). Slimming
+    down to just those BEFORE caching (instead of caching the full
+    396-column dataframe) is the fix for a real Railway out-of-memory
+    crash — the full dataframe for a season is genuinely large enough to
+    exceed a standard instance's memory limit, especially once cached
+    (July 2026)."""
     import nflreadpy as nfl
-    return nfl.load_pbp(seasons).to_pandas()
+    full_df = nfl.load_pbp(seasons).to_pandas()
+    needed_cols = ['pass_attempt', 'rush_attempt', 'xpass', 'pass_oe', 'posteam', 'defteam',
+                   'game_id', 'season', 'week', 'play_type', 'pass', 'down',
+                   'complete_pass', 'incomplete_pass', 'passer_player_name', 'passer_player_id',
+                   'wp', 'score_differential']
+    available_cols = [c for c in needed_cols if c in full_df.columns]
+    return full_df[available_cols].copy()
 
 @st.cache_data(ttl=86400)
 def get_nfl_schedules(seasons):
@@ -4172,68 +4180,24 @@ with st.sidebar:
 # ---- NFL DATA LAYER ----
 league_avg_plays_per_game = 64.0  # rough NFL-wide baseline, refined by real data at runtime where possible
 
-@st.cache_data(ttl=21600)  # 6 hours — nflverse updates weekly during the season, no need to hit this constantly
-def get_nfl_weekly_stats(season):
-    """Weekly player stats (attempts, completions, receptions, targets, and
-    real pre-computed efficiency metrics like passing_cpoe/target_share/
-    wopr) for one season, via nflreadpy — the actively-maintained nflverse
-    package (nfl_data_py, a similarly-named but DIFFERENT package, is
-    officially deprecated and permanently broken — confirmed July 2026)."""
-    import nflreadpy as nfl
-    return nfl.load_player_stats([int(season)]).to_pandas()
-
-@st.cache_data(ttl=21600)
-def get_nfl_pbp(season):
-    """Full play-by-play for one season — the bigger, slower download, but
-    needed for team-level pace and PROE (Pass Rate Over Expected), since
-    those aren't in the weekly stats table and have to be derived
-    ourselves from individual play data (pass_attempt, xpass, pass_oe
-    columns — all confirmed present via live schema check, July 2026)."""
-    import nflreadpy as nfl
-    return nfl.load_pbp([int(season)]).to_pandas()
-
-@st.cache_data(ttl=21600)
-def get_nfl_schedules(season):
-    """Game-level schedule data — spread_line, total_line, QB starters
-    (away_qb_name/home_qb_name), rest days, and weather (roof/surface/
-    temp/wind), all confirmed present via live schema check."""
-    import nflreadpy as nfl
-    return nfl.load_schedules([int(season)]).to_pandas()
-
-@st.cache_data(ttl=21600)
-def get_nfl_injuries(season):
-    """Weekly injury reports — report_status (game-day designation) and
-    practice_status (a real leading indicator of how a Questionable tag
-    is likely to resolve, which NBA's data tier didn't have an equivalent
-    for)."""
-    import nflreadpy as nfl
-    return nfl.load_injuries([int(season)]).to_pandas()
-
 def get_team_pace_and_proe(season, team, as_of_week=None):
-    """A team's plays/game and Pass Rate Over Expected, built ONLY from
-    games strictly before as_of_week when backtesting — same leak-free
-    principle as the NBA pace rebuild (never use the game being predicted,
-    or future games, to estimate a team's tendencies). Returns
-    (plays_per_game, proe) — proe is the team's actual pass rate minus the
-    average of the real xpass column across their offensive plays, using
-    pass_oe directly where available since it's a real, pre-computed
-    equivalent."""
+    """A team's plays/game and Pass Rate Over Expected, leveraging the
+    more rigorous get_nfl_team_game_pace_proe() (proper groupby, standard
+    published PROE definition: actual pass rate - average xpass,
+    restricted to real offensive plays) instead of reimplementing this
+    from scratch. Leak-free — only games strictly before as_of_week when
+    backtesting, same principle as every NBA engine built today."""
     try:
-        pbp = get_nfl_pbp(season)
-        team_plays = pbp[pbp['posteam'] == team].copy()
-        if as_of_week is not None:
-            team_plays = team_plays[team_plays['week'] < as_of_week]
-        if team_plays.empty:
+        team_games = get_nfl_team_game_pace_proe([int(season)])
+        if team_games.empty:
             return None, None
-        games_played = team_plays['game_id'].nunique()
-        offensive_plays = team_plays[team_plays['play_type'].isin(['pass', 'run'])] if 'play_type' in team_plays.columns else team_plays
-        plays_per_game = len(offensive_plays) / games_played if games_played > 0 else None
-        if 'pass_oe' in team_plays.columns:
-            proe = team_plays['pass_oe'].mean()
-        elif 'xpass' in team_plays.columns and 'pass' in team_plays.columns:
-            proe = (team_plays['pass'].mean() - team_plays['xpass'].mean()) * 100
-        else:
-            proe = None
+        team_rows = team_games[team_games['team'] == team]
+        if as_of_week is not None:
+            team_rows = team_rows[team_rows['week'] < as_of_week]
+        if team_rows.empty:
+            return None, None
+        plays_per_game = team_rows['total_plays'].mean()
+        proe = team_rows['proe'].mean() * 100  # expressed as a percentage, matching the standard PROE convention
         return plays_per_game, proe
     except Exception:
         return None, None
@@ -4246,7 +4210,7 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
     own natural tendencies). Leak-free — only games strictly before
     as_of_week when backtesting."""
     try:
-        pbp = get_nfl_pbp(season)
+        pbp = get_nfl_pbp([int(season)])
         opp_faced = pbp[pbp['defteam'] == opponent].copy()
         if as_of_week is not None:
             opp_faced = opp_faced[opp_faced['week'] < as_of_week]
@@ -4269,7 +4233,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
     games strictly before that week, same principle as every NBA engine
     built today."""
     try:
-        weekly = get_nfl_weekly_stats(season)
+        weekly = get_nfl_player_stats([int(season)])
         qb_rows = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
         if as_of_week is not None:
             qb_rows = qb_rows[qb_rows['week'] < as_of_week]
