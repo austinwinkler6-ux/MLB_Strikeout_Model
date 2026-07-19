@@ -5994,8 +5994,9 @@ elif nav == "🧪 Backtest" and is_admin:
             finally:
                 st.session_state['_nba_debug_mode'] = False
 
-    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists"], key="backtest_sport")
-    backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
+    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists", "NFL Pass Attempts"], key="backtest_sport")
+    if backtest_sport != "NFL Pass Attempts":
+        backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
     if backtest_sport == "MLB Strikeouts":
         backtest_season = st.selectbox("Season", ["2026", "2025", "2024"], key="backtest_season")
@@ -6027,6 +6028,89 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['backtest_date'] = date_str
                     status_text.text(f"✅ Done! {len(results)} pitchers projected.")
                     progress_bar.progress(1.0)
+
+    elif backtest_sport == "NFL Pass Attempts":
+        backtest_season_nfl = st.selectbox("Season", ["2025", "2024", "2023"], key="backtest_season_nfl")
+        backtest_week_nfl = st.number_input("Week to test", min_value=1, max_value=18, value=10, key="backtest_week_nfl")
+        debug_this_run_nfl = st.checkbox("🔧 Show real errors instead of generic 'returned None' (debug)", key="nfl_backtest_debug")
+
+        if st.button("🔍 Load Week & Run Projections", use_container_width=True):
+            st.session_state['_nfl_debug_mode'] = debug_this_run_nfl
+            with st.spinner(f"Pulling Week {int(backtest_week_nfl)} games..."):
+                try:
+                    schedules = get_nfl_schedules([int(backtest_season_nfl)])
+                    week_games = schedules[schedules['week'] == int(backtest_week_nfl)]
+                    if week_games.empty:
+                        st.error("No games found for that season/week")
+                    else:
+                        actual_stats = get_nfl_player_stats([int(backtest_season_nfl)])
+                        results = []
+                        skipped = []
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        qb_matchups = []
+                        for _, g in week_games.iterrows():
+                            if pd.notna(g.get('home_qb_name')):
+                                qb_matchups.append({'qb': g['home_qb_name'], 'team': g['home_team'], 'opponent': g['away_team']})
+                            if pd.notna(g.get('away_qb_name')):
+                                qb_matchups.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team']})
+
+                        for i, m in enumerate(qb_matchups):
+                            status_text.text(f"Running {m['qb']} ({i+1} of {len(qb_matchups)})")
+                            progress_bar.progress((i+1) / len(qb_matchups))
+                            try:
+                                result = run_nfl_pass_attempts_projection(m['qb'], m['team'], m['opponent'], int(backtest_season_nfl), as_of_week=int(backtest_week_nfl))
+                            except Exception as e:
+                                skipped.append({'QB': m['qb'], 'Reason': f'Exception: {e}'})
+                                continue
+                            actual_row = actual_stats[(actual_stats['player_display_name'] == m['qb']) & (actual_stats['week'] == int(backtest_week_nfl)) & (actual_stats['position'] == 'QB')]
+                            if actual_row.empty:
+                                skipped.append({'QB': m['qb'], 'Reason': "Didn't play or no stats found for this exact week"})
+                                continue
+                            actual_attempts = actual_row['attempts'].iloc[0]
+                            if not result:
+                                skipped.append({'QB': m['qb'], 'Reason': "Fewer than 3 games of prior history — insufficient for a projection"})
+                                continue
+                            results.append({
+                                'QB': m['qb'], 'Matchup': f"{m['opponent']} @ {m['team']}",
+                                'Projection': result['projection'], 'Actual': actual_attempts,
+                                'Error': round(abs(result['projection'] - actual_attempts), 1),
+                                'Error %': round(abs(result['projection'] - actual_attempts) / actual_attempts * 100, 1) if actual_attempts > 0 else None,
+                                'Games Used': result['games_used'], 'Pace Factor': result['pace_factor'], 'Opp Factor': result['opp_factor'],
+                            })
+                        st.session_state['nfl_backtest_results'] = results
+                        st.session_state['nfl_backtest_skipped'] = skipped
+                        st.session_state['nfl_backtest_week'] = f"Season {backtest_season_nfl}, Week {int(backtest_week_nfl)}"
+                        status_text.text(f"✅ Done! {len(results)} QBs projected, {len(skipped)} skipped.")
+                        progress_bar.progress(1.0)
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                finally:
+                    st.session_state['_nfl_debug_mode'] = False
+
+        if 'nfl_backtest_results' in st.session_state and st.session_state['nfl_backtest_results']:
+            st.markdown("---")
+            st.subheader(f"📋 Results for {st.session_state.get('nfl_backtest_week', '')}")
+            nfl_results_df = pd.DataFrame(st.session_state['nfl_backtest_results'])
+            st.dataframe(nfl_results_df.sort_values('Error'), use_container_width=True)
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Avg Error (MAE)", f"{round(nfl_results_df['Error'].mean(), 2)}")
+            col2.metric("Best Projection", f"{nfl_results_df['Error'].min()} error")
+            col3.metric("Worst Projection", f"{nfl_results_df['Error'].max()} error")
+            within_metrics = nfl_results_df['Error'].agg(**{
+                'Within 3': lambda x: round((x <= 3).mean() * 100, 1),
+                'Within 5': lambda x: round((x <= 5).mean() * 100, 1),
+                'Within 8': lambda x: round((x <= 8).mean() * 100, 1),
+            })
+            wcol1, wcol2, wcol3 = st.columns(3)
+            wcol1.metric("Within 3 attempts", f"{within_metrics['Within 3']}%")
+            wcol2.metric("Within 5 attempts", f"{within_metrics['Within 5']}%")
+            wcol3.metric("Within 8 attempts", f"{within_metrics['Within 8']}%")
+        if 'nfl_backtest_skipped' in st.session_state and st.session_state['nfl_backtest_skipped']:
+            with st.expander(f"Skipped ({len(st.session_state['nfl_backtest_skipped'])})"):
+                st.dataframe(pd.DataFrame(st.session_state['nfl_backtest_skipped']), use_container_width=True)
 
     else:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
