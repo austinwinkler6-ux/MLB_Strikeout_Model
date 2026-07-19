@@ -5,3 +5,4 @@ numpy
 supabase
 scipy
 streamlit-cookies-controller
+nfl_data_py
