@@ -4385,15 +4385,13 @@ def get_nfl_game_context(season, team, opponent, as_of_week):
 
 
 @st.cache_data(ttl=300)
-def get_live_nfl_pass_attempts_odds():
-    """Live player_pass_attempts odds for upcoming NFL games — same
-    events + event-odds pattern as MLB's live props, including the same
-    fix: skips any game whose commence_time has already passed, so an
-    in-progress game never shows a stale pre-game projection next to
-    odds that DO shift with the live game state (the exact bug caught
-    and fixed for MLB earlier — applied here from the start instead of
-    needing a second incident to catch it). Returns {qb_name: {'line':
-    ..., 'home_team':..., 'away_team':..., 'commence_time':...}}."""
+def load_nfl_props_data():
+    """Fetches today's live NFL player_pass_attempts props from FanDuel/
+    DraftKings — same shape as load_mlb_props_data()/load_nba_props_data()
+    so the main NFL page can use the identical card UI. Skips any game
+    whose commence_time has already passed — the same fix built for MLB
+    after a real incident; applied here from the start this time instead
+    of needing a second one to catch it."""
     try:
         events_data = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
             params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
@@ -4419,25 +4417,118 @@ def get_live_nfl_pass_attempts_odds():
             ).json()
 
             for bookmaker in props_data.get('bookmakers', []):
-                for market in bookmaker.get('markets', []):
-                    if market.get('key') == 'player_pass_attempts':
-                        for outcome in market.get('outcomes', []):
-                            qb_name = outcome.get('description')
-                            if not qb_name:
-                                continue
-                            if qb_name not in all_qbs:
-                                all_qbs[qb_name] = {
-                                    'home_team': home, 'away_team': away, 'commence_time': commence_time_str,
-                                    'line': None, 'over_odds': None, 'under_odds': None,
-                                }
-                            all_qbs[qb_name]['line'] = outcome.get('point')
-                            if outcome.get('name') == 'Over':
-                                all_qbs[qb_name]['over_odds'] = outcome.get('price')
-                            elif outcome.get('name') == 'Under':
-                                all_qbs[qb_name]['under_odds'] = outcome.get('price')
+                if bookmaker['key'] in ['fanduel', 'draftkings']:
+                    book_name = bookmaker['title']
+                    for market in bookmaker.get('markets', []):
+                        if market.get('key') == 'player_pass_attempts':
+                            for outcome in market.get('outcomes', []):
+                                qb_name = outcome.get('description')
+                                if not qb_name:
+                                    continue
+                                if qb_name not in all_qbs:
+                                    all_qbs[qb_name] = {
+                                        'home': home, 'away': away, 'commence_time': commence_time_str,
+                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Projection': None, 'Edge': None, 'Play': None,
+                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                        'Model Prob': None, 'No Vig Prob': None,
+                                    }
+                                if 'FanDuel' in book_name:
+                                    all_qbs[qb_name]['FanDuel Line'] = outcome.get('point')
+                                    if outcome.get('name') == 'Over':
+                                        all_qbs[qb_name]['FanDuel Over'] = outcome.get('price')
+                                    else:
+                                        all_qbs[qb_name]['FanDuel Under'] = outcome.get('price')
+                                elif 'DraftKings' in book_name:
+                                    all_qbs[qb_name]['DraftKings Line'] = outcome.get('point')
+                                    if outcome.get('name') == 'Over':
+                                        all_qbs[qb_name]['DraftKings Over'] = outcome.get('price')
+                                    else:
+                                        all_qbs[qb_name]['DraftKings Under'] = outcome.get('price')
         return all_qbs
     except Exception:
         return {}
+
+def run_all_nfl_projections(all_qbs, season, progress_callback=None):
+    """Runs the projection + EV pipeline for every QB in all_qbs (mutated
+    in place), saves each as a prediction, and returns the results dict.
+    Matches run_all_nba_projections()'s exact pattern — reuses
+    analyze_prop() for the same EV/tier computation used everywhere else,
+    rather than a separate NFL-specific version.
+    progress_callback(i, total, name), if given, is called before each
+    QB runs."""
+    results = {}
+    total = len(all_qbs)
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    for i, (qb_name, info) in enumerate(all_qbs.items()):
+        if progress_callback:
+            progress_callback(i, total, qb_name)
+
+        home_team, away_team = info['home'], info['away']
+        home_abbrev = name_to_abbrev.get(home_team)
+        away_abbrev = name_to_abbrev.get(away_team)
+
+        try:
+            weekly_all = get_nfl_player_stats([int(season)])
+            qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+            if qb_recent.empty:
+                continue
+            qb_team_abbrev = qb_recent.iloc[-1]['team']
+            opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
+            if opp_abbrev is None:
+                continue  # QB's recent team doesn't match either side of this game — likely a recent trade
+        except Exception:
+            continue
+
+        result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=None)
+
+        if result:
+            proj = result['projection']
+            best_line = info['FanDuel Line'] or info['DraftKings Line']
+            if best_line:
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
+                direction = 'over' if edge > 0 else 'under'
+                over_odds = info['FanDuel Over'] or info['DraftKings Over']
+                under_odds = info['FanDuel Under'] or info['DraftKings Under']
+                std_dev = get_min_std_dev(result['attempts_cv'], proj, sport='nfl_pass_attempts')
+                ev_result = analyze_prop(
+                    projection=proj, line=best_line, std_dev=std_dev, cv=result['attempts_cv'],
+                    over_odds=over_odds or -110, under_odds=under_odds or -110,
+                    direction=direction, sport='nfl_pass_attempts',
+                    workload_tier=None, confidence_tier=result.get('confidence_tier')
+                )
+                all_qbs[qb_name].update({
+                    'Projection': proj, 'Edge': edge, 'Play': play,
+                    'Tier': result['confidence_tier'],
+                    'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+                    'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                    'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                    'Direction': direction,
+                    'Odds': over_odds if direction == 'over' else under_odds,
+                    'Model Prob': ev_result['model_prob'] if ev_result else None,
+                    'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                })
+                results[qb_name] = result
+                save_prediction({
+                    'date': date.today().strftime('%Y-%m-%d'),
+                    'pitcher': qb_name, 'opponent': opp_abbrev, 'home_team': home_team,
+                    'projection': proj, 'base': result['base_attempts'], 'book_line': best_line,
+                    'edge': edge, 'cv': result['attempts_cv'], 'confidence_tier': result['confidence_tier'],
+                    'actual': None, 'sport': 'NFL',
+                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                    'mm_tier': ev_result['tier'] if ev_result else None,
+                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                })
+    return results
 
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
@@ -5318,216 +5409,303 @@ elif nav == "⚾ MLB Models":
 
 
 elif nav == "🏈 NFL Models":
-    st.title("🏈 NFL Models")
-    st.markdown("---")
+    st.title("🏈 NFL Pass Attempts Model")
+    bankroll, risk_style = get_bankroll_context()
+    already_bet_today = get_already_bet_players_today('NFL')
 
-    if not is_admin:
-        st.markdown("""
-            <div style='text-align: center; padding: 80px 0;'>
-                <h2>🚧 Coming Soon</h2>
-                <p style='color: #64748B; font-size: 18px;'>NFL models are currently in development.<br>Check back when the season starts!</p>
-            </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.info("🔧 **Admin-only build-in-progress view.** NFL data layer uses `nflreadpy` — the actively-maintained nflverse package. We initially tried `nfl_data_py` (a different, older package with a similar name) and hit a 404 — turned out nflverse officially deprecated it in favor of nflreadpy, so its hardcoded data URLs are permanently stale and will never be fixed. Since this can't be tested from the development sandbox (no internet access there), this panel verifies the REAL schema live, in this deployed app, before any projection formulas get built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
+    col_load, col_run_all = st.columns(2)
 
-        st.subheader("🔍 Schema Verification (do this before anything else)")
-        nfl_test_year = st.number_input("Season to test", value=2025, key="nfl_schema_test_year")
-
-        if st.button("Check load_player_stats() Schema"):
-            try:
-                import nflreadpy as nfl
-                weekly_df = nfl.load_player_stats([int(nfl_test_year)]).to_pandas()
-                st.success(f"✅ Got {len(weekly_df)} rows back")
-                st.write("Columns:", weekly_df.columns.tolist())
-                st.dataframe(weekly_df.head(5))
-            except ImportError as e:
-                st.error(f"❌ Real ImportError: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-            except Exception as e:
-                st.error(f"Real error: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        if st.button("Check load_pbp() Schema (for PROE/pace — this is a bigger, slower download)"):
-            try:
-                import nflreadpy as nfl
-                pbp_df = nfl.load_pbp([int(nfl_test_year)]).to_pandas()
-                st.success(f"✅ Got {len(pbp_df)} rows back")
-                st.write(f"Total columns: {len(pbp_df.columns)}")
-                relevant_cols = [c for c in pbp_df.columns if any(k in c.lower() for k in ['pass', 'xpass', 'epa', 'wp', 'down', 'qtr', 'score_differential'])]
-                st.write("Columns relevant to Opportunity/PROE specifically:", relevant_cols)
-                st.dataframe(pbp_df[relevant_cols].head(5) if relevant_cols else pbp_df.head(5))
-            except ImportError:
-                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-            except Exception as e:
-                st.error(f"Real error: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        st.caption("Schedules and injuries function names weren't explicitly confirmed in research (only load_player_stats/load_pbp/load_team_stats were) — these two buttons try the most likely name matching nflreadpy's established 'load_' convention, and will show a clear error if the real name is different.")
-        if st.button("Check load_schedules() Schema (for spread, dome/outdoor, weather)"):
-            try:
-                import nflreadpy as nfl
-                sched_df = nfl.load_schedules([int(nfl_test_year)]).to_pandas()
-                st.success(f"✅ Got {len(sched_df)} rows back")
-                st.write("Columns:", sched_df.columns.tolist())
-                st.dataframe(sched_df.head(5))
-            except ImportError:
-                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-            except AttributeError as e:
-                st.error(f"❌ Function name guess was wrong: {e}. Run `import nflreadpy as nfl; print([f for f in dir(nfl) if f.startswith('load_')])` somewhere to see the real function list.")
-            except Exception as e:
-                st.error(f"Real error: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        if st.button("Check load_injuries() Schema"):
-            try:
-                import nflreadpy as nfl
-                inj_df = nfl.load_injuries([int(nfl_test_year)]).to_pandas()
-                st.success(f"✅ Got {len(inj_df)} rows back")
-                st.write("Columns:", inj_df.columns.tolist())
-                st.dataframe(inj_df.head(5))
-            except ImportError:
-                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-            except AttributeError as e:
-                st.error(f"❌ Function name guess was wrong: {e}. Run the dir() check above to see the real function list.")
-            except Exception as e:
-                st.error(f"Real error: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        if st.button("📋 List EVERY real load_ function available (use this instead of guessing)"):
-            try:
-                import nflreadpy as nfl
-                real_functions = [f for f in dir(nfl) if f.startswith('load_')]
-                st.success(f"✅ Found {len(real_functions)} real functions")
-                st.write(real_functions)
-            except ImportError:
-                st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-            except Exception as e:
-                st.error(f"Real error: {e}")
-
-        st.markdown("---")
-        st.subheader("🏈 Pass Attempts Model (v1) — Live Test")
-        st.caption("v1 = QB's own recency-blended attempts x team pace factor x opponent pass-funnel factor. Deliberately excludes completion% and any accuracy-related variable — this model answers ONE question: how many times will this team throw. Test this before we build Completions/Receptions on top of it.")
-
-        nfl_qb_name = st.text_input("QB full name (must match nflverse's player_display_name exactly)", value="Patrick Mahomes", key="nfl_qb_test_name")
-        nfl_qb_team = st.text_input("QB's team abbreviation", value="KC", key="nfl_qb_test_team")
-        nfl_qb_opponent = st.text_input("Opponent abbreviation", value="BUF", key="nfl_qb_test_opp")
-        nfl_test_season = st.number_input("Season", value=2025, key="nfl_pa_test_season")
-        nfl_test_as_of_week = st.number_input("as_of_week (leave 0 for 'use all available data, live mode')", value=0, min_value=0, max_value=22, key="nfl_pa_test_week")
-        nfl_debug_check = st.checkbox("Show real errors instead of generic None (debug)", key="nfl_debug_checkbox")
-
-        if st.button("Run Pass Attempts Projection"):
-            st.session_state['_nfl_debug_mode'] = nfl_debug_check
-            try:
-                week_arg = int(nfl_test_as_of_week) if nfl_test_as_of_week > 0 else None
-                pa_result = run_nfl_pass_attempts_projection(nfl_qb_name, nfl_qb_team, nfl_qb_opponent, int(nfl_test_season), as_of_week=week_arg)
-                if pa_result:
-                    st.success(f"✅ Worked! Projected attempts: {pa_result['projection']}")
-                    st.json(pa_result)
+    with col_load:
+        if st.button("📋 Load This Week's Props", use_container_width=True):
+            with st.spinner("Pulling this week's props..."):
+                all_qbs = load_nfl_props_data()
+                if all_qbs:
+                    st.session_state['all_qbs'] = all_qbs
+                    st.session_state['nfl_season'] = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
+                    st.session_state['qb_results'] = {}
+                    st.session_state['manual_run_order_nfl'] = {}
+                    st.session_state['manual_run_counter_nfl'] = 0
                 else:
-                    st.warning("Returned None — either fewer than 3 games of history found for this QB/season/week combo, or the name didn't match exactly. Check debug mode + the schema buttons above to confirm the exact player_display_name spelling.")
-            except Exception as e:
-                st.error(f"Real error: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-            finally:
-                st.session_state['_nfl_debug_mode'] = False
+                    st.error("Couldn't load this week's props — either no games are posted yet, it's off-season, or the odds API request failed.")
 
-        st.markdown("---")
-        st.subheader("🎯 This Week's NFL Pass Attempts Card")
-        st.caption("The real, live version — pulls actual upcoming games (skips any already started), runs the model automatically for every QB with a real market, and ranks them using the same tier/EV/stake infrastructure as MLB and NBA.")
+    with col_run_all:
+        if st.button("🚀 Run All Projections", use_container_width=True):
+            if 'all_qbs' not in st.session_state:
+                st.warning("Load this week's props first!")
+            else:
+                all_qbs = st.session_state['all_qbs']
+                season = st.session_state.get('nfl_season', datetime.now().year)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                total = len(all_qbs)
 
-        nfl_card_season = st.number_input("Season", value=datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1, key="nfl_card_season")
-        nfl_card_debug = st.checkbox("🔧 Show real errors instead of generic 'returned None' (debug)", key="nfl_card_debug")
+                def _update_progress(i, total, name):
+                    status_text.text(f"Running {i+1} of {total}: {name}")
+                    progress_bar.progress((i + 1) / total)
 
-        if st.button("🔍 Load This Week's NFL Card", use_container_width=True):
-            st.session_state['_nfl_debug_mode'] = nfl_card_debug
-            with st.spinner("Loading live odds and running projections..."):
-                try:
-                    live_odds = get_live_nfl_pass_attempts_odds()
-                    if not live_odds:
-                        st.warning("No live NFL pass_attempts props found right now — either it's off-season, too early in the week for lines to be posted, or every game this week has already started.")
-                    else:
-                        weekly_all = get_nfl_player_stats([int(nfl_card_season)])
+                qb_results = run_all_nfl_projections(all_qbs, season, progress_callback=_update_progress)
+                st.session_state['all_qbs'] = all_qbs
+                st.session_state.setdefault('qb_results', {})
+                st.session_state['qb_results'].update(qb_results)
+
+                status_text.text(f"✅ Done! All {total} projections complete.")
+                progress_bar.progress(1.0)
+                st.rerun()
+
+    if 'all_qbs' in st.session_state:
+        all_qbs = st.session_state['all_qbs']
+        season = st.session_state.get('nfl_season', datetime.now().year)
+        qb_results = st.session_state.get('qb_results', {})
+
+        # Same fix built for MLB after a real incident — warns if a loaded
+        # game has since started, so a stale pre-game projection never
+        # sits unnoticed next to odds that DO shift with the live game
+        # state.
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        started_since_load = []
+        for qname, qdata in all_qbs.items():
+            ct_str = qdata.get('commence_time')
+            if not ct_str:
+                continue
+            try:
+                ct = datetime.fromisoformat(ct_str.replace('Z', '+00:00'))
+                if ct <= now_utc:
+                    started_since_load.append(qname)
+            except (ValueError, TypeError):
+                pass
+        if started_since_load:
+            names_preview = ", ".join(started_since_load[:5])
+            more = f" and {len(started_since_load) - 5} more" if len(started_since_load) > 5 else ""
+            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"Load This Week's Props\"** again to refresh.")
+
+        manual_run_order = st.session_state.get('manual_run_order_nfl', {})
+
+        sorted_qbs = sorted(
+            all_qbs.items(),
+            key=lambda x: (
+                x[0] in manual_run_order,
+                manual_run_order.get(x[0], 0),
+                TIER_RANK.get(x[1].get('MM Tier'), -1),
+                x[1]['EV%'] if x[1]['EV%'] is not None else -999,
+                abs(x[1]['Edge']) if x[1]['Edge'] is not None else -999
+            ),
+            reverse=True
+        )
+
+        hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
+        header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
+        for hcol, label in [
+            (hcol1, "QB"), (hcol2, "FD"), (hcol3, "DK"),
+            (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
+            (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
+            (hcol10, ""), (hcol11, ""),
+        ]:
+            with hcol:
+                st.markdown(f"<div style='{header_style}'>{label}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+
+        for qb_name, info in sorted_qbs:
+            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
+            with col1:
+                st.write(f"**{qb_name}**")
+                st.caption(f"{info['away']} @ {info['home']}")
+                if qb_name in already_bet_today:
+                    st.caption("✅ Already bet today")
+            with col2:
+                st.write(f"FD: {info['FanDuel Line']}")
+                st.caption(f"O:{fmt_odds(info['FanDuel Over'])} U:{fmt_odds(info['FanDuel Under'])}")
+            with col3:
+                st.write(f"DK: {info['DraftKings Line']}")
+                st.caption(f"O:{fmt_odds(info['DraftKings Over'])} U:{fmt_odds(info['DraftKings Under'])}")
+            with col4:
+                st.write(f"Proj: **{info['Projection']}**" if info['Projection'] else "Proj: —")
+            with col5:
+                st.write(f"Edge: **{info['Edge']}**" if info['Edge'] is not None else "Edge: —")
+            with col6:
+                st.markdown(f"<div style='white-space: nowrap;'>{info['Play']}</div>" if info['Play'] else "—", unsafe_allow_html=True)
+            with col7:
+                st.write(short_tier_label(info.get('Tier')))
+            with col8:
+                ev = info.get('EV%')
+                st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
+            with col9:
+                st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
+                if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
+                    st.caption(info.get('Pass Reason'))
+                elif info.get('Confidence Level') == "🔴 Low":
+                    st.caption("🔴 Confidence: Low")
+            with col10:
+                if st.button("▶️ Run", key=f"run_nfl_{qb_name}"):
+                    with st.spinner(f"Running {qb_name}..."):
                         name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
-                        card_results = []
-                        card_skipped = []
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        qb_names = list(live_odds.keys())
-
-                        for i, qb_name in enumerate(qb_names):
-                            status_text.text(f"Running {qb_name} ({i+1} of {len(qb_names)})")
-                            progress_bar.progress((i+1) / len(qb_names))
-                            odds_info = live_odds[qb_name]
-                            line = odds_info.get('line')
-                            over_odds = odds_info.get('over_odds')
-                            under_odds = odds_info.get('under_odds')
-                            if line is None or over_odds is None or under_odds is None:
-                                card_skipped.append({'QB': qb_name, 'Reason': 'Incomplete odds (missing line or one side)'})
-                                continue
-
-                            qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
-                            if qb_recent.empty:
-                                card_skipped.append({'QB': qb_name, 'Reason': 'No recent game log found — name may not match nflverse exactly'})
-                                continue
+                        home_abbrev = name_to_abbrev.get(info['home'])
+                        away_abbrev = name_to_abbrev.get(info['away'])
+                        weekly_all = get_nfl_player_stats([int(season)])
+                        qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+                        if qb_recent.empty:
+                            st.error("No recent game log found for this QB.")
+                        else:
                             qb_team_abbrev = qb_recent.iloc[-1]['team']
+                            opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
+                            result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=None) if opp_abbrev else None
+                            if result:
+                                proj = result['projection']
+                                best_line = info['FanDuel Line'] or info['DraftKings Line']
+                                if best_line:
+                                    edge = round(proj - best_line, 1)
+                                    play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
+                                    direction = 'over' if edge > 0 else 'under'
+                                    over_odds = info['FanDuel Over'] or info['DraftKings Over']
+                                    under_odds = info['FanDuel Under'] or info['DraftKings Under']
+                                    std_dev = get_min_std_dev(result['attempts_cv'], proj, sport='nfl_pass_attempts')
+                                    ev_result = analyze_prop(
+                                        projection=proj, line=best_line, std_dev=std_dev, cv=result['attempts_cv'],
+                                        over_odds=over_odds or -110, under_odds=under_odds or -110,
+                                        direction=direction, sport='nfl_pass_attempts',
+                                        workload_tier=None, confidence_tier=result.get('confidence_tier')
+                                    )
+                                    st.session_state['all_qbs'][qb_name].update({
+                                        'Projection': proj, 'Edge': edge, 'Play': play,
+                                        'Tier': result['confidence_tier'],
+                                        'EV%': ev_result['ev_pct'] if ev_result else None,
+                                        'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+                                        'MM Tier': ev_result['tier'] if ev_result else None,
+                                        'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                                        'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+                                        'Model Prob': ev_result['model_prob'] if ev_result else None,
+                                        'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                                        'Odds': over_odds if direction == 'over' else under_odds,
+                                        'Direction': direction,
+                                        'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                        'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                                        'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                                    })
+                                    st.session_state['qb_results'][qb_name] = result
+                                    st.session_state.setdefault('manual_run_order_nfl', {})
+                                    st.session_state['manual_run_counter_nfl'] = st.session_state.get('manual_run_counter_nfl', 0) + 1
+                                    st.session_state['manual_run_order_nfl'][qb_name] = st.session_state['manual_run_counter_nfl']
+                                    save_prediction({
+                                        'date': date.today().strftime('%Y-%m-%d'),
+                                        'pitcher': qb_name, 'opponent': opp_abbrev, 'home_team': info['home'],
+                                        'projection': proj, 'base': result['base_attempts'], 'book_line': best_line,
+                                        'edge': edge, 'cv': result['attempts_cv'], 'confidence_tier': result['confidence_tier'],
+                                        'actual': None, 'sport': 'NFL',
+                                        'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                                        'mm_tier': ev_result['tier'] if ev_result else None,
+                                        'model_prob': ev_result['model_prob'] if ev_result else None,
+                                        'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                                    })
+                                    st.rerun()
+            with col11:
+                if info.get('Projection') is not None:
+                    if st.button("📝 Log", key=f"log_nfl_{qb_name}"):
+                        st.session_state[f'log_modal_{qb_name}'] = True
 
-                            home_full, away_full = odds_info['home_team'], odds_info['away_team']
-                            home_abbrev = name_to_abbrev.get(home_full)
-                            away_abbrev = name_to_abbrev.get(away_full)
-                            if qb_team_abbrev == home_abbrev:
-                                opponent_abbrev = away_abbrev
-                            elif qb_team_abbrev == away_abbrev:
-                                opponent_abbrev = home_abbrev
-                            else:
-                                card_skipped.append({'QB': qb_name, 'Reason': f"QB's recent team ({qb_team_abbrev}) doesn't match either side of this game ({away_abbrev} @ {home_abbrev}) — possible recent trade or name mismatch"})
-                                continue
+    st.markdown("---")
+    if is_admin:
+        with st.expander("🔧 Admin: Diagnostics & Backtest Tools", expanded=False):
+            st.info("🔧 **Admin-only build-in-progress view.** NFL data layer uses `nflreadpy` — the actively-maintained nflverse package. We initially tried `nfl_data_py` (a different, older package with a similar name) and hit a 404 — turned out nflverse officially deprecated it in favor of nflreadpy, so its hardcoded data URLs are permanently stale and will never be fixed. Since this can't be tested from the development sandbox (no internet access there), this panel verifies the REAL schema live, in this deployed app, before any projection formulas get built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
 
-                            try:
-                                result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opponent_abbrev, int(nfl_card_season), as_of_week=None)
-                            except Exception as e:
-                                card_skipped.append({'QB': qb_name, 'Reason': f'Exception: {e}'})
-                                continue
-                            if not result:
-                                card_skipped.append({'QB': qb_name, 'Reason': 'Fewer than 3 games of history — insufficient for a projection'})
-                                continue
+            st.subheader("🔍 Schema Verification (do this before anything else)")
+            nfl_test_year = st.number_input("Season to test", value=2025, key="nfl_schema_test_year")
 
-                            projection = result['projection']
-                            cv = result['attempts_cv']
-                            std_dev = get_min_std_dev(cv, projection, sport='nfl_pass_attempts')
-                            no_vig_over, no_vig_under = remove_vig(over_odds, under_odds)
-                            over_prob = projection_to_probability(projection, line, std_dev, direction='over')
-                            under_prob = projection_to_probability(projection, line, std_dev, direction='under')
+            if st.button("Check load_player_stats() Schema"):
+                try:
+                    import nflreadpy as nfl
+                    weekly_df = nfl.load_player_stats([int(nfl_test_year)]).to_pandas()
+                    st.success(f"✅ Got {len(weekly_df)} rows back")
+                    st.write("Columns:", weekly_df.columns.tolist())
+                    st.dataframe(weekly_df.head(5))
+                except ImportError as e:
+                    st.error(f"❌ Real ImportError: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
-                            over_edge = projection - line
-                            under_edge = line - projection
-                            if over_prob > no_vig_over:
-                                direction, model_prob, odds, edge = 'Over', over_prob, over_odds, over_edge
-                            else:
-                                direction, model_prob, odds, edge = 'Under', under_prob, under_odds, under_edge
+            if st.button("Check load_pbp() Schema (for PROE/pace — this is a bigger, slower download)"):
+                try:
+                    import nflreadpy as nfl
+                    pbp_df = nfl.load_pbp([int(nfl_test_year)]).to_pandas()
+                    st.success(f"✅ Got {len(pbp_df)} rows back")
+                    st.write(f"Total columns: {len(pbp_df.columns)}")
+                    relevant_cols = [c for c in pbp_df.columns if any(k in c.lower() for k in ['pass', 'xpass', 'epa', 'wp', 'down', 'qtr', 'score_differential'])]
+                    st.write("Columns relevant to Opportunity/PROE specifically:", relevant_cols)
+                    st.dataframe(pbp_df[relevant_cols].head(5) if relevant_cols else pbp_df.head(5))
+                except ImportError:
+                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
-                            ev_pct = calculate_ev_pct(model_prob, odds)
-                            mm_tier = get_tier(edge, ev_pct, cv, sport='nfl_pass_attempts', workload_tier=None)
+            st.caption("Schedules and injuries function names weren't explicitly confirmed in research (only load_player_stats/load_pbp/load_team_stats were) — these two buttons try the most likely name matching nflreadpy's established 'load_' convention, and will show a clear error if the real name is different.")
+            if st.button("Check load_schedules() Schema (for spread, dome/outdoor, weather)"):
+                try:
+                    import nflreadpy as nfl
+                    sched_df = nfl.load_schedules([int(nfl_test_year)]).to_pandas()
+                    st.success(f"✅ Got {len(sched_df)} rows back")
+                    st.write("Columns:", sched_df.columns.tolist())
+                    st.dataframe(sched_df.head(5))
+                except ImportError:
+                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+                except AttributeError as e:
+                    st.error(f"❌ Function name guess was wrong: {e}. Run `import nflreadpy as nfl; print([f for f in dir(nfl) if f.startswith('load_')])` somewhere to see the real function list.")
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
-                            card_results.append({
-                                'QB': qb_name, 'Matchup': f"{away_full} @ {home_full}",
-                                'Projection': projection, 'Line': line, 'Direction': direction,
-                                'Odds': odds, 'Model Prob': model_prob, 'EV%': ev_pct,
-                                'Edge': round(edge, 1), 'MM Tier': mm_tier,
-                                'Confidence': result['confidence_tier'],
-                                'Warnings': '; '.join(result['data_quality_warnings']) if result['data_quality_warnings'] else '',
-                            })
+            if st.button("Check load_injuries() Schema"):
+                try:
+                    import nflreadpy as nfl
+                    inj_df = nfl.load_injuries([int(nfl_test_year)]).to_pandas()
+                    st.success(f"✅ Got {len(inj_df)} rows back")
+                    st.write("Columns:", inj_df.columns.tolist())
+                    st.dataframe(inj_df.head(5))
+                except ImportError:
+                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+                except AttributeError as e:
+                    st.error(f"❌ Function name guess was wrong: {e}. Run the dir() check above to see the real function list.")
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
-                        st.session_state['nfl_card_results'] = card_results
-                        st.session_state['nfl_card_skipped'] = card_skipped
-                        status_text.text(f"✅ Done! {len(card_results)} QBs projected, {len(card_skipped)} skipped.")
-                        progress_bar.progress(1.0)
+            if st.button("📋 List EVERY real load_ function available (use this instead of guessing)"):
+                try:
+                    import nflreadpy as nfl
+                    real_functions = [f for f in dir(nfl) if f.startswith('load_')]
+                    st.success(f"✅ Found {len(real_functions)} real functions")
+                    st.write(real_functions)
+                except ImportError:
+                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+
+            st.markdown("---")
+            st.subheader("🏈 Pass Attempts Model (v1) — Live Test")
+            st.caption("v1 = QB's own recency-blended attempts x team pace factor x opponent pass-funnel factor. Deliberately excludes completion% and any accuracy-related variable — this model answers ONE question: how many times will this team throw. Test this before we build Completions/Receptions on top of it.")
+
+            nfl_qb_name = st.text_input("QB full name (must match nflverse's player_display_name exactly)", value="Patrick Mahomes", key="nfl_qb_test_name")
+            nfl_qb_team = st.text_input("QB's team abbreviation", value="KC", key="nfl_qb_test_team")
+            nfl_qb_opponent = st.text_input("Opponent abbreviation", value="BUF", key="nfl_qb_test_opp")
+            nfl_test_season = st.number_input("Season", value=2025, key="nfl_pa_test_season")
+            nfl_test_as_of_week = st.number_input("as_of_week (leave 0 for 'use all available data, live mode')", value=0, min_value=0, max_value=22, key="nfl_pa_test_week")
+            nfl_debug_check = st.checkbox("Show real errors instead of generic None (debug)", key="nfl_debug_checkbox")
+
+            if st.button("Run Pass Attempts Projection"):
+                st.session_state['_nfl_debug_mode'] = nfl_debug_check
+                try:
+                    week_arg = int(nfl_test_as_of_week) if nfl_test_as_of_week > 0 else None
+                    pa_result = run_nfl_pass_attempts_projection(nfl_qb_name, nfl_qb_team, nfl_qb_opponent, int(nfl_test_season), as_of_week=week_arg)
+                    if pa_result:
+                        st.success(f"✅ Worked! Projected attempts: {pa_result['projection']}")
+                        st.json(pa_result)
+                    else:
+                        st.warning("Returned None — either fewer than 3 games of history found for this QB/season/week combo, or the name didn't match exactly. Check debug mode + the schema buttons above to confirm the exact player_display_name spelling.")
                 except Exception as e:
                     st.error(f"Real error: {e}")
                     import traceback
@@ -5535,25 +5713,14 @@ elif nav == "🏈 NFL Models":
                 finally:
                     st.session_state['_nfl_debug_mode'] = False
 
-        if 'nfl_card_results' in st.session_state and st.session_state['nfl_card_results']:
-            card_df = pd.DataFrame(st.session_state['nfl_card_results'])
-            tier_order = {"🟢 Best Bet": 0, "🔵 Worth a Look": 1, "🟡 Lean": 2, "🔴 Pass": 3}
-            card_df['_sort'] = card_df['MM Tier'].map(tier_order)
-            st.dataframe(card_df.sort_values(['_sort', 'EV%'], ascending=[True, False]).drop(columns='_sort'), use_container_width=True)
-        if 'nfl_card_skipped' in st.session_state and st.session_state['nfl_card_skipped']:
-            with st.expander(f"Skipped ({len(st.session_state['nfl_card_skipped'])})"):
-                st.dataframe(pd.DataFrame(st.session_state['nfl_card_skipped']), use_container_width=True)
-
-        st.markdown("---")
-        nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
-        st.markdown("""
-            <div style='text-align: center; padding: 40px 0;'>
-                <h3>🚧 Completions and Receptions not built yet</h3>
-                <p style='color: #64748B; font-size: 16px;'>Pass Attempts (above) needs to work and get validated first — Completions depends directly on it (Projected Attempts x Completion%), per the agreed build order.</p>
-            </div>
-        """, unsafe_allow_html=True)
-
-# ---- NBA PAGE ----
+            st.markdown("---")
+            nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
+            st.markdown("""
+                <div style='text-align: center; padding: 40px 0;'>
+                    <h3>🚧 Completions and Receptions not built yet</h3>
+                    <p style='color: #64748B; font-size: 16px;'>Pass Attempts (above) needs to work and get validated first — Completions depends directly on it (Projected Attempts x Completion%), per the agreed build order.</p>
+                </div>
+            """, unsafe_allow_html=True)
 elif nav == "🏀 NBA Models":
     st.title("🏀 NBA Models")
     st.markdown("---")
