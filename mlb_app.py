@@ -5512,6 +5512,43 @@ elif nav == "🧪 Backtest" and is_admin:
                 st.error(f"Real error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
+        debug_trace_date = st.date_input("Date to trace as_of_date against", value=date(2025, 12, 5), key="debug_trace_date_input")
+        if st.button("Trace Assists Pipeline Step-by-Step (for a specific player/date)"):
+            try:
+                trace_bdl_season = int(debug_season)
+                trace_df, trace_pid = get_bdl_player_game_log(debug_player, trace_bdl_season)
+                st.write(f"**Step 1 — raw fetch:** {len(trace_df)} rows, player_id={trace_pid}")
+                if trace_df.empty:
+                    st.error("Empty at step 1 — nothing further to trace.")
+                else:
+                    trace_df['minutes_played'] = trace_df['min'].apply(bdl_parse_minutes)
+                    trace_df['assists'] = pd.to_numeric(trace_df['ast'], errors='coerce')
+                    trace_df['turnovers'] = pd.to_numeric(trace_df['turnover'], errors='coerce') if 'turnover' in trace_df.columns else 0
+                    trace_df['game_date'] = pd.to_datetime(trace_df['game'].apply(lambda g: (g or {}).get('date')))
+                    trace_df = trace_df.sort_values('game_date').reset_index(drop=True)
+                    st.write(f"**Step 2 — after adding computed columns + sort:** {len(trace_df)} rows")
+
+                    filtered_df = trace_df[trace_df['game_date'] < pd.Timestamp(debug_trace_date)].reset_index(drop=True)
+                    st.write(f"**Step 3 — after as_of_date filter (< {debug_trace_date}):** {len(filtered_df)} rows")
+
+                    cleaned_df = filtered_df.dropna(subset=['assists', 'minutes_played', 'game_date']).copy()
+                    st.write(f"**Step 4 — after dropna on essential columns:** {len(cleaned_df)} rows")
+                    if len(cleaned_df) < len(filtered_df):
+                        dropped = filtered_df[~filtered_df.index.isin(cleaned_df.index)]
+                        st.write("Rows dropped by dropna — showing why:")
+                        st.dataframe(dropped[['game_date', 'assists', 'minutes_played', 'ast', 'min']].astype(str))
+
+                    active_df = cleaned_df[cleaned_df['minutes_played'] > 0]
+                    st.write(f"**Step 5 — after active-minutes filter (>0 min):** {len(active_df)} rows")
+
+                    if len(active_df) < 5:
+                        st.error(f"❌ Ends at {len(active_df)} rows — this is why it returns None (needs 5). Check which step above caused the drop.")
+                    else:
+                        st.success(f"✅ Ends at {len(active_df)} rows — should NOT be returning None. If it still is, the issue is elsewhere in the function (e.g. an exception in a later step).")
+            except Exception as e:
+                st.error(f"Real error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
         if st.button("Check Injuries Endpoint + player_ids[] Filter"):
             try:
                 all_injuries = bdl_get("player_injuries", {"per_page": 100})
