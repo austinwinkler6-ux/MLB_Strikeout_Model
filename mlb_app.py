@@ -5521,30 +5521,34 @@ elif nav == "🧪 Backtest" and is_admin:
                 if trace_df.empty:
                     st.error("Empty at step 1 — nothing further to trace.")
                 else:
+                    # Matching the REAL function's exact order this time —
+                    # active-minutes filter happens FIRST, before game_date
+                    # even exists as a column, then date-filter happens
+                    # LATER after sorting. Earlier trace applied these in
+                    # the opposite order, which (while mathematically
+                    # equivalent for a simple AND) didn't actually catch
+                    # what was different about the real code path.
                     trace_df['minutes_played'] = trace_df['min'].apply(bdl_parse_minutes)
-                    trace_df['assists'] = pd.to_numeric(trace_df['ast'], errors='coerce')
-                    trace_df['turnovers'] = pd.to_numeric(trace_df['turnover'], errors='coerce') if 'turnover' in trace_df.columns else 0
-                    trace_df['game_date'] = pd.to_datetime(trace_df['game'].apply(lambda g: (g or {}).get('date')))
-                    trace_df = trace_df.sort_values('game_date').reset_index(drop=True)
-                    st.write(f"**Step 2 — after adding computed columns + sort:** {len(trace_df)} rows")
+                    active_first_df = trace_df[trace_df['minutes_played'] > 0]
+                    st.write(f"**Step 2 — active-minutes filter (real function's FIRST filter, before date even exists as a column):** {len(active_first_df)} rows")
 
-                    filtered_df = trace_df[trace_df['game_date'] < pd.Timestamp(debug_trace_date)].reset_index(drop=True)
-                    st.write(f"**Step 3 — after as_of_date filter (< {debug_trace_date}):** {len(filtered_df)} rows")
+                    active_first_df = active_first_df.copy()
+                    active_first_df['assists'] = pd.to_numeric(active_first_df['ast'], errors='coerce')
+                    active_first_df['turnovers'] = pd.to_numeric(active_first_df['turnover'], errors='coerce') if 'turnover' in active_first_df.columns else 0
+                    active_first_df['game_date'] = pd.to_datetime(active_first_df['game'].apply(lambda g: (g or {}).get('date')))
+                    active_first_df = active_first_df.sort_values('game_date').reset_index(drop=True)
+                    st.write(f"**Step 3 — after adding computed columns + sort:** {len(active_first_df)} rows")
+
+                    filtered_df = active_first_df[active_first_df['game_date'] < pd.Timestamp(debug_trace_date)].reset_index(drop=True)
+                    st.write(f"**Step 4 — after as_of_date filter (< {debug_trace_date}):** {len(filtered_df)} rows")
 
                     cleaned_df = filtered_df.dropna(subset=['assists', 'minutes_played', 'game_date']).copy()
-                    st.write(f"**Step 4 — after dropna on essential columns:** {len(cleaned_df)} rows")
-                    if len(cleaned_df) < len(filtered_df):
-                        dropped = filtered_df[~filtered_df.index.isin(cleaned_df.index)]
-                        st.write("Rows dropped by dropna — showing why:")
-                        st.dataframe(dropped[['game_date', 'assists', 'minutes_played', 'ast', 'min']].astype(str))
+                    st.write(f"**Step 5 — after dropna on essential columns:** {len(cleaned_df)} rows")
 
-                    active_df = cleaned_df[cleaned_df['minutes_played'] > 0]
-                    st.write(f"**Step 5 — after active-minutes filter (>0 min):** {len(active_df)} rows")
-
-                    if len(active_df) < 5:
-                        st.error(f"❌ Ends at {len(active_df)} rows — this is why it returns None (needs 5). Check which step above caused the drop.")
+                    if len(cleaned_df) < 5:
+                        st.error(f"❌ Ends at {len(cleaned_df)} rows — this IS why it returns None. Compare to the earlier (different-order) trace to see where the discrepancy comes from.")
                     else:
-                        st.success(f"✅ Ends at {len(active_df)} rows — should NOT be returning None. If it still is, the issue is elsewhere in the function (e.g. an exception in a later step).")
+                        st.success(f"✅ Ends at {len(cleaned_df)} rows — should NOT be returning None here either. If it's still failing, the issue is genuinely later in the function (injury lookup, pace, or a rate calculation) — worth checking with debug mode + the main Backtest run again, now that we've ruled out the data-loading stage twice.")
             except Exception as e:
                 st.error(f"Real error: {e}")
                 import traceback
