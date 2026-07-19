@@ -4180,6 +4180,24 @@ with st.sidebar:
 # ---- NFL DATA LAYER ----
 league_avg_plays_per_game = 64.0  # rough NFL-wide baseline, refined by real data at runtime where possible
 
+# nflverse uses abbreviations (KC, DEN); The Odds API uses full names
+# (Kansas City Chiefs, Denver Broncos) — confirmed real mismatch via a
+# live diagnostic check, July 2026, same category of issue as the NBA
+# team-name matching work done earlier.
+nfl_abbrev_to_name = {
+    "ARI": "Arizona Cardinals", "ATL": "Atlanta Falcons", "BAL": "Baltimore Ravens",
+    "BUF": "Buffalo Bills", "CAR": "Carolina Panthers", "CHI": "Chicago Bears",
+    "CIN": "Cincinnati Bengals", "CLE": "Cleveland Browns", "DAL": "Dallas Cowboys",
+    "DEN": "Denver Broncos", "DET": "Detroit Lions", "GB": "Green Bay Packers",
+    "HOU": "Houston Texans", "IND": "Indianapolis Colts", "JAX": "Jacksonville Jaguars",
+    "KC": "Kansas City Chiefs", "LA": "Los Angeles Rams", "LAC": "Los Angeles Chargers",
+    "LV": "Las Vegas Raiders", "MIA": "Miami Dolphins", "MIN": "Minnesota Vikings",
+    "NE": "New England Patriots", "NO": "New Orleans Saints", "NYG": "New York Giants",
+    "NYJ": "New York Jets", "PHI": "Philadelphia Eagles", "PIT": "Pittsburgh Steelers",
+    "SEA": "Seattle Seahawks", "SF": "San Francisco 49ers", "TB": "Tampa Bay Buccaneers",
+    "TEN": "Tennessee Titans", "WAS": "Washington Commanders",
+}
+
 def get_team_pace_and_proe(season, team, as_of_week=None):
     """A team's plays/game and Pass Rate Over Expected, leveraging the
     more rigorous get_nfl_team_game_pace_proe() (proper groupby, standard
@@ -6132,7 +6150,11 @@ elif nav == "🧪 Backtest" and is_admin:
                         all_lines_nfl = {}
                         checked_games_nfl = 0
                         for matchup in nfl_results_df['Matchup'].unique():
-                            event_info = matchup_to_event_nfl.get(matchup)
+                            away_abbrev, home_abbrev = matchup.split(' @ ')
+                            away_full = nfl_abbrev_to_name.get(away_abbrev, away_abbrev)
+                            home_full = nfl_abbrev_to_name.get(home_abbrev, home_abbrev)
+                            full_matchup = f"{away_full} @ {home_full}"
+                            event_info = matchup_to_event_nfl.get(full_matchup)
                             if not event_info:
                                 continue
                             event_id, commence_time = event_info
