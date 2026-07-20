@@ -4285,6 +4285,14 @@ def get_team_pace_and_proe(season, team, as_of_week=None):
         except Exception:
             return None, None
 
+    # Skip the current-season attempt entirely for very early weeks
+    # (July 2026 review, round 8 — same crash-prevention reasoning as
+    # get_nfl_league_baselines) — go straight to the prior season instead
+    # of loading and immediately discarding a near-empty current-season
+    # play-by-play sample.
+    if as_of_week is not None and as_of_week <= 3:
+        return _compute(int(season) - 1, None)
+
     plays, proe = _compute(season, as_of_week)
     if plays is not None:
         return plays, proe
@@ -4307,6 +4315,17 @@ def get_nfl_league_baselines(season, as_of_week=None):
         'pass_rate': 0.58, 'qb_carries_per_game': 3.0, 'game_total_average': 45.0,
         'pass_plays_per_team_game': 35.0,
     }
+    # Skip the expensive PBP-dependent load ENTIRELY for very early weeks
+    # (July 2026 review, round 8 — real crash fix) — the old version
+    # always called get_nfl_team_game_pace_proe() (which loads full raw
+    # play-by-play) FIRST, then only checked afterward whether there was
+    # enough data. For week 1-3, that check ALWAYS fails and falls back
+    # anyway, meaning the full-season PBP load was pure wasted memory
+    # pressure — very likely the actual cause of a crash occurring on
+    # literally the first QB processed in an early-week backtest, before
+    # any accumulation across multiple QBs could even happen.
+    if as_of_week is not None and as_of_week <= 3:
+        return fallback
     try:
         team_games = get_nfl_team_game_pace_proe([int(season)])
         if as_of_week is not None:
@@ -4399,6 +4418,13 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
             }
         except Exception:
             return None
+
+    # Skip the current-season attempt entirely for very early weeks
+    # (July 2026 review, round 8 — same crash-prevention reasoning as
+    # get_nfl_league_baselines and get_team_pace_and_proe).
+    if as_of_week is not None and as_of_week <= 3:
+        prior = _compute_profile(int(season) - 1, None)
+        return prior if prior is not None else {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
 
     current = _compute_profile(season, as_of_week)
     if current is not None:
