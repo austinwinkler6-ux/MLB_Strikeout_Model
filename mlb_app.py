@@ -4230,21 +4230,33 @@ def get_team_pace_and_proe(season, team, as_of_week=None):
     published PROE definition: actual pass rate - average xpass,
     restricted to real offensive plays) instead of reimplementing this
     from scratch. Leak-free — only games strictly before as_of_week when
-    backtesting, same principle as every NBA engine built today."""
-    try:
-        team_games = get_nfl_team_game_pace_proe([int(season)])
-        if team_games.empty:
+    backtesting.
+
+    Falls back to the prior season's full-season profile if the current
+    season's sample is too thin (July 2026 review, round 7 — same fix as
+    get_opponent_pass_funnel_factor, applied here too for consistency,
+    even though this one is informational-only and its failure was never
+    the critical bug)."""
+    def _compute(pace_season, week_filter):
+        try:
+            team_games = get_nfl_team_game_pace_proe([int(pace_season)])
+            if team_games.empty:
+                return None, None
+            team_rows = team_games[team_games['team'] == team]
+            if week_filter is not None:
+                team_rows = team_rows[team_rows['week'] < week_filter]
+            if team_rows.empty or len(team_rows) < 2:
+                return None, None
+            plays_per_game = team_rows['total_plays'].mean()
+            proe = team_rows['proe'].mean() * 100
+            return plays_per_game, proe
+        except Exception:
             return None, None
-        team_rows = team_games[team_games['team'] == team]
-        if as_of_week is not None:
-            team_rows = team_rows[team_rows['week'] < as_of_week]
-        if team_rows.empty:
-            return None, None
-        plays_per_game = team_rows['total_plays'].mean()
-        proe = team_rows['proe'].mean() * 100  # expressed as a percentage, matching the standard PROE convention
-        return plays_per_game, proe
-    except Exception:
-        return None, None
+
+    plays, proe = _compute(season, as_of_week)
+    if plays is not None:
+        return plays, proe
+    return _compute(int(season) - 1, None)
 
 @st.cache_data(ttl=86400)
 def get_nfl_league_baselines(season, as_of_week=None):
@@ -4320,43 +4332,49 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
       - proe_allowed (opponent's defense tends to face more/fewer passes
         than expected, independent of pace)
       - plays_allowed_per_game (opponent's own defensive pace)
-    """
-    try:
-        pbp = get_nfl_pbp([int(season)])
-        opp_faced = pbp[pbp['defteam'] == opponent].copy()
-        if as_of_week is not None:
-            opp_faced = opp_faced[opp_faced['week'] < as_of_week]
-        if opp_faced.empty:
-            return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
-        games_faced = opp_faced['game_id'].nunique()
-        if games_faced == 0:
-            return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
 
-        pass_attempts_faced = opp_faced['pass_attempt'].sum() if 'pass_attempt' in opp_faced.columns else None
-        pass_attempts_faced_per_game = pass_attempts_faced / games_faced if pass_attempts_faced is not None else None
+    Falls back to the PRIOR season's full profile if the current
+    season's sample is too thin (July 2026 review, round 7) — this
+    function only ever looked at the current season's play-by-play,
+    which is genuinely empty for week 1 and thin through week 3. Without
+    a fallback, this returned all-None for basically the entire first
+    month of every season, which silently triggered the critical
+    'Opponent profile fully unavailable' warning for EVERY QB regardless
+    of their own data quality — cascading straight to a Data Incomplete
+    tier for the whole slate, the exact bug reported and traced here."""
+    def _compute_profile(pbp_season, week_filter):
+        try:
+            pbp = get_nfl_pbp([int(pbp_season)])
+            opp_faced = pbp[pbp['defteam'] == opponent].copy()
+            if week_filter is not None:
+                opp_faced = opp_faced[opp_faced['week'] < week_filter]
+            if opp_faced.empty:
+                return None
+            games_faced = opp_faced['game_id'].nunique()
+            if games_faced == 0:
+                return None
+            pass_attempts_faced = opp_faced['pass_attempt'].sum() if 'pass_attempt' in opp_faced.columns else None
+            pass_attempts_faced_per_game = pass_attempts_faced / games_faced if pass_attempts_faced is not None else None
+            pass_col = 'pass' if 'pass' in opp_faced.columns else 'pass_attempt'
+            offensive_plays_faced = opp_faced[(opp_faced.get(pass_col, 0) == 1) | (opp_faced.get('rush_attempt', 0) == 1)]
+            plays_allowed_per_game = len(offensive_plays_faced) / games_faced if games_faced > 0 else None
+            proe_allowed = opp_faced['pass_oe'].mean() * 100 if 'pass_oe' in opp_faced.columns else None
+            if games_faced < 3:
+                return None  # too thin to trust even if non-empty
+            return {
+                'pass_attempts_faced_per_game': pass_attempts_faced_per_game,
+                'proe_allowed': proe_allowed, 'plays_allowed_per_game': plays_allowed_per_game,
+            }
+        except Exception:
+            return None
 
-        # Fixed the same sack-exclusion bug here (July 2026 review, round
-        # 4, item 4) — this filter still only used pass_attempt/
-        # rush_attempt, same issue as get_nfl_team_game_pace_proe's
-        # filter before it was fixed. A sack has pass_attempt=0 but
-        # pass=1, so sacks were still being silently excluded from the
-        # opponent's plays-allowed count even after the offensive-side
-        # fix. Now consistent everywhere.
-        pass_col = 'pass' if 'pass' in opp_faced.columns else 'pass_attempt'
-        offensive_plays_faced = opp_faced[(opp_faced.get(pass_col, 0) == 1) | (opp_faced.get('rush_attempt', 0) == 1)]
-        plays_allowed_per_game = len(offensive_plays_faced) / games_faced if games_faced > 0 else None
-
-        proe_allowed = None
-        if 'pass_oe' in opp_faced.columns:
-            proe_allowed = opp_faced['pass_oe'].mean() * 100
-
-        return {
-            'pass_attempts_faced_per_game': pass_attempts_faced_per_game,
-            'proe_allowed': proe_allowed,
-            'plays_allowed_per_game': plays_allowed_per_game,
-        }
-    except Exception:
-        return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
+    current = _compute_profile(season, as_of_week)
+    if current is not None:
+        return current
+    prior = _compute_profile(int(season) - 1, None)  # full prior season, no week filter
+    if prior is not None:
+        return prior
+    return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
 
 def get_qb_rush_tendency(season, qb_name, as_of_week=None):
     """A QB's own rushing volume relative to league-average QB rushing —
