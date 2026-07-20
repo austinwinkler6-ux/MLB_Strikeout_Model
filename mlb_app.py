@@ -5174,21 +5174,31 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         critical_warning_keywords = ["Opponent profile fully unavailable", "Game context"]
         critical_warning_count = sum(any(k in w for k in critical_warning_keywords) for w in warnings)
 
-        # Rookie / limited-sample check (July 2026 review, round 6) —
-        # takes priority over every other tier check, per review: avoid
-        # making strong recommendations until a QB with essentially no
-        # real NFL track record accumulates enough starts, rather than
-        # letting a coincidentally-stable tiny sample look "Reliable."
+        # Real fix (July 2026, round 10) — architecture_gap REMOVED from
+        # the tier decision entirely. Backtested across two full,
+        # independent seasons (2024 and 2025, ~950 combined predictions):
+        # it showed ZERO consistent relationship with real error in
+        # EITHER season — the "best" and "worst" gap buckets were
+        # essentially scrambled differently each year, no climbing trend
+        # in either direction. Worse, using it in the tier logic is a
+        # very plausible direct cause of a confirmed, serious problem:
+        # the whole tier system INVERTED between seasons (Reliable was
+        # the best-performing tier in 2025, second-worst in 2024) — which
+        # makes sense if part of what's sorting predictions into tiers is
+        # essentially random noise. The tier now rests purely on sample
+        # size and attempts volatility (attempts_cv), the two signals
+        # that were part of the original, simpler design before the gap
+        # got layered on top. architecture_gap is still computed and
+        # returned as an informational field, in case a genuinely
+        # different way of using it (e.g. the SIGN of disagreement rather
+        # than magnitude) proves useful later — just not trusted for real
+        # tier decisions until it actually earns that with real evidence.
         if is_rookie_limited_sample:
             confidence_tier = "🔴 Limited NFL Sample"
         elif critical_warning_count >= 1:
             confidence_tier = "🔴 Data Incomplete — Pass"
-        elif architecture_gap >= 5:
-            confidence_tier = "🔴 Volatile — Model Disagreement"
         elif len(combined_rows) < 4 or attempts_cv > 0.30 or high_wind_risk:
             confidence_tier = "🔴 Volatile — Consider Pass"
-        elif architecture_gap >= 3:
-            confidence_tier = "🟠 Moderate"
         elif len(combined_rows) >= 8 and attempts_cv < (0.20 if is_dome else 0.18):
             confidence_tier = "🟢 Reliable"  # dome games get a slightly more lenient bar — no weather variance to worry about indoors
         else:
