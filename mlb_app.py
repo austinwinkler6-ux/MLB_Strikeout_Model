@@ -7365,8 +7365,9 @@ elif nav == "🧪 Backtest" and is_admin:
             nfl_results_df['Dome/Outdoor'] = nfl_results_df['Roof'].apply(lambda r: 'Dome' if r in ('dome', 'closed') else ('Outdoor' if pd.notna(r) else None))
             nfl_results_df['Wind Risk'] = nfl_results_df['Wind'].apply(lambda w: 'High Wind (15+)' if pd.notna(w) and w >= 15 else ('Normal' if pd.notna(w) else None))
             nfl_results_df['Home/Road'] = nfl_results_df['Is Home'].apply(lambda h: 'Home' if h is True else ('Road' if h is False else None))
-            spread_bins = [-100, -7, -3, 0, 100]
-            spread_labels = ["Favorite 7+", "Favorite 3-7", "Favorite 0-3", "Underdog"]
+            spread_bins = [-100, -13, -9, -6, -3, 0, 3, 6, 9, 13, 100]
+            spread_labels = ["Favorite 13+", "Favorite 9-13", "Favorite 6-9", "Favorite 3-6", "Favorite 0-3",
+                              "Underdog 0-3", "Underdog 3-6", "Underdog 6-9", "Underdog 9-13", "Underdog 13+"]
             nfl_results_df['Spread Bucket'] = pd.cut(nfl_results_df['Spread'], bins=spread_bins, labels=spread_labels) if nfl_results_df['Spread'].notna().any() else None
             total_bins = [0, 42, 47, 100]
             total_labels = ["Low Total (<42)", "Mid Total (42-47)", "High Total (47+)"]
@@ -7375,6 +7376,7 @@ elif nav == "🧪 Backtest" and is_admin:
             _bucket_table(nfl_results_df, 'Week', "By Week (useful once you've accumulated multiple weeks)")
             _bucket_table(nfl_results_df, 'Favorite/Dog', "Favorite vs. Underdog")
             _bucket_table(nfl_results_df, 'Spread Bucket', "Spread Range")
+            st.caption("Buckets are now finer-grained (5 tiers per side, 3-point windows) — a 3-point spread and a 7-point spread are genuinely different game-script situations and no longer get lumped together. The tradeoff: the extreme buckets (13+) will naturally have fewer predictions, so read those more cautiously than the middle buckets.")
             _bucket_table(nfl_results_df, 'Total Bucket', "Game Total Range")
             _bucket_table(nfl_results_df, 'Dome/Outdoor', "Dome vs. Outdoor")
             _bucket_table(nfl_results_df, 'Wind Risk', "Wind Risk")
