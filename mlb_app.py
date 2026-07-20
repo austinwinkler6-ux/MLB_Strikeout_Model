@@ -4285,12 +4285,18 @@ def get_team_pace_and_proe(season, team, as_of_week=None):
         except Exception:
             return None, None
 
-    # Skip the current-season attempt entirely for very early weeks
-    # (July 2026 review, round 8 — same crash-prevention reasoning as
-    # get_nfl_league_baselines) — go straight to the prior season instead
-    # of loading and immediately discarding a near-empty current-season
-    # play-by-play sample.
-    if as_of_week is not None and as_of_week <= 3:
+    # Skip the current-season attempt entirely through week 6 (July 2026
+    # review, round 9 — a real fix to a real regression). The threshold
+    # was originally set at <=3, but the QB-level prior-season bridge
+    # (see run_nfl_pass_attempts_projection's prior_weight_table) stays
+    # active through 4 STARTS, which a QB with a bye week or two might
+    # not reach until week 5-6 — meaning weeks 4-5 were hitting the WORST
+    # case: attempting the current-season load (thin, borderline data),
+    # discovering it's insufficient, THEN also loading the prior season —
+    # doubling the exact memory problem this was supposed to prevent,
+    # rather than avoiding it. Raised with real margin to cover the whole
+    # range the QB-level bridge can actually be active for.
+    if as_of_week is not None and as_of_week <= 6:
         return _compute(int(season) - 1, None)
 
     plays, proe = _compute(season, as_of_week)
@@ -4324,7 +4330,7 @@ def get_nfl_league_baselines(season, as_of_week=None):
     # pressure — very likely the actual cause of a crash occurring on
     # literally the first QB processed in an early-week backtest, before
     # any accumulation across multiple QBs could even happen.
-    if as_of_week is not None and as_of_week <= 3:
+    if as_of_week is not None and as_of_week <= 6:
         return fallback
     try:
         team_games = get_nfl_team_game_pace_proe([int(season)])
@@ -4422,7 +4428,7 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
     # Skip the current-season attempt entirely for very early weeks
     # (July 2026 review, round 8 — same crash-prevention reasoning as
     # get_nfl_league_baselines and get_team_pace_and_proe).
-    if as_of_week is not None and as_of_week <= 3:
+    if as_of_week is not None and as_of_week <= 6:
         prior = _compute_profile(int(season) - 1, None)
         return prior if prior is not None else {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
 
