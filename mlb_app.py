@@ -4261,6 +4261,7 @@ def get_nfl_league_baselines(season, as_of_week=None):
     fallback = {
         'plays_per_team_game': 64.0, 'pass_attempts_per_team_game': 33.0,
         'pass_rate': 0.58, 'qb_carries_per_game': 3.0, 'game_total_average': 45.0,
+        'pass_plays_per_team_game': 35.0,
     }
     try:
         team_games = get_nfl_team_game_pace_proe([int(season)])
@@ -4272,6 +4273,14 @@ def get_nfl_league_baselines(season, as_of_week=None):
         plays_per_team_game = team_games['total_plays'].mean()
         pass_attempts_per_team_game = team_games['pass_attempts_official'].mean()
         pass_rate = team_games['actual_pass_rate'].mean()
+        # pass_plays (item 8) — ALL called pass plays including sacks,
+        # distinct from pass_attempts_official. Needed to convert the
+        # Expected Plays x Expected Pass Rate structural view (built on
+        # the 'pass' field, so it estimates called pass plays) into
+        # official-attempt terms before comparing it against the
+        # QB-history-based projection, which targets official attempts
+        # specifically.
+        pass_plays_per_team_game = team_games['pass_plays'].mean() if 'pass_plays' in team_games.columns else fallback['pass_plays_per_team_game']
 
         weekly = get_nfl_player_stats([int(season)])
         qb_rows = weekly[weekly['position'] == 'QB']
@@ -4290,6 +4299,7 @@ def get_nfl_league_baselines(season, as_of_week=None):
             'pass_rate': round(pass_rate, 3) if pd.notna(pass_rate) else fallback['pass_rate'],
             'qb_carries_per_game': round(qb_carries_per_game, 1) if pd.notna(qb_carries_per_game) else fallback['qb_carries_per_game'],
             'game_total_average': round(game_total_average, 1) if pd.notna(game_total_average) else fallback['game_total_average'],
+            'pass_plays_per_team_game': round(pass_plays_per_team_game, 1) if pd.notna(pass_plays_per_team_game) else fallback['pass_plays_per_team_game'],
         }
     except Exception:
         return fallback
@@ -4325,7 +4335,15 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
         pass_attempts_faced = opp_faced['pass_attempt'].sum() if 'pass_attempt' in opp_faced.columns else None
         pass_attempts_faced_per_game = pass_attempts_faced / games_faced if pass_attempts_faced is not None else None
 
-        offensive_plays_faced = opp_faced[(opp_faced.get('pass_attempt', 0) == 1) | (opp_faced.get('rush_attempt', 0) == 1)]
+        # Fixed the same sack-exclusion bug here (July 2026 review, round
+        # 4, item 4) — this filter still only used pass_attempt/
+        # rush_attempt, same issue as get_nfl_team_game_pace_proe's
+        # filter before it was fixed. A sack has pass_attempt=0 but
+        # pass=1, so sacks were still being silently excluded from the
+        # opponent's plays-allowed count even after the offensive-side
+        # fix. Now consistent everywhere.
+        pass_col = 'pass' if 'pass' in opp_faced.columns else 'pass_attempt'
+        offensive_plays_faced = opp_faced[(opp_faced.get(pass_col, 0) == 1) | (opp_faced.get('rush_attempt', 0) == 1)]
         plays_allowed_per_game = len(offensive_plays_faced) / games_faced if games_faced > 0 else None
 
         proe_allowed = None
@@ -4360,26 +4378,48 @@ def get_qb_rush_tendency(season, qb_name, as_of_week=None):
     except Exception:
         return None
 
-def find_upcoming_nfl_week(season, home_abbrev, away_abbrev):
-    """Finds which real week an upcoming game belongs to, by matching team
+def find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=None):
+    """Finds which real week a game belongs to, by matching team
     abbreviations against the schedule. This is the missing piece that
     lets the LIVE pipeline pass a real as_of_week into the projection
     instead of None — without it, game_context always returns None (see
     get_nfl_game_context's `if as_of_week is not None else None`), which
     meant every live projection was silently skipping Vegas, weather, and
     rest entirely, even though all three were correctly coded and already
-    working in Backtest mode (July 2026 review — the single most
-    important fix in this round)."""
+    working in Backtest mode.
+
+    Fixed a real bug (July 2026 review, round 4): the original version
+    sorted every matchup between these two teams by date and always took
+    the EARLIEST one — meaning for a divisional rematch (two teams
+    playing twice in a season), this would always return the FIRST
+    meeting's week even when the live odds actually belong to the SECOND
+    meeting later in the season, and could even match a completed game
+    instead of the upcoming one. Now matches using the live event's own
+    commence_time when available (closest scheduled gameday to that
+    timestamp), falling back to 'first game today-or-later' only if no
+    commence_time was given. Also now preserves home/away orientation
+    (matches home_abbrev to home_team specifically) rather than checking
+    both orderings, since The Odds API already tells us which team is
+    truly home."""
     try:
-        schedules = get_nfl_schedules([int(season)])
-        matchup = schedules[
-            ((schedules['home_team'] == home_abbrev) & (schedules['away_team'] == away_abbrev)) |
-            ((schedules['home_team'] == away_abbrev) & (schedules['away_team'] == home_abbrev))
-        ].copy()
+        schedules = get_nfl_schedules([int(season)]).copy()
+        matchup = schedules[(schedules['home_team'] == home_abbrev) & (schedules['away_team'] == away_abbrev)].copy()
         if matchup.empty:
             return None
-        matchup = matchup.sort_values('gameday')
-        return int(matchup.iloc[0]['week'])
+        matchup['gameday_dt'] = pd.to_datetime(matchup['gameday'], utc=True, errors='coerce')
+
+        if commence_time_str:
+            event_time = pd.to_datetime(commence_time_str, utc=True, errors='coerce')
+            if pd.notna(event_time):
+                matchup['time_difference'] = (matchup['gameday_dt'] - event_time).abs()
+                matchup = matchup.sort_values('time_difference')
+                return int(matchup.iloc[0]['week'])
+
+        now_utc = pd.Timestamp.now(tz='UTC')
+        upcoming = matchup[matchup['gameday_dt'] >= now_utc.normalize()]
+        if upcoming.empty:
+            return None
+        return int(upcoming.sort_values('gameday_dt').iloc[0]['week'])
     except Exception:
         return None
 
@@ -4506,33 +4546,49 @@ def load_nfl_props_data():
 def evaluate_nfl_quotes(info, proj, cv, confidence_tier):
     """Evaluates every real sportsbook quote SEPARATELY (line + odds kept
     together, never mixed across books) and returns the best valid EV
-    result (July 2026 review, item 3) — the old version picked
-    FanDuel's line (or DraftKings' as a fallback) and FanDuel's odds (or
-    DraftKings' as a fallback) INDEPENDENTLY, which could silently
-    evaluate an invalid combination (e.g. FanDuel's line paired with
-    DraftKings' price, when those two books may not even be offering the
-    same number). Returns (best_ev_result, best_book, best_line) or
-    (None, None, None) if no valid quote exists."""
+    result — the old version picked FanDuel's line (or DraftKings' as a
+    fallback) and FanDuel's odds (or DraftKings' as a fallback)
+    INDEPENDENTLY, which could silently evaluate an invalid combination
+    (e.g. FanDuel's line paired with DraftKings' price).
+
+    Fixed a real bug (July 2026 review, round 4, item 3): a missing
+    sportsbook price used to get silently filled with a fake -110 —
+    meaning the function could report EV on a bet that isn't actually
+    available at that price, or at all. Now REQUIRES both real over and
+    under prices to exist for a quote to be evaluated at all, and skips
+    any quote where the projection is essentially tied with the line
+    (abs(proj - line) < 0.05) rather than letting a coin-flip case
+    silently default to 'under' just because it's not strictly greater.
+
+    Returns a dict — {'ev_result', 'book', 'line', 'direction', 'odds'}
+    — or None if no valid, complete quote exists. Returning the full
+    selection (not just book/line) means the caller doesn't have to
+    reconstruct which side/odds were actually used."""
     quotes = []
     if info.get('FanDuel Line') is not None:
         quotes.append({'book': 'FanDuel', 'line': info['FanDuel Line'], 'over_odds': info.get('FanDuel Over'), 'under_odds': info.get('FanDuel Under')})
     if info.get('DraftKings Line') is not None:
         quotes.append({'book': 'DraftKings', 'line': info['DraftKings Line'], 'over_odds': info.get('DraftKings Over'), 'under_odds': info.get('DraftKings Under')})
 
-    best_ev_result, best_book, best_line = None, None, None
+    best = None
     for quote in quotes:
         line = quote['line']
+        if line is None or abs(proj - line) < 0.05:
+            continue  # essentially tied — don't let this silently default to "under"
+        if quote['over_odds'] is None or quote['under_odds'] is None:
+            continue  # need BOTH real sides for a valid no-vig probability — never fabricate a missing price
         direction = 'over' if proj > line else 'under'
+        selected_odds = quote['over_odds'] if direction == 'over' else quote['under_odds']
         std_dev = get_min_std_dev(cv, proj, sport='nfl_pass_attempts')
         ev_result = analyze_prop(
             projection=proj, line=line, std_dev=std_dev, cv=cv,
-            over_odds=quote['over_odds'] or -110, under_odds=quote['under_odds'] or -110,
+            over_odds=quote['over_odds'], under_odds=quote['under_odds'],
             direction=direction, sport='nfl_pass_attempts',
             workload_tier=None, confidence_tier=confidence_tier,
         )
-        if ev_result and (best_ev_result is None or (ev_result.get('ev_pct') or -999) > (best_ev_result.get('ev_pct') or -999)):
-            best_ev_result, best_book, best_line = ev_result, quote['book'], line
-    return best_ev_result, best_book, best_line
+        if ev_result and (best is None or (ev_result.get('ev_pct') or -999) > (best['ev_result'].get('ev_pct') or -999)):
+            best = {'ev_result': ev_result, 'book': quote['book'], 'line': line, 'direction': direction, 'odds': selected_odds}
+    return best
 
 def run_all_nfl_projections(all_qbs, season, progress_callback=None):
     """Runs the projection + EV pipeline for every QB in all_qbs (mutated
@@ -4573,26 +4629,34 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
         # projection silently passed as_of_week=None, meaning the entire
         # live pipeline was missing spread, total, rest, and weather —
         # even though all of them were correctly coded and already
-        # working in Backtest mode.
-        game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev)
+        # working in Backtest mode. Now passes the event's own
+        # commence_time for accurate matching (fixes a divisional-
+        # rematch bug — see the function's own docstring).
+        game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time'))
+        if game_week is None:
+            # Hard block instead of silently falling through with
+            # as_of_week=None (July 2026 review, item 2) — a failed week
+            # match used to re-disable Vegas/rest/weather with no
+            # confidence downgrade at all, exactly the same silent
+            # failure item 1 was built to fix in the first place.
+            all_qbs[qb_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not match the live event to an NFL week"})
+            continue
         result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
 
         if result:
             proj = result['projection']
-            # Fixed a real bug (July 2026 review, item 3): the old code
-            # picked FanDuel's line (or DraftKings' as fallback) and
-            # FanDuel's odds (or DraftKings' as fallback) INDEPENDENTLY —
-            # which could silently evaluate an invalid combination, like
-            # FanDuel's 34.5 line paired with DraftKings' price for a
-            # DIFFERENT number. evaluate_nfl_quotes keeps each book's own
-            # line and odds together and picks the best real, valid EV.
-            ev_result, best_book, best_line = evaluate_nfl_quotes(info, proj, result['attempts_cv'], result.get('confidence_tier'))
-            if ev_result and best_line is not None:
+            # Fixed a real bug (July 2026 review): the old code picked
+            # FanDuel's line (or DraftKings' as fallback) and FanDuel's
+            # odds (or DraftKings' as fallback) INDEPENDENTLY — which
+            # could silently evaluate an invalid combination.
+            # evaluate_nfl_quotes keeps each book's own line and odds
+            # together, requires both real sides to exist (no fabricated
+            # -110), and returns the complete selection.
+            quote = evaluate_nfl_quotes(info, proj, result['attempts_cv'], result.get('confidence_tier'))
+            if quote:
+                ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
                 edge = round(proj - best_line, 1)
-                direction = 'over' if proj > best_line else 'under'
                 play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
-                over_odds = info['FanDuel Over'] if best_book == 'FanDuel' else info['DraftKings Over']
-                under_odds = info['FanDuel Under'] if best_book == 'FanDuel' else info['DraftKings Under']
                 all_qbs[qb_name].update({
                     'Projection': proj, 'Edge': edge, 'Play': play,
                     'Tier': result['confidence_tier'],
@@ -4605,7 +4669,7 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Direction': direction,
-                    'Odds': over_odds if direction == 'over' else under_odds,
+                    'Odds': selected_odds,
                     'Model Prob': ev_result['model_prob'] if ev_result else None,
                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
                     'Book': best_book,
@@ -4621,6 +4685,12 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                     'mm_tier': ev_result['tier'] if ev_result else None,
                     'model_prob': ev_result['model_prob'] if ev_result else None,
                     'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                    # Added (July 2026 review, item 6) — without these, later
+                    # EV/CLV analysis has no way to know which book/price/
+                    # direction was actually recommended, or which real
+                    # week/kickoff time the projection was made for.
+                    'book': best_book, 'odds': selected_odds, 'direction': direction,
+                    'game_week': game_week, 'commence_time': info.get('commence_time'),
                 })
     return results
 
@@ -4669,10 +4739,25 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
     try:
         warnings = []
         weekly = get_nfl_player_stats([int(season)])
-        qb_rows = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
+        qb_rows_all = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
         if as_of_week is not None:
-            qb_rows = qb_rows[qb_rows['week'] < as_of_week]
-        qb_rows = qb_rows.sort_values('week')
+            qb_rows_all = qb_rows_all[qb_rows_all['week'] < as_of_week]
+        qb_rows_all = qb_rows_all.sort_values('week')
+
+        # Filter out likely relief/backup appearances (July 2026 review,
+        # round 4, item 5) — without this, a backup QB's history could be
+        # dominated by a handful of mop-up relief snaps, or a starter's
+        # true weekly workload could get diluted by a game where he left
+        # after 5 attempts due to injury. The real, better fix is joining
+        # schedules' home_qb_id/away_qb_id to identify actual starts —
+        # that's a bigger piece of plumbing not yet built. This attempts
+        # >= 15 threshold is the reviewer's own suggested interim
+        # safeguard: imperfect (a real injury-shortened START could get
+        # wrongly excluded too), but better than including clear relief
+        # appearances unfiltered.
+        qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
+        games_started_used = len(qb_rows)
+        partial_games_excluded = len(qb_rows_all) - len(qb_rows)
         if len(qb_rows) < 3:
             return None
 
@@ -4795,14 +4880,28 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         home_away_adj = 0.0
 
         # Expected Plays x Expected Pass Rate — transparency layer per
-        # review. Now additive with caps (July 2026 review, item 5) — the
-        # old multiplicative version (0.58 * proe_factor) barely moved
-        # the number even for a real PROE swing; additive is the more
-        # intuitive, correctly-scaled version.
+        # review. Additive with caps (July 2026 review) — the old
+        # multiplicative version barely moved the number for a real PROE
+        # swing.
         expected_plays = team_pace if team_pace else baselines['plays_per_team_game']
         expected_pass_rate = baselines['pass_rate'] + (team_proe / 100 * 0.5 if team_proe is not None else 0)
         expected_pass_rate = max(0.45, min(0.72, expected_pass_rate))
-        expected_plays_x_rate = round(expected_plays * expected_pass_rate, 1) if expected_plays else None
+        expected_pass_plays = expected_plays * expected_pass_rate if expected_plays else None
+
+        # Convert pass PLAYS into official attempts (July 2026 review,
+        # round 4, item 8) — expected_pass_plays estimates every called
+        # pass play (via the 'pass' field, which includes sacks), but the
+        # model's actual target is official QB attempts, which exclude
+        # sacks. Without this conversion, a team that allows/takes a lot
+        # of sacks would show an artificially inflated structural
+        # estimate purely from that mismatch — creating a fake
+        # "architecture disagreement" that isn't really about volume
+        # forecasting at all, just a units mismatch.
+        league_attempt_share_of_pass_plays = (
+            baselines['pass_attempts_per_team_game'] / baselines['pass_plays_per_team_game']
+            if baselines.get('pass_plays_per_team_game') else 1.0
+        )
+        expected_plays_x_rate = round(expected_pass_plays * league_attempt_share_of_pass_plays, 1) if expected_pass_plays is not None else None
 
         # Double-counting fix (July 2026 review, Option A): the QB's own
         # historical attempts base already reflects their team's real
@@ -4914,6 +5013,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'expected_pass_rate': round(expected_pass_rate, 3),
             'expected_plays_x_rate': expected_plays_x_rate,
             'games_used': len(qb_rows),
+            'games_started_used': games_started_used, 'partial_games_excluded': partial_games_excluded,
             'confidence_tier': confidence_tier, 'attempts_cv': round(attempts_cv, 3),
             'architecture_gap': round(architecture_gap, 1), 'data_quality_warnings': warnings,
             'structural_projection': round(structural_projection, 1) if structural_projection is not None else None,
@@ -5685,17 +5785,19 @@ elif nav == "🏈 NFL Models":
                         else:
                             qb_team_abbrev = qb_recent.iloc[-1]['team']
                             opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
-                            game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev) if opp_abbrev else None
-                            result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week) if opp_abbrev else None
+                            game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time')) if opp_abbrev else None
+                            if opp_abbrev and game_week is None:
+                                st.error("Could not match this event to a real NFL week — can't safely run a live projection without it.")
+                                result = None
+                            else:
+                                result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week) if opp_abbrev else None
                             if result:
                                 proj = result['projection']
-                                ev_result, best_book, best_line = evaluate_nfl_quotes(info, proj, result['attempts_cv'], result.get('confidence_tier'))
-                                if ev_result and best_line is not None:
+                                quote = evaluate_nfl_quotes(info, proj, result['attempts_cv'], result.get('confidence_tier'))
+                                if quote:
+                                    ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
                                     edge = round(proj - best_line, 1)
-                                    direction = 'over' if proj > best_line else 'under'
                                     play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
-                                    over_odds = info['FanDuel Over'] if best_book == 'FanDuel' else info['DraftKings Over']
-                                    under_odds = info['FanDuel Under'] if best_book == 'FanDuel' else info['DraftKings Under']
                                     st.session_state['all_qbs'][qb_name].update({
                                         'Projection': proj, 'Edge': edge, 'Play': play,
                                         'Tier': result['confidence_tier'],
@@ -5706,7 +5808,7 @@ elif nav == "🏈 NFL Models":
                                         'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                                         'Model Prob': ev_result['model_prob'] if ev_result else None,
                                         'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
-                                        'Odds': over_odds if direction == 'over' else under_odds,
+                                        'Odds': selected_odds,
                                         'Direction': direction,
                                         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
                                         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
@@ -5727,6 +5829,8 @@ elif nav == "🏈 NFL Models":
                                         'mm_tier': ev_result['tier'] if ev_result else None,
                                         'model_prob': ev_result['model_prob'] if ev_result else None,
                                         'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                                        'book': best_book, 'odds': selected_odds, 'direction': direction,
+                                        'game_week': game_week, 'commence_time': info.get('commence_time'),
                                     })
                                     st.rerun()
             with col11:
