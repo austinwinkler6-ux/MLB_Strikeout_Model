@@ -3717,6 +3717,38 @@ def get_nfl_team_game_pace_proe(seasons):
     grouped['proe'] = grouped['actual_pass_rate'] - grouped['avg_xpass']
     return grouped.rename(columns={'posteam': 'team'})
 
+@st.cache_data(ttl=86400)
+def get_nfl_defense_game_stats(seasons):
+    """Defense-side equivalent of get_nfl_team_game_pace_proe() — plays
+    allowed, pass plays allowed, and PROE allowed, aggregated once per
+    team-game (by defteam + game_id) and cached (July 2026 review, round
+    7). Built to fix a real memory crash: get_opponent_pass_funnel_factor
+    used to call get_nfl_pbp() directly and filter the FULL raw play-by-
+    play every time it needed an opponent's profile — and once the
+    prior-season fallback was added, that meant potentially holding TWO
+    full seasons of raw play-by-play in memory simultaneously during a
+    full-season, many-QB backtest (the exact same failure mode as the
+    original Railway out-of-memory incident, just triggered by the new
+    fallback code instead of the original live-card build). This
+    aggregate is computed ONCE per season and is a small fraction of the
+    raw data's size, matching the same pattern already proven to work
+    well for the offensive side."""
+    pbp = get_nfl_pbp(seasons)
+    if 'defteam' not in pbp.columns or 'game_id' not in pbp.columns:
+        return pd.DataFrame()
+    pass_col = 'pass' if 'pass' in pbp.columns else 'pass_attempt'
+    defensive_plays = pbp[(pbp.get(pass_col, 0) == 1) | (pbp.get('rush_attempt', 0) == 1)].copy()
+    if defensive_plays.empty:
+        return pd.DataFrame()
+    grouped = defensive_plays.groupby(['defteam', 'game_id', 'season', 'week'], as_index=False).agg(
+        total_plays_faced=(pass_col, 'size'),
+        pass_plays_faced=(pass_col, 'sum'),
+        pass_attempts_faced=('pass_attempt', 'sum'),
+        avg_xpass_faced=('xpass', 'mean') if 'xpass' in defensive_plays.columns else (pass_col, 'mean'),
+    )
+    grouped['proe_allowed'] = (grouped['pass_plays_faced'] / grouped['total_plays_faced']) - grouped['avg_xpass_faced']
+    return grouped.rename(columns={'defteam': 'team'})
+
 # ---- CLOSING LINE / CLV TRACKING ----
 def get_odds_api_sport_and_market(sport):
     if sport == 'MLB':
@@ -4335,35 +4367,35 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
 
     Falls back to the PRIOR season's full profile if the current
     season's sample is too thin (July 2026 review, round 7) — this
-    function only ever looked at the current season's play-by-play,
-    which is genuinely empty for week 1 and thin through week 3. Without
-    a fallback, this returned all-None for basically the entire first
-    month of every season, which silently triggered the critical
-    'Opponent profile fully unavailable' warning for EVERY QB regardless
-    of their own data quality — cascading straight to a Data Incomplete
-    tier for the whole slate, the exact bug reported and traced here."""
-    def _compute_profile(pbp_season, week_filter):
+    function only ever looked at current-season data, which is
+    genuinely empty for week 1 and thin through week 3. Without a
+    fallback, this returned all-None for the entire first month of every
+    season, silently triggering the critical 'Opponent profile fully
+    unavailable' warning for EVERY QB — cascading straight to a Data
+    Incomplete tier for the whole slate.
+
+    Now built on the cached, aggregated get_nfl_defense_game_stats()
+    instead of filtering raw play-by-play directly (a second July 2026
+    review round 7 fix) — the original version called get_nfl_pbp()
+    directly here, which meant a full-season backtest with the prior-
+    season fallback active could end up holding TWO full seasons of raw
+    play-by-play in memory at once, the likely cause of a real reported
+    crash. The aggregate is a small fraction of the raw data's size."""
+    def _compute_profile(stats_season, week_filter):
         try:
-            pbp = get_nfl_pbp([int(pbp_season)])
-            opp_faced = pbp[pbp['defteam'] == opponent].copy()
+            defense_stats = get_nfl_defense_game_stats([int(stats_season)])
+            if defense_stats.empty:
+                return None
+            opp_rows = defense_stats[defense_stats['team'] == opponent].copy()
             if week_filter is not None:
-                opp_faced = opp_faced[opp_faced['week'] < week_filter]
-            if opp_faced.empty:
-                return None
-            games_faced = opp_faced['game_id'].nunique()
-            if games_faced == 0:
-                return None
-            pass_attempts_faced = opp_faced['pass_attempt'].sum() if 'pass_attempt' in opp_faced.columns else None
-            pass_attempts_faced_per_game = pass_attempts_faced / games_faced if pass_attempts_faced is not None else None
-            pass_col = 'pass' if 'pass' in opp_faced.columns else 'pass_attempt'
-            offensive_plays_faced = opp_faced[(opp_faced.get(pass_col, 0) == 1) | (opp_faced.get('rush_attempt', 0) == 1)]
-            plays_allowed_per_game = len(offensive_plays_faced) / games_faced if games_faced > 0 else None
-            proe_allowed = opp_faced['pass_oe'].mean() * 100 if 'pass_oe' in opp_faced.columns else None
+                opp_rows = opp_rows[opp_rows['week'] < week_filter]
+            games_faced = len(opp_rows)
             if games_faced < 3:
-                return None  # too thin to trust even if non-empty
+                return None  # too thin to trust, even if non-empty
             return {
-                'pass_attempts_faced_per_game': pass_attempts_faced_per_game,
-                'proe_allowed': proe_allowed, 'plays_allowed_per_game': plays_allowed_per_game,
+                'pass_attempts_faced_per_game': opp_rows['pass_attempts_faced'].mean(),
+                'proe_allowed': opp_rows['proe_allowed'].mean() * 100,
+                'plays_allowed_per_game': opp_rows['total_plays_faced'].mean(),
             }
         except Exception:
             return None
