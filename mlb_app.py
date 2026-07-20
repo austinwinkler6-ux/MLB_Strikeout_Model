@@ -4423,6 +4423,39 @@ def find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=N
     except Exception:
         return None
 
+@st.cache_data(ttl=21600)
+def get_nfl_starter_game_ids(season):
+    """Real (game_id, qb_player_id) pairs for confirmed STARTERS, derived
+    from schedules' home_qb_id/away_qb_id — replaces the attempts>=15
+    interim safeguard (July 2026 review, round 5, item 1 — flagged
+    repeatedly across rounds 3-4 as the real fix, and the reviewer's own
+    top roadmap priority). An attempts threshold is a noisy proxy: a real
+    injury-shortened START with 14 attempts gets wrongly excluded, while
+    a backup's 18-attempt mop-up relief appearance in a blowout gets
+    wrongly included. A genuine starter-ID join has neither problem.
+
+    Important honest caveat: this assumes weekly stats' player_id and
+    schedules' home_qb_id/away_qb_id share the same ID space (both are
+    expected to be gsis_id, nflverse's standard cross-table player ID,
+    but this couldn't be verified live from the development sandbox — no
+    internet access there). If they turn out to use different ID
+    systems, this join will silently produce zero matches rather than
+    wrong ones, and the caller falls back to the attempts>=15 safeguard
+    in that case — see the 'Verify Starter-ID Join' debug button on the
+    NFL admin page to confirm which case is actually true once deployed."""
+    try:
+        schedules = get_nfl_schedules([int(season)])
+        starter_ids = set()
+        for _, row in schedules.iterrows():
+            game_id = row.get('game_id')
+            if pd.notna(row.get('home_qb_id')) and pd.notna(game_id):
+                starter_ids.add((game_id, row['home_qb_id']))
+            if pd.notna(row.get('away_qb_id')) and pd.notna(game_id):
+                starter_ids.add((game_id, row['away_qb_id']))
+        return starter_ids
+    except Exception:
+        return set()
+
 def get_nfl_game_context(season, team, opponent, as_of_week):
     """Real Vegas lines (spread, total) and situational context (rest days,
     weather, dome/outdoor) for one specific team's game in a specific
@@ -4744,18 +4777,33 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             qb_rows_all = qb_rows_all[qb_rows_all['week'] < as_of_week]
         qb_rows_all = qb_rows_all.sort_values('week')
 
-        # Filter out likely relief/backup appearances (July 2026 review,
-        # round 4, item 5) — without this, a backup QB's history could be
-        # dominated by a handful of mop-up relief snaps, or a starter's
-        # true weekly workload could get diluted by a game where he left
-        # after 5 attempts due to injury. The real, better fix is joining
-        # schedules' home_qb_id/away_qb_id to identify actual starts —
-        # that's a bigger piece of plumbing not yet built. This attempts
-        # >= 15 threshold is the reviewer's own suggested interim
-        # safeguard: imperfect (a real injury-shortened START could get
-        # wrongly excluded too), but better than including clear relief
-        # appearances unfiltered.
-        qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
+        # Real starter-ID join (July 2026 review, round 5, item 1 — the
+        # reviewer's own top roadmap priority) — replaces the attempts>=15
+        # interim safeguard from round 4. A threshold is a noisy proxy: a
+        # real injury-shortened START with 14 attempts gets wrongly
+        # excluded, while a backup's 18-attempt mop-up relief snaps in a
+        # blowout get wrongly included. This joins onto schedules'
+        # home_qb_id/away_qb_id directly, which has neither problem —
+        # but falls back to the attempts>=15 threshold if the join
+        # produces suspiciously few matches, since the ID-space match
+        # between weekly stats and schedules couldn't be verified live
+        # from the development sandbox (see get_nfl_starter_game_ids'
+        # docstring, and the 'Verify Starter-ID Join' debug button).
+        starter_filter_used = "starter_id_join"
+        if 'game_id' in qb_rows_all.columns and 'player_id' in qb_rows_all.columns:
+            starter_ids = get_nfl_starter_game_ids(season)
+            qb_rows = qb_rows_all[qb_rows_all.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1)].copy()
+            if len(qb_rows) < 3 and len(qb_rows_all) >= 3:
+                # Join produced too few matches to trust — likely an
+                # ID-space mismatch rather than genuine data sparsity.
+                # Fall back rather than return None on a real, playing QB.
+                qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
+                starter_filter_used = "attempts_threshold_fallback"
+                warnings.append("Starter-ID join returned too few matches — fell back to the attempts>=15 threshold. Worth checking the 'Verify Starter-ID Join' debug button for an ID-space mismatch.")
+        else:
+            qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
+            starter_filter_used = "attempts_threshold_fallback"
+
         games_started_used = len(qb_rows)
         partial_games_excluded = len(qb_rows_all) - len(qb_rows)
         if len(qb_rows) < 3:
@@ -5014,6 +5062,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'expected_plays_x_rate': expected_plays_x_rate,
             'games_used': len(qb_rows),
             'games_started_used': games_started_used, 'partial_games_excluded': partial_games_excluded,
+            'starter_filter_used': starter_filter_used,
             'confidence_tier': confidence_tier, 'attempts_cv': round(attempts_cv, 3),
             'architecture_gap': round(architecture_gap, 1), 'data_quality_warnings': warnings,
             'structural_projection': round(structural_projection, 1) if structural_projection is not None else None,
@@ -5922,6 +5971,33 @@ elif nav == "🏈 NFL Models":
                 except Exception as e:
                     st.error(f"Real error: {e}")
 
+            if st.button("🔍 Verify Starter-ID Join (checks the weekly-stats vs schedules ID match)"):
+                try:
+                    test_season = int(nfl_test_year)
+                    weekly_sample = get_nfl_player_stats([test_season])
+                    weekly_sample = weekly_sample[weekly_sample['position'] == 'QB'].head(3)
+                    schedules_sample = get_nfl_schedules([test_season]).head(3)
+                    st.write("Sample weekly stats player_id + game_id values:")
+                    st.dataframe(weekly_sample[['player_display_name', 'player_id', 'game_id', 'week']])
+                    st.write("Sample schedules home_qb_id/away_qb_id + game_id values:")
+                    st.dataframe(schedules_sample[['game_id', 'home_qb_id', 'away_qb_id', 'week']])
+                    starter_ids = get_nfl_starter_game_ids(test_season)
+                    st.write(f"Built {len(starter_ids)} (game_id, qb_id) starter pairs from schedules")
+                    all_qb_rows = get_nfl_player_stats([test_season])
+                    all_qb_rows = all_qb_rows[all_qb_rows['position'] == 'QB']
+                    matched = all_qb_rows.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1).sum()
+                    st.write(f"Of {len(all_qb_rows)} total QB weekly rows, {matched} matched a real starter pair.")
+                    if matched == 0:
+                        st.error("❌ Zero matches — the ID spaces genuinely don't line up. The model will correctly fall back to the attempts>=15 threshold, but the real starter-ID join isn't usable as-is.")
+                    elif matched < len(all_qb_rows) * 0.5:
+                        st.warning(f"⚠️ Only {round(matched/len(all_qb_rows)*100, 1)}% matched — worth a closer look, though this could also just be a small early-season sample.")
+                    else:
+                        st.success(f"✅ {round(matched/len(all_qb_rows)*100, 1)}% matched — the join looks like it's genuinely working.")
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
             st.markdown("---")
             st.subheader("🏈 Pass Attempts Model (v1) — Live Test")
             st.caption("v1 = QB's own recency-blended attempts x team pace factor x opponent pass-funnel factor. Deliberately excludes completion% and any accuracy-related variable — this model answers ONE question: how many times will this team throw. Test this before we build Completions/Receptions on top of it.")
@@ -5940,6 +6016,24 @@ elif nav == "🏈 NFL Models":
                     pa_result = run_nfl_pass_attempts_projection(nfl_qb_name, nfl_qb_team, nfl_qb_opponent, int(nfl_test_season), as_of_week=week_arg)
                     if pa_result:
                         st.success(f"✅ Worked! Projected attempts: {pa_result['projection']}")
+
+                        st.write("**Prediction Breakdown** — Base, then each ACTIVE factor's real % impact (pace/PROE/QB-rush shown separately below as informational-only, since they're not applied to avoid double-counting)")
+                        base = pa_result['base_attempts']
+                        opp_pct = round((pa_result['opp_factor'] - 1) * 100, 1)
+                        vegas_pct = round((pa_result['vegas_factor'] - 1) * 100, 1)
+                        rest_pct = round(pa_result['rest_adj'] * 100, 1)
+                        weather_pct = round(pa_result['weather_adj'] * 100, 1)
+                        breakdown_rows = [
+                            {"Step": "Base (QB history)", "Value": base},
+                            {"Step": "Opponent", "Value": f"{'+' if opp_pct >= 0 else ''}{opp_pct}%"},
+                            {"Step": "Vegas (spread + total)", "Value": f"{'+' if vegas_pct >= 0 else ''}{vegas_pct}%"},
+                            {"Step": "Rest", "Value": f"{'+' if rest_pct >= 0 else ''}{rest_pct}%"},
+                            {"Step": "Weather", "Value": f"{'+' if weather_pct >= 0 else ''}{weather_pct}%"},
+                            {"Step": "Final Projection", "Value": pa_result['projection']},
+                        ]
+                        st.dataframe(pd.DataFrame(breakdown_rows), use_container_width=True, hide_index=True)
+                        st.caption(f"Informational only, NOT applied (avoids double-counting the QB's own established identity): pace_factor={pa_result['pace_factor']}, proe_factor={pa_result['proe_factor']}, qb_rush_factor={pa_result['qb_rush_factor']}")
+
                         st.json(pa_result)
                     else:
                         st.warning("Returned None — either fewer than 3 games of history found for this QB/season/week combo, or the name didn't match exactly. Check debug mode + the schema buttons above to confirm the exact player_display_name spelling.")
@@ -6995,12 +7089,19 @@ elif nav == "🧪 Backtest" and is_admin:
                             if not result:
                                 skipped.append({'QB': m['qb'], 'Reason': "Fewer than 3 games of prior history — insufficient for a projection"})
                                 continue
+                            gctx = result.get('game_context') or {}
                             results.append({
                                 'QB': m['qb'], 'Matchup': f"{m['opponent']} @ {m['team']}",
                                 'Projection': result['projection'], 'Actual': actual_attempts,
                                 'Error': round(abs(result['projection'] - actual_attempts), 1),
                                 'Error %': round(abs(result['projection'] - actual_attempts) / actual_attempts * 100, 1) if actual_attempts > 0 else None,
                                 'Games Used': result['games_used'], 'Pace Factor': result['pace_factor'], 'Opp Factor': result['opp_factor'],
+                                'Confidence Tier': result.get('confidence_tier'),
+                                'Architecture Gap': result.get('architecture_gap'),
+                                'Spread': gctx.get('spread'), 'Total': gctx.get('total'),
+                                'Wind': gctx.get('wind'), 'Roof': gctx.get('roof'),
+                                'Is Home': gctx.get('is_home'),
+                                'Starter Filter': result.get('starter_filter_used'),
                             })
                         st.session_state['nfl_backtest_results'] = results
                         st.session_state['nfl_backtest_skipped'] = skipped
@@ -7032,6 +7133,49 @@ elif nav == "🧪 Backtest" and is_admin:
             wcol1.metric("Within 3 attempts", f"{within_metrics['Within 3']}%")
             wcol2.metric("Within 5 attempts", f"{within_metrics['Within 5']}%")
             wcol3.metric("Within 8 attempts", f"{within_metrics['Within 8']}%")
+
+            st.markdown("---")
+            st.subheader("🔬 Validation Buckets")
+            st.caption("Splits accuracy by real game context instead of just an overall average — this is how you find out where the model is actually strong or weak, rather than assuming one MAE number tells the whole story.")
+
+            def _bucket_table(df, group_col, label):
+                if group_col not in df.columns or df[group_col].isna().all():
+                    return
+                sub = df.dropna(subset=[group_col]).copy()
+                if sub.empty:
+                    return
+                summary = sub.groupby(group_col).agg(Predictions=('Error', 'count'), MAE=('Error', 'mean')).reset_index()
+                summary['MAE'] = summary['MAE'].round(2)
+                st.write(f"**{label}**")
+                st.dataframe(summary, use_container_width=True)
+
+            nfl_results_df['Favorite/Dog'] = nfl_results_df['Spread'].apply(lambda s: 'Favorite' if pd.notna(s) and s < 0 else ('Underdog' if pd.notna(s) and s > 0 else None))
+            nfl_results_df['Dome/Outdoor'] = nfl_results_df['Roof'].apply(lambda r: 'Dome' if r in ('dome', 'closed') else ('Outdoor' if pd.notna(r) else None))
+            nfl_results_df['Wind Risk'] = nfl_results_df['Wind'].apply(lambda w: 'High Wind (15+)' if pd.notna(w) and w >= 15 else ('Normal' if pd.notna(w) else None))
+            nfl_results_df['Home/Road'] = nfl_results_df['Is Home'].apply(lambda h: 'Home' if h is True else ('Road' if h is False else None))
+            spread_bins = [-100, -7, -3, 0, 100]
+            spread_labels = ["Favorite 7+", "Favorite 3-7", "Favorite 0-3", "Underdog"]
+            nfl_results_df['Spread Bucket'] = pd.cut(nfl_results_df['Spread'], bins=spread_bins, labels=spread_labels) if nfl_results_df['Spread'].notna().any() else None
+            total_bins = [0, 42, 47, 100]
+            total_labels = ["Low Total (<42)", "Mid Total (42-47)", "High Total (47+)"]
+            nfl_results_df['Total Bucket'] = pd.cut(nfl_results_df['Total'], bins=total_bins, labels=total_labels) if nfl_results_df['Total'].notna().any() else None
+
+            _bucket_table(nfl_results_df, 'Favorite/Dog', "Favorite vs. Underdog")
+            _bucket_table(nfl_results_df, 'Spread Bucket', "Spread Range")
+            _bucket_table(nfl_results_df, 'Total Bucket', "Game Total Range")
+            _bucket_table(nfl_results_df, 'Dome/Outdoor', "Dome vs. Outdoor")
+            _bucket_table(nfl_results_df, 'Wind Risk', "Wind Risk")
+            _bucket_table(nfl_results_df, 'Home/Road', "Home vs. Road")
+            _bucket_table(nfl_results_df, 'Confidence Tier', "Confidence Tier")
+
+            if nfl_results_df['Architecture Gap'].notna().any():
+                st.write("**Architecture Gap vs. MAE** — how much the QB-history projection disagreed with the independent Expected Plays x Rate view, and whether that disagreement actually predicted error")
+                gap_bins = [-0.01, 1, 2, 3, 4, 100]
+                gap_labels = ["0-1", "1-2", "2-3", "3-4", "5+"]
+                nfl_results_df['Gap Bucket'] = pd.cut(nfl_results_df['Architecture Gap'], bins=gap_bins, labels=gap_labels)
+                gap_summary = nfl_results_df.dropna(subset=['Gap Bucket']).groupby('Gap Bucket', observed=True).agg(Predictions=('Error', 'count'), MAE=('Error', 'mean')).reset_index()
+                gap_summary['MAE'] = gap_summary['MAE'].round(2)
+                st.dataframe(gap_summary, use_container_width=True)
 
             st.markdown("---")
             st.subheader("💰 Check Against Real Historical Sportsbook Lines")
