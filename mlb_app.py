@@ -4854,7 +4854,9 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
     except Exception:
         return pd.DataFrame(), "error"
 
-def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None):
+def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None,
+                                       season_weight=0.45, last5_weight=0.35, last10_weight=0.20,
+                                       spread_coef=0.008, total_coef=0.004):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
     recency-blended attempts as the base, layered with Vegas game script,
     actually-used PROE, a blended opponent factor, home/away, QB rushing
@@ -4862,6 +4864,17 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
     (per the original build plan) — this model answers ONE question: how
     many times will this team throw the ball. Leak-free when as_of_week
     is set: only uses games/lines/context strictly before that week.
+
+    season_weight/last5_weight/last10_weight (base blend) and spread_coef/
+    total_coef (Vegas adjustment strength) are now real, overridable
+    parameters (July 2026, round 10) instead of hardcoded constants —
+    these were always reasonable starting guesses, never actually tuned
+    against real data. Now that two full, independent backtest seasons
+    exist, an optimizer can call this function repeatedly with different
+    combinations and find out what actually minimizes real error, rather
+    than continuing to guess. Defaults match the current, previously-
+    hardcoded values, so nothing changes unless a caller deliberately
+    overrides them.
 
     Round 1 -> Round 2 changes, all from direct review feedback:
       - Base weighting changed from a noisy 50% season / 50% last-3 to a
@@ -4965,7 +4978,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
 
         # Base weighting — steadier than the old 50/50 season/last-3 split
         # (July 2026 review: 3 games is very noisy in the NFL).
-        base_attempts = (season_attempts_avg * 0.45) + (last5_attempts_avg * 0.35) + (last10_attempts_avg * 0.20)
+        base_attempts = (season_attempts_avg * season_weight) + (last5_attempts_avg * last5_weight) + (last10_attempts_avg * last10_weight)
 
         baselines = get_nfl_league_baselines(season, as_of_week)
 
@@ -5036,10 +5049,10 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
                 # favorite should throw LESS (protecting a lead), an
                 # underdog MORE (catching up) — spread's own sign already
                 # points the right direction with no negation needed.
-                spread_component = max(-0.08, min(0.08, spread * 0.008))
+                spread_component = max(-0.08, min(0.08, spread * spread_coef))
                 vegas_factor += spread_component
             if total is not None:
-                total_component = max(-0.05, min(0.05, (total - baselines['game_total_average']) * 0.004))
+                total_component = max(-0.05, min(0.05, (total - baselines['game_total_average']) * total_coef))
                 vegas_factor += total_component
 
             rest_days = game_context.get('rest_days')
@@ -7466,6 +7479,143 @@ elif nav == "🧪 Backtest" and is_admin:
                                 chart_df_nfl = line_results_nfl[line_results_nfl['Bet Result'].isin(['Win', 'Loss'])].copy()
                                 chart_df_nfl['Result Color'] = chart_df_nfl['Bet Result'].map({'Win': '#2ecc71', 'Loss': '#e74c3c'})
                                 st.scatter_chart(chart_df_nfl, x='Projection', y='Actual', color='Result Color')
+
+        st.markdown("---")
+        st.subheader("🎛️ Coefficient Optimizer")
+        st.caption("Grid search over the base weighting (season/last-5/last-10) and Vegas coefficients (spread, total) — these were always reasonable starting guesses, never actually tuned against real data. Searches on a TRAINING season, then validates the winning combination against the OTHER season as a genuinely held-out test — the same overfitting protection discussed before ever building this: don't trust a combination that only looks good on the data it was picked from.")
+
+        opt_train_season = st.selectbox("Train on", ["2024", "2025"], key="nfl_opt_train_season")
+        opt_validate_season = "2025" if opt_train_season == "2024" else "2024"
+        st.caption(f"Will validate the best combination against {opt_validate_season} automatically.")
+        col_opt_wk1, col_opt_wk2 = st.columns(2)
+        with col_opt_wk1:
+            opt_week_start = st.number_input("Training week range - start", min_value=7, max_value=18, value=7, key="nfl_opt_week_start")
+        with col_opt_wk2:
+            opt_week_end = st.number_input("Training week range - end", min_value=7, max_value=18, value=12, key="nfl_opt_week_end")
+        st.caption("Kept to week 7+ deliberately — avoids the early-season prior-season-bridge complexity, keeping the search focused purely on the coefficients themselves. A 6-week window is a reasonable, tractable sample without an excessive number of model runs.")
+
+        if st.button("🔍 Run Grid Search", use_container_width=True):
+            with st.spinner("Running grid search..."):
+                try:
+                    blend_options = [
+                        (0.45, 0.35, 0.20),  # current default
+                        (0.50, 0.30, 0.20),
+                        (0.40, 0.40, 0.20),
+                        (0.35, 0.45, 0.20),
+                    ]
+                    spread_options = [0.003, 0.004, 0.005, 0.006, 0.008]
+                    total_options = [0.001, 0.002, 0.003, 0.004]
+
+                    train_weeks = list(range(int(opt_week_start), int(opt_week_end) + 1))
+                    schedules_opt = get_nfl_schedules([int(opt_train_season)])
+                    actual_stats_opt = get_nfl_player_stats([int(opt_train_season)])
+                    matchups_opt = []
+                    for wk in train_weeks:
+                        week_games = schedules_opt[schedules_opt['week'] == wk]
+                        for _, g in week_games.iterrows():
+                            if pd.notna(g.get('home_qb_name')):
+                                matchups_opt.append({'qb': g['home_qb_name'], 'team': g['home_team'], 'opponent': g['away_team'], 'week': wk})
+                            if pd.notna(g.get('away_qb_name')):
+                                matchups_opt.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
+
+                    combos = [(b, s, t) for b in blend_options for s in spread_options for t in total_options]
+                    st.caption(f"Testing {len(combos)} combinations across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks) — this will take a while.")
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    combo_results = []
+
+                    for ci, (blend, spread_c, total_c) in enumerate(combos):
+                        status_text.text(f"Combo {ci+1} of {len(combos)}: blend={blend}, spread={spread_c}, total={total_c}")
+                        progress_bar.progress((ci + 1) / len(combos))
+                        errors = []
+                        for m in matchups_opt:
+                            result = run_nfl_pass_attempts_projection(
+                                m['qb'], m['team'], m['opponent'], int(opt_train_season), as_of_week=m['week'],
+                                season_weight=blend[0], last5_weight=blend[1], last10_weight=blend[2],
+                                spread_coef=spread_c, total_coef=total_c,
+                            )
+                            if not result:
+                                continue
+                            actual_row = actual_stats_opt[(actual_stats_opt['player_display_name'] == m['qb']) & (actual_stats_opt['week'] == m['week']) & (actual_stats_opt['position'] == 'QB')]
+                            if actual_row.empty:
+                                continue
+                            errors.append(abs(result['projection'] - actual_row['attempts'].iloc[0]))
+                        if errors:
+                            combo_results.append({
+                                'Season Weight': blend[0], 'Last-5 Weight': blend[1], 'Last-10 Weight': blend[2],
+                                'Spread Coef': spread_c, 'Total Coef': total_c,
+                                'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
+                            })
+
+                    combo_df = pd.DataFrame(combo_results).sort_values('MAE')
+                    st.session_state['nfl_optimizer_results'] = combo_df
+                    st.session_state['nfl_optimizer_train_season'] = opt_train_season
+                    st.session_state['nfl_optimizer_weeks'] = train_weeks
+                    status_text.text(f"✅ Done! Tested {len(combos)} combinations.")
+                    progress_bar.progress(1.0)
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        if 'nfl_optimizer_results' in st.session_state:
+            combo_df = st.session_state['nfl_optimizer_results']
+            st.write(f"**Top 10 combinations (trained on {st.session_state.get('nfl_optimizer_train_season', '')}):**")
+            st.dataframe(combo_df.head(10), use_container_width=True)
+
+            best = combo_df.iloc[0]
+            st.success(f"Best on training season: MAE {best['MAE']} with blend ({best['Season Weight']}/{best['Last-5 Weight']}/{best['Last-10 Weight']}), spread={best['Spread Coef']}, total={best['Total Coef']}")
+
+            if st.button("✅ Validate Best Combination on the OTHER season", use_container_width=True):
+                validate_season = "2025" if st.session_state.get('nfl_optimizer_train_season') == "2024" else "2024"
+                val_weeks = st.session_state.get('nfl_optimizer_weeks', list(range(int(opt_week_start), int(opt_week_end) + 1)))
+                with st.spinner(f"Validating against {validate_season} (same week range)..."):
+                    try:
+                        schedules_val = get_nfl_schedules([int(validate_season)])
+                        actual_stats_val = get_nfl_player_stats([int(validate_season)])
+                        matchups_val = []
+                        for wk in val_weeks:
+                            week_games = schedules_val[schedules_val['week'] == wk]
+                            for _, g in week_games.iterrows():
+                                if pd.notna(g.get('home_qb_name')):
+                                    matchups_val.append({'qb': g['home_qb_name'], 'team': g['home_team'], 'opponent': g['away_team'], 'week': wk})
+                                if pd.notna(g.get('away_qb_name')):
+                                    matchups_val.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
+
+                        val_errors_new = []
+                        val_errors_old = []
+                        for m in matchups_val:
+                            result_new = run_nfl_pass_attempts_projection(
+                                m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'],
+                                season_weight=best['Season Weight'], last5_weight=best['Last-5 Weight'], last10_weight=best['Last-10 Weight'],
+                                spread_coef=best['Spread Coef'], total_coef=best['Total Coef'],
+                            )
+                            result_old = run_nfl_pass_attempts_projection(m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'])
+                            actual_row = actual_stats_val[(actual_stats_val['player_display_name'] == m['qb']) & (actual_stats_val['week'] == m['week']) & (actual_stats_val['position'] == 'QB')]
+                            if actual_row.empty:
+                                continue
+                            actual_val = actual_row['attempts'].iloc[0]
+                            if result_new:
+                                val_errors_new.append(abs(result_new['projection'] - actual_val))
+                            if result_old:
+                                val_errors_old.append(abs(result_old['projection'] - actual_val))
+
+                        new_mae = round(sum(val_errors_new) / len(val_errors_new), 3) if val_errors_new else None
+                        old_mae = round(sum(val_errors_old) / len(val_errors_old), 3) if val_errors_old else None
+                        st.write(f"**On {validate_season} (held-out, same week range):**")
+                        vcol1, vcol2 = st.columns(2)
+                        vcol1.metric("Current defaults MAE", old_mae)
+                        vcol2.metric("New combination MAE", new_mae, delta=round(new_mae - old_mae, 3) if new_mae and old_mae else None, delta_color="inverse")
+                        if new_mae and old_mae:
+                            if new_mae < old_mae:
+                                st.success("✅ The new combination genuinely improves on the held-out season too — real evidence, not just overfitting to the training season.")
+                            else:
+                                st.warning("⚠️ The new combination does NOT improve (or is worse) on the held-out season — this looks like overfitting to the training season's noise. Don't lock these values in.")
+                    except Exception as e:
+                        st.error(f"Real error: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
         if 'nfl_backtest_skipped' in st.session_state and st.session_state['nfl_backtest_skipped']:
             with st.expander(f"Skipped ({len(st.session_state['nfl_backtest_skipped'])})"):
                 st.dataframe(pd.DataFrame(st.session_state['nfl_backtest_skipped']), use_container_width=True)
