@@ -4730,16 +4730,30 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
 def get_qb_starter_rows(qb_name, season, as_of_week=None):
     """Fetches one season's weekly stats for a QB and filters down to real
     starts, using the starter-ID join with a fallback to the attempts>=15
-    threshold — the same logic previously inlined directly in
-    run_nfl_pass_attempts_projection, now extracted so it can be called
-    for BOTH the current season and the prior season (needed for the
-    early-season bridge, July 2026 review round 6) without duplicating
-    the join/fallback logic twice. Returns (qb_rows, starter_filter_used)
-    — qb_rows is empty (not None) if nothing is found, so callers don't
-    need special-case handling for "no prior season data."""
+    threshold. Returns (qb_rows, starter_filter_used) — qb_rows is empty
+    (not None) if nothing is found.
+
+    Hardened (July 2026 review, round 7 — debugging a real reported bug
+    where every QB, including established veterans, showed 'Games Used:
+    1' during Week 1 backtesting): filters to season_type == 'REG'
+    explicitly, since nflverse's weekly stats include preseason and
+    playoff rows too, and those can have OVERLAPPING or unexpected week
+    numbers relative to the regular season — a real, plausible source of
+    contamination that was never guarded against before. Also coerces
+    'attempts' to numeric explicitly before any threshold comparison
+    (defensive — a stray non-numeric value could silently break a >=15
+    comparison). The starter-ID join's fallback trigger is now
+    proportional (falls back if the join found fewer than half the
+    available games), not just an absolute floor of 3 — a join that's
+    subtly broken but still produces 1-2 'lucky' matches out of 17 real
+    games should also be caught, not just a total failure."""
     try:
         weekly = get_nfl_player_stats([int(season)])
         qb_rows_all = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
+        if 'season_type' in qb_rows_all.columns:
+            qb_rows_all = qb_rows_all[qb_rows_all['season_type'] == 'REG']
+        if 'attempts' in qb_rows_all.columns:
+            qb_rows_all['attempts'] = pd.to_numeric(qb_rows_all['attempts'], errors='coerce').fillna(0)
         if as_of_week is not None:
             qb_rows_all = qb_rows_all[qb_rows_all['week'] < as_of_week]
         qb_rows_all = qb_rows_all.sort_values('week')
@@ -4748,7 +4762,7 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
         if 'game_id' in qb_rows_all.columns and 'player_id' in qb_rows_all.columns:
             starter_ids = get_nfl_starter_game_ids(season)
             qb_rows = qb_rows_all[qb_rows_all.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1)].copy()
-            if len(qb_rows) < 3 and len(qb_rows_all) >= 3:
+            if len(qb_rows_all) >= 3 and len(qb_rows) < max(3, len(qb_rows_all) * 0.5):
                 qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
                 starter_filter_used = "attempts_threshold_fallback"
         else:
@@ -4820,9 +4834,12 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         prior_weight = prior_weight_table.get(starts_this_season, 0.0)
         team_changed = False
         prior_qb_rows = pd.DataFrame()
+        prior_starter_filter_used = None
 
         if prior_weight > 0:
-            prior_qb_rows, _ = get_qb_starter_rows(qb_name, int(season) - 1, as_of_week=None)
+            prior_qb_rows, prior_starter_filter_used = get_qb_starter_rows(qb_name, int(season) - 1, as_of_week=None)
+            if prior_starter_filter_used == "attempts_threshold_fallback":
+                warnings.append("Prior-season starter-ID join fell back to the attempts>=15 threshold — worth checking the 'Verify Starter-ID Join' debug button.")
             if not prior_qb_rows.empty:
                 # Team-change check — last year's volume reflects a
                 # DIFFERENT offense if the QB switched teams, so carryover
@@ -5123,6 +5140,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'games_started_used': games_started_used, 'partial_games_excluded': partial_games_excluded,
             'starter_filter_used': starter_filter_used,
             'starts_this_season': starts_this_season, 'prior_season_weight': round(prior_weight, 2),
+            'prior_games_available': len(prior_qb_rows), 'prior_starter_filter_used': prior_starter_filter_used,
             'team_changed': team_changed, 'is_rookie_limited_sample': is_rookie_limited_sample,
             'confidence_tier': confidence_tier, 'attempts_cv': round(attempts_cv, 3),
             'architecture_gap': round(architecture_gap, 1), 'data_quality_warnings': warnings,
