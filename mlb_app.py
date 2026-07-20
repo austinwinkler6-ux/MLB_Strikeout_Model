@@ -4727,6 +4727,37 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                 })
     return results
 
+def get_qb_starter_rows(qb_name, season, as_of_week=None):
+    """Fetches one season's weekly stats for a QB and filters down to real
+    starts, using the starter-ID join with a fallback to the attempts>=15
+    threshold — the same logic previously inlined directly in
+    run_nfl_pass_attempts_projection, now extracted so it can be called
+    for BOTH the current season and the prior season (needed for the
+    early-season bridge, July 2026 review round 6) without duplicating
+    the join/fallback logic twice. Returns (qb_rows, starter_filter_used)
+    — qb_rows is empty (not None) if nothing is found, so callers don't
+    need special-case handling for "no prior season data."""
+    try:
+        weekly = get_nfl_player_stats([int(season)])
+        qb_rows_all = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
+        if as_of_week is not None:
+            qb_rows_all = qb_rows_all[qb_rows_all['week'] < as_of_week]
+        qb_rows_all = qb_rows_all.sort_values('week')
+
+        starter_filter_used = "starter_id_join"
+        if 'game_id' in qb_rows_all.columns and 'player_id' in qb_rows_all.columns:
+            starter_ids = get_nfl_starter_game_ids(season)
+            qb_rows = qb_rows_all[qb_rows_all.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1)].copy()
+            if len(qb_rows) < 3 and len(qb_rows_all) >= 3:
+                qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
+                starter_filter_used = "attempts_threshold_fallback"
+        else:
+            qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
+            starter_filter_used = "attempts_threshold_fallback"
+        return qb_rows, starter_filter_used
+    except Exception:
+        return pd.DataFrame(), "error"
+
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
     recency-blended attempts as the base, layered with Vegas game script,
@@ -4771,49 +4802,70 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
     """
     try:
         warnings = []
-        weekly = get_nfl_player_stats([int(season)])
-        qb_rows_all = weekly[(weekly['player_display_name'] == qb_name) & (weekly['position'] == 'QB')].copy()
-        if as_of_week is not None:
-            qb_rows_all = qb_rows_all[qb_rows_all['week'] < as_of_week]
-        qb_rows_all = qb_rows_all.sort_values('week')
 
-        # Real starter-ID join (July 2026 review, round 5, item 1 — the
-        # reviewer's own top roadmap priority) — replaces the attempts>=15
-        # interim safeguard from round 4. A threshold is a noisy proxy: a
-        # real injury-shortened START with 14 attempts gets wrongly
-        # excluded, while a backup's 18-attempt mop-up relief snaps in a
-        # blowout get wrongly included. This joins onto schedules'
-        # home_qb_id/away_qb_id directly, which has neither problem —
-        # but falls back to the attempts>=15 threshold if the join
-        # produces suspiciously few matches, since the ID-space match
-        # between weekly stats and schedules couldn't be verified live
-        # from the development sandbox (see get_nfl_starter_game_ids'
-        # docstring, and the 'Verify Starter-ID Join' debug button).
-        starter_filter_used = "starter_id_join"
-        if 'game_id' in qb_rows_all.columns and 'player_id' in qb_rows_all.columns:
-            starter_ids = get_nfl_starter_game_ids(season)
-            qb_rows = qb_rows_all[qb_rows_all.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1)].copy()
-            if len(qb_rows) < 3 and len(qb_rows_all) >= 3:
-                # Join produced too few matches to trust — likely an
-                # ID-space mismatch rather than genuine data sparsity.
-                # Fall back rather than return None on a real, playing QB.
-                qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
-                starter_filter_used = "attempts_threshold_fallback"
-                warnings.append("Starter-ID join returned too few matches — fell back to the attempts>=15 threshold. Worth checking the 'Verify Starter-ID Join' debug button for an ID-space mismatch.")
+        # Prior-season bridge (July 2026 review, round 6) — without this,
+        # the model returns None for EVERY QB during weeks 1-3 of any
+        # season, since it requires 3+ current-season starts and there's
+        # no way to have that before week 4. Phases out by STARTS, not
+        # week number (more robust to bye weeks and missed games than a
+        # fixed week cutoff), using the reviewer's own weighting table:
+        # 0 starts this season = 100% prior season, 1 = 80%, 2 = 60%,
+        # 3 = 40%, 4 = 20%, 5+ = 0% (fully current-season by then).
+        qb_rows, starter_filter_used = get_qb_starter_rows(qb_name, season, as_of_week)
+        starts_this_season = len(qb_rows)
+        if starter_filter_used == "attempts_threshold_fallback":
+            warnings.append("Starter-ID join returned too few matches — fell back to the attempts>=15 threshold. Worth checking the 'Verify Starter-ID Join' debug button for an ID-space mismatch.")
+
+        prior_weight_table = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4, 4: 0.2}
+        prior_weight = prior_weight_table.get(starts_this_season, 0.0)
+        team_changed = False
+        prior_qb_rows = pd.DataFrame()
+
+        if prior_weight > 0:
+            prior_qb_rows, _ = get_qb_starter_rows(qb_name, int(season) - 1, as_of_week=None)
+            if not prior_qb_rows.empty:
+                # Team-change check — last year's volume reflects a
+                # DIFFERENT offense if the QB switched teams, so carryover
+                # gets cut in half rather than trusted at full strength.
+                prior_team = prior_qb_rows['team'].iloc[-1] if 'team' in prior_qb_rows.columns else None
+                if prior_team and prior_team != team:
+                    team_changed = True
+                    prior_weight = prior_weight * 0.5
+                    warnings.append(f"QB changed teams since last season ({prior_team} -> {team}) — prior-season carryover weight halved to account for a different offensive context.")
+
+        # Rookie / genuinely no-history case — both current and prior
+        # season have insufficient real starts. Per review: label clearly
+        # and avoid strong recommendations rather than force a number
+        # from almost nothing.
+        combined_available = starts_this_season + len(prior_qb_rows)
+        if combined_available < 3:
+            return None  # still genuinely not enough to project responsibly, rookie or otherwise
+
+        is_rookie_limited_sample = starts_this_season < 3 and len(prior_qb_rows) == 0
+
+        current_weight = 1 - prior_weight
+        current_season_avg = qb_rows['attempts'].mean() if not qb_rows.empty else None
+        prior_season_avg = prior_qb_rows['attempts'].mean() if not prior_qb_rows.empty else None
+
+        if prior_weight > 0 and prior_season_avg is not None:
+            season_attempts_avg = (prior_season_avg * prior_weight) + (current_season_avg * current_weight) if current_season_avg is not None else prior_season_avg
         else:
-            qb_rows = qb_rows_all[qb_rows_all['attempts'] >= 15].copy()
-            starter_filter_used = "attempts_threshold_fallback"
+            season_attempts_avg = current_season_avg
 
-        games_started_used = len(qb_rows)
-        partial_games_excluded = len(qb_rows_all) - len(qb_rows)
-        if len(qb_rows) < 3:
-            return None
+        # last5/last10 pull from a combined chronological log (prior
+        # season's real starts, then current season's so far) — this
+        # naturally phases out prior-season influence as more current-
+        # season games accumulate, without needing separate explicit
+        # weighting logic the way season_attempts_avg does.
+        combined_rows = pd.concat([prior_qb_rows, qb_rows]).reset_index(drop=True) if not prior_qb_rows.empty else qb_rows
+        last5_attempts_avg = combined_rows['attempts'].tail(5).mean()
+        last10_attempts_avg = combined_rows['attempts'].tail(10).mean()
+
+        games_started_used = starts_this_season
+        partial_games_excluded = None  # tracked inside get_qb_starter_rows's internals now, not directly exposed here post-refactor
 
         # Base weighting — steadier than the old 50/50 season/last-3 split
         # (July 2026 review: 3 games is very noisy in the NFL).
-        season_attempts_avg = qb_rows['attempts'].mean()
-        last5_attempts_avg = qb_rows['attempts'].tail(5).mean()
-        last10_attempts_avg = qb_rows['attempts'].tail(10).mean()
         base_attempts = (season_attempts_avg * 0.45) + (last5_attempts_avg * 0.35) + (last10_attempts_avg * 0.20)
 
         baselines = get_nfl_league_baselines(season, as_of_week)
@@ -5004,7 +5056,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         # WR/rookie-QB signals from the review are real, good ideas but
         # need their own verified data source before being trusted in a
         # tier that could affect real bet sizing.
-        attempts_history = qb_rows['attempts'].tail(10)
+        attempts_history = combined_rows['attempts'].tail(10)
         attempts_cv = (attempts_history.std() / attempts_history.mean()) if len(attempts_history) > 1 and attempts_history.mean() > 0 else 1.0
         is_dome = game_context.get('roof') in ('dome', 'closed') if game_context else None
         high_wind_risk = (game_context.get('wind') or 0) >= 15 if game_context else False
@@ -5023,15 +5075,22 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         critical_warning_keywords = ["Opponent profile fully unavailable", "Game context"]
         critical_warning_count = sum(any(k in w for k in critical_warning_keywords) for w in warnings)
 
-        if critical_warning_count >= 1:
+        # Rookie / limited-sample check (July 2026 review, round 6) —
+        # takes priority over every other tier check, per review: avoid
+        # making strong recommendations until a QB with essentially no
+        # real NFL track record accumulates enough starts, rather than
+        # letting a coincidentally-stable tiny sample look "Reliable."
+        if is_rookie_limited_sample:
+            confidence_tier = "🔴 Limited NFL Sample"
+        elif critical_warning_count >= 1:
             confidence_tier = "🔴 Data Incomplete — Pass"
         elif architecture_gap >= 5:
             confidence_tier = "🔴 Volatile — Model Disagreement"
-        elif len(qb_rows) < 4 or attempts_cv > 0.30 or high_wind_risk:
+        elif len(combined_rows) < 4 or attempts_cv > 0.30 or high_wind_risk:
             confidence_tier = "🔴 Volatile — Consider Pass"
         elif architecture_gap >= 3:
             confidence_tier = "🟠 Moderate"
-        elif len(qb_rows) >= 8 and attempts_cv < (0.20 if is_dome else 0.18):
+        elif len(combined_rows) >= 8 and attempts_cv < (0.20 if is_dome else 0.18):
             confidence_tier = "🟢 Reliable"  # dome games get a slightly more lenient bar — no weather variance to worry about indoors
         else:
             confidence_tier = "🟠 Moderate"
@@ -5060,9 +5119,11 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'expected_plays': round(expected_plays, 1) if expected_plays else None,
             'expected_pass_rate': round(expected_pass_rate, 3),
             'expected_plays_x_rate': expected_plays_x_rate,
-            'games_used': len(qb_rows),
+            'games_used': len(combined_rows),
             'games_started_used': games_started_used, 'partial_games_excluded': partial_games_excluded,
             'starter_filter_used': starter_filter_used,
+            'starts_this_season': starts_this_season, 'prior_season_weight': round(prior_weight, 2),
+            'team_changed': team_changed, 'is_rookie_limited_sample': is_rookie_limited_sample,
             'confidence_tier': confidence_tier, 'attempts_cv': round(attempts_cv, 3),
             'architecture_gap': round(architecture_gap, 1), 'data_quality_warnings': warnings,
             'structural_projection': round(structural_projection, 1) if structural_projection is not None else None,
