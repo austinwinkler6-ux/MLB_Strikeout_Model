@@ -7705,16 +7705,17 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    # Updated (July 2026, round 13) — testing bias_correction
-                    # first, per user's requested order. Real residual
-                    # analysis found the model systematically OVER-projects
-                    # (Actual - Projection was negative in BOTH 2024 and
-                    # 2025), though the size varied a lot (-0.6 in 2025,
-                    # -0.2 in 2024) — testing a range of small corrections
-                    # to see if any consistently helps. schedule_adjust_weight
-                    # kept fixed at 0 for this run — its own separate test
-                    # comes next.
-                    bias_correction_options = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05]
+                    # Updated (July 2026, round 14) — bias_correction is now
+                    # LOCKED IN as the model's default (0.01), validated on
+                    # held-out data last round. This search tests
+                    # schedule_adjust_weight next, as planned — the newly
+                    # built schedule-adjusted defensive signal (isolating a
+                    # defense's real effect from which offenses they
+                    # happened to play), now layered ON TOP of the
+                    # validated bias correction rather than the old
+                    # uncorrected baseline (bias_correction left unset
+                    # below, so it uses its new 0.01 default automatically).
+                    schedule_weight_options = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0]
 
                     train_weeks = list(range(int(opt_week_start), int(opt_week_end) + 1))
                     schedules_opt = get_nfl_schedules([int(opt_train_season)])
@@ -7728,21 +7729,21 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    combos = [((0.45, 0.35, 0.20), 0.008, 0.004, bc) for bc in bias_correction_options]
-                    st.caption(f"Testing {len(combos)} bias correction sizes (0% = no correction like now, up to 5% downward) across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks).")
+                    combos = [((0.45, 0.35, 0.20), 0.008, 0.004, sw) for sw in schedule_weight_options]
+                    st.caption(f"Testing {len(combos)} schedule-adjustment weights (0% = current opponent blend like now, up to 100% = pure schedule-adjusted signal) across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks). bias_correction=0.01 (the validated default) is active in every combination.")
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     combo_results = []
 
-                    for ci, (blend, spread_c, total_c, bias_c) in enumerate(combos):
-                        status_text.text(f"Testing bias correction {bias_c} ({ci+1} of {len(combos)})")
+                    for ci, (blend, spread_c, total_c, sched_w) in enumerate(combos):
+                        status_text.text(f"Testing schedule-adjust weight {sched_w} ({ci+1} of {len(combos)})")
                         progress_bar.progress((ci + 1) / len(combos))
                         errors = []
                         for m in matchups_opt:
                             result = run_nfl_pass_attempts_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season), as_of_week=m['week'],
                                 season_weight=blend[0], last5_weight=blend[1], last10_weight=blend[2],
-                                spread_coef=spread_c, total_coef=total_c, bias_correction=bias_c,
+                                spread_coef=spread_c, total_coef=total_c, schedule_adjust_weight=sched_w,
                             )
                             if not result:
                                 continue
@@ -7752,7 +7753,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['attempts'].iloc[0]))
                         if errors:
                             combo_results.append({
-                                'Bias Correction': bias_c,
+                                'Schedule Adjust Weight': sched_w,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -7769,11 +7770,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'nfl_optimizer_results' in st.session_state:
             combo_df = st.session_state['nfl_optimizer_results']
-            st.write(f"**All bias corrections tested (trained on {st.session_state.get('nfl_optimizer_train_season', '')}), sorted best to worst:**")
+            st.write(f"**All schedule-adjust weights tested (trained on {st.session_state.get('nfl_optimizer_train_season', '')}), sorted best to worst:**")
             st.dataframe(combo_df, use_container_width=True)
 
             best = combo_df.iloc[0]
-            st.success(f"Best on training season: MAE {best['MAE']} at bias_correction={best['Bias Correction']}")
+            st.success(f"Best on training season: MAE {best['MAE']} at schedule_adjust_weight={best['Schedule Adjust Weight']}")
 
             if st.button("✅ Validate Best Combination on the OTHER season", use_container_width=True):
                 validate_season = "2025" if st.session_state.get('nfl_optimizer_train_season') == "2024" else "2024"
@@ -7796,7 +7797,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val:
                             result_new = run_nfl_pass_attempts_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'],
-                                bias_correction=best['Bias Correction'],
+                                schedule_adjust_weight=best['Schedule Adjust Weight'],
                             )
                             result_old = run_nfl_pass_attempts_projection(m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'])
                             actual_row = actual_stats_val[(actual_stats_val['player_display_name'] == m['qb']) & (actual_stats_val['week'] == m['week']) & (actual_stats_val['position'] == 'QB')]
