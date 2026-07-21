@@ -6285,7 +6285,7 @@ elif nav == "🏈 NFL Models":
 
             st.markdown("---")
             st.subheader("📏 Theoretical Accuracy Floor")
-            st.caption("What's the best possible MAE, even with a 'perfect hindsight' predictor that already knows each QB's TRUE full-season average attempts (something no real, pre-game model could ever have)? This tells us how much of our real model's error is genuinely irreducible game-to-game variance — weather, injuries mid-game, unexpected game script — versus real room a better model could still close.")
+            st.caption("What's the best possible MAE, even with a 'perfect hindsight' predictor that already knows each QB's TRUE full-season attempts distribution (something no real, pre-game model could ever have)? This tells us how much of our real model's error is genuinely irreducible game-to-game variance versus real room a better model could still close. Shows both mean and median — median is the mathematically correct constant benchmark for MAE specifically (MAE is minimized by the median, not the mean, which is only optimal for squared error) — a real correction caught via external review, since the original version only computed the mean-based floor.")
             floor_season = st.selectbox("Season", ["2024", "2025"], key="nfl_floor_season")
             floor_week_start = st.number_input("Week range - start", min_value=1, max_value=18, value=1, key="nfl_floor_week_start")
             floor_week_end = st.number_input("Week range - end", min_value=1, max_value=18, value=18, key="nfl_floor_week_end")
@@ -6300,18 +6300,35 @@ elif nav == "🏈 NFL Models":
                     qb_floor = qb_floor[qb_floor['attempts'] >= 15]  # real starts only
                     qb_floor = qb_floor[(qb_floor['week'] >= int(floor_week_start)) & (qb_floor['week'] <= int(floor_week_end))]
 
-                    floor_errors = []
+                    floor_errors_mean = []
+                    floor_errors_median = []
+                    week_excluded_errors = []
                     for qb_name, group in qb_floor.groupby('player_display_name'):
                         if len(group) < 3:
                             continue
-                        true_season_avg = group['attempts'].mean()  # deliberate hindsight — this is the theoretical floor, not a real model
+                        true_season_avg = group['attempts'].mean()  # deliberate hindsight — optimal for squared error, NOT MAE
+                        true_season_median = group['attempts'].median()  # deliberate hindsight — the MATHEMATICALLY CORRECT constant benchmark for MAE
                         for _, row in group.iterrows():
-                            floor_errors.append(abs(true_season_avg - row['attempts']))
+                            floor_errors_mean.append(abs(true_season_avg - row['attempts']))
+                            floor_errors_median.append(abs(true_season_median - row['attempts']))
+                        # Leak-free version: for each game, use the median of all OTHER games only
+                        # (excluding the one being "predicted") — a more honest, still-hindsight-based
+                        # but slightly more realistic constant baseline than using the full season
+                        # including the game itself.
+                        for idx, row in group.iterrows():
+                            other_games = group.drop(idx)
+                            if len(other_games) >= 2:
+                                week_excluded_errors.append(abs(other_games['attempts'].median() - row['attempts']))
 
-                    if floor_errors:
-                        floor_mae = round(sum(floor_errors) / len(floor_errors), 2)
-                        st.metric("Theoretical floor MAE (perfect hindsight)", floor_mae, help=f"Based on {len(floor_errors)} real QB-games")
-                        st.caption(f"Our real model's actual MAE this season was roughly ~7. Compare that against this floor to see how much genuine room is left versus how much is irreducible variance.")
+                    if floor_errors_mean:
+                        floor_mae_mean = round(sum(floor_errors_mean) / len(floor_errors_mean), 2)
+                        floor_mae_median = round(sum(floor_errors_median) / len(floor_errors_median), 2)
+                        floor_mae_excluded = round(sum(week_excluded_errors) / len(week_excluded_errors), 2) if week_excluded_errors else None
+                        col_f1, col_f2, col_f3 = st.columns(3)
+                        col_f1.metric("Full-season MEAN floor", floor_mae_mean, help="Hindsight, optimal for squared error — NOT the right benchmark for MAE")
+                        col_f2.metric("Full-season MEDIAN floor", floor_mae_median, help=f"Hindsight, the mathematically correct constant benchmark for MAE. Based on {len(floor_errors_median)} real QB-games")
+                        col_f3.metric("Week-excluded MEDIAN floor", floor_mae_excluded, help="Same as median floor, but excludes the game itself from its own baseline — a more honest constant benchmark")
+                        st.caption(f"Our real model's actual MAE this season was roughly ~7. Compare against the MEDIAN floor specifically (not mean) to see how much genuine room is left versus irreducible variance.")
                     else:
                         st.warning("Not enough real starts found in this range to compute a floor.")
                 except Exception as e:
@@ -7529,6 +7546,44 @@ elif nav == "🧪 Backtest" and is_admin:
                 st.dataframe(gap_summary, use_container_width=True)
 
             st.markdown("---")
+            st.subheader("🔬 Residual Analysis (bias, not just error)")
+            st.caption("This is the real decision-gate before committing to any structural rebuild, per external review: MAE alone can't tell you WHY the error exists. This checks the SIGNED residual (Actual - Projection, not absolute error) for systematic bias — if the model isn't just noisy but consistently over- or under-projects in specific situations, that's real evidence a structural rebuild has genuine potential. If residuals show no consistent pattern anywhere, the remaining error is more likely pure variance a rebuild won't fix.")
+
+            nfl_results_df['Signed Residual'] = nfl_results_df['Actual'] - nfl_results_df['Projection']
+            overall_bias = round(nfl_results_df['Signed Residual'].mean(), 2)
+            st.metric("Overall bias (Actual - Projection, averaged)", overall_bias,
+                      help="Near 0 = no systematic over/under-projection overall. A bucket showing a bias far from 0 (even if overall is near 0) is the real signal to look for below.")
+
+            def _bias_table(df, group_col, label):
+                if group_col not in df.columns or df[group_col].isna().all():
+                    return
+                sub = df.dropna(subset=[group_col]).copy()
+                if sub.empty:
+                    return
+                summary = sub.groupby(group_col, observed=True).agg(
+                    Predictions=('Signed Residual', 'count'),
+                    Bias=('Signed Residual', 'mean'),
+                    MAE=('Error', 'mean'),
+                ).reset_index()
+                summary['Bias'] = summary['Bias'].round(2)
+                summary['MAE'] = summary['MAE'].round(2)
+                st.write(f"**{label}**")
+                st.dataframe(summary, use_container_width=True)
+
+            _bias_table(nfl_results_df, 'Spread Bucket', "Bias by Spread Range (positive = model UNDER-projects, negative = OVER-projects)")
+            _bias_table(nfl_results_df, 'Total Bucket', "Bias by Game Total Range")
+            _bias_table(nfl_results_df, 'Confidence Tier', "Bias by Confidence Tier")
+            _bias_table(nfl_results_df, 'Week', "Bias by Week")
+            if 'QB' in nfl_results_df.columns:
+                qb_bias = nfl_results_df.groupby('QB').agg(Predictions=('Signed Residual', 'count'), Bias=('Signed Residual', 'mean'), MAE=('Error', 'mean')).reset_index()
+                qb_bias = qb_bias[qb_bias['Predictions'] >= 5].sort_values('Bias')
+                qb_bias['Bias'] = qb_bias['Bias'].round(2)
+                qb_bias['MAE'] = qb_bias['MAE'].round(2)
+                st.write("**Bias by QB (5+ predictions only)** — sorted most-under-projected to most-over-projected")
+                st.dataframe(qb_bias, use_container_width=True)
+
+            st.caption("How to read this: if bias stays close to 0 across every single breakdown, that matches the theoretical-floor finding — the remaining error is likely mostly irreducible variance, and a full structural rebuild is unlikely to move the needle much. If one or more buckets show a real, consistent bias (not just higher MAE, but a real +/- lean), that's genuine evidence worth pursuing further before building anything.")
+
             st.subheader("💰 Check Against Real Historical Sportsbook Lines")
             nfl_weeks_in_results = nfl_results_df['Week'].nunique() if 'Week' in nfl_results_df.columns else 1
             if nfl_weeks_in_results > 1:
