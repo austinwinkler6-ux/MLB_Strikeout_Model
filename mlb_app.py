@@ -3750,6 +3750,30 @@ def get_nfl_defense_game_stats(seasons):
     return grouped.rename(columns={'defteam': 'team'})
 
 @st.cache_data(ttl=86400)
+def get_nfl_defense_completion_stats(seasons):
+    """Defense-side completion stats — attempts faced and completions
+    allowed, aggregated once per team-game (by defteam + game_id) and
+    cached. Built for the Pass Completions model (July 2026), matching
+    the exact same caching pattern as get_nfl_defense_game_stats (built
+    for Pass Attempts) — applying that memory lesson from the start this
+    time instead of discovering it via a real crash again."""
+    pbp = get_nfl_pbp(seasons)
+    if 'defteam' not in pbp.columns or 'game_id' not in pbp.columns or 'pass_attempt' not in pbp.columns:
+        return pd.DataFrame()
+    pass_plays = pbp[pbp['pass_attempt'] == 1].copy()
+    if pass_plays.empty:
+        return pd.DataFrame()
+    agg_dict = {'attempts_faced': ('pass_attempt', 'sum')}
+    if 'complete_pass' in pass_plays.columns:
+        agg_dict['completions_allowed'] = ('complete_pass', 'sum')
+    grouped = pass_plays.groupby(['defteam', 'game_id', 'season', 'week'], as_index=False).agg(**agg_dict)
+    if 'completions_allowed' in grouped.columns:
+        grouped['completion_pct_allowed'] = grouped['completions_allowed'] / grouped['attempts_faced']
+    else:
+        grouped['completion_pct_allowed'] = None
+    return grouped.rename(columns={'defteam': 'team'})
+
+@st.cache_data(ttl=86400)
 def get_nfl_schedule_adjusted_defense(seasons):
     """For each team-game, links the offense's actual pass rate that game
     to who they played (the defense) — the building block for a
@@ -4388,7 +4412,7 @@ def get_nfl_league_baselines(season, as_of_week=None):
     fallback = {
         'plays_per_team_game': 64.0, 'pass_attempts_per_team_game': 33.0,
         'pass_rate': 0.58, 'qb_carries_per_game': 3.0, 'game_total_average': 45.0,
-        'pass_plays_per_team_game': 35.0,
+        'pass_plays_per_team_game': 35.0, 'completion_pct_baseline': 0.64,
     }
     # Skip the expensive PBP-dependent load ENTIRELY for very early weeks
     # (July 2026 review, round 8 — real crash fix) — the old version
@@ -4425,6 +4449,7 @@ def get_nfl_league_baselines(season, as_of_week=None):
         if as_of_week is not None:
             qb_rows = qb_rows[qb_rows['week'] < as_of_week]
         qb_carries_per_game = qb_rows['carries'].mean() if not qb_rows.empty and 'carries' in qb_rows.columns else fallback['qb_carries_per_game']
+        completion_pct_baseline = (qb_rows['completions'].sum() / qb_rows['attempts'].sum()) if not qb_rows.empty and 'completions' in qb_rows.columns and qb_rows['attempts'].sum() > 0 else fallback['completion_pct_baseline']
 
         schedules = get_nfl_schedules([int(season)])
         if as_of_week is not None:
@@ -4438,6 +4463,7 @@ def get_nfl_league_baselines(season, as_of_week=None):
             'qb_carries_per_game': round(qb_carries_per_game, 1) if pd.notna(qb_carries_per_game) else fallback['qb_carries_per_game'],
             'game_total_average': round(game_total_average, 1) if pd.notna(game_total_average) else fallback['game_total_average'],
             'pass_plays_per_team_game': round(pass_plays_per_team_game, 1) if pd.notna(pass_plays_per_team_game) else fallback['pass_plays_per_team_game'],
+            'completion_pct_baseline': round(completion_pct_baseline, 3) if pd.notna(completion_pct_baseline) else fallback['completion_pct_baseline'],
         }
     except Exception:
         return fallback
@@ -4508,6 +4534,37 @@ def get_opponent_pass_funnel_factor(season, opponent, as_of_week=None):
     if prior is not None:
         return prior
     return {'pass_attempts_faced_per_game': None, 'proe_allowed': None, 'plays_allowed_per_game': None}
+
+def get_nfl_opponent_completion_pct_allowed(season, opponent, as_of_week=None):
+    """How much completion percentage an opponent's defense tends to
+    allow — built for the Pass Completions model (July 2026), using the
+    cached get_nfl_defense_completion_stats aggregate (not raw play-by-
+    play directly) and applying the SAME lessons already learned the
+    hard way building Pass Attempts: skip the expensive attempt entirely
+    for very early weeks (as_of_week <= 6, matching the QB-level prior-
+    season bridge window), and fall back to the prior season's full
+    profile if the current season's sample is too thin. Requires at
+    least 3 real defensive games to trust the number."""
+    def _compute(stats_season, week_filter):
+        try:
+            defense_stats = get_nfl_defense_completion_stats([int(stats_season)])
+            if defense_stats.empty:
+                return None
+            opp_rows = defense_stats[defense_stats['team'] == opponent].copy()
+            if week_filter is not None:
+                opp_rows = opp_rows[opp_rows['week'] < week_filter]
+            if len(opp_rows) < 3:
+                return None
+            return opp_rows['completion_pct_allowed'].mean()
+        except Exception:
+            return None
+
+    if as_of_week is not None and as_of_week <= 6:
+        return _compute(int(season) - 1, None)
+    current = _compute(season, as_of_week)
+    if current is not None:
+        return current
+    return _compute(int(season) - 1, None)
 
 def get_qb_rush_tendency(season, qb_name, as_of_week=None):
     """A QB's own rushing volume relative to league-average QB rushing —
@@ -5418,6 +5475,118 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'underdog_bias_correction_used': underdog_bias_correction,
             'moderate_tier_bias_correction_used': moderate_tier_bias_correction,
             'reliable_tier_bias_correction_used': reliable_tier_bias_correction,
+        }
+    except Exception as e:
+        if st.session_state.get("_nfl_debug_mode"): raise
+        return None
+
+def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=None):
+    """v1 Pass Completions model (July 2026) — Projected Attempts x
+    Expected Completion%, per the original build order (Completions
+    depends directly on Attempts, which had to work and get validated
+    first). Deliberately reuses as much of the Attempts infrastructure as
+    possible rather than rebuilding it: run_nfl_pass_attempts_projection
+    directly for the volume component, get_qb_starter_rows for the same
+    starter-ID-joined, season_type-filtered QB history, and
+    get_nfl_league_baselines for a real computed completion_pct_baseline
+    instead of a hardcoded guess.
+
+    completion_pct = QB's own season/last5/last10 blend (same 45/35/20
+    weighting as Attempts, for consistency) x opponent completion% allowed
+    x a small wind adjustment. Then:
+
+    projected_completions = projected_attempts x completion_pct
+
+    Honest, explicit scope limits for this v1 (flagged, not hidden):
+      - Does NOT yet have the prior-season bridge Attempts has (starts-
+        based blending for weeks 1-6) — requires 3+ CURRENT-season starts
+        with real completion data, same as Attempts' ORIGINAL v1 before
+        that bridge was built. A real, known next step, not forgotten.
+      - Does NOT yet have any of the bias corrections Attempts has
+        (general, underdog, tier-specific) — those were found through
+        real backtesting on Attempts specifically; Completions needs its
+        OWN backtest history before any correction could be trusted here.
+      - Pressure/blitz/sack-rate context (explicitly deferred in the
+        original build plan pending data verification) still not
+        verified or used.
+    """
+    try:
+        attempts_result = run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=as_of_week)
+        if not attempts_result:
+            return None
+        projected_attempts = attempts_result['projection']
+
+        qb_rows, starter_filter_used = get_qb_starter_rows(qb_name, season, as_of_week)
+        if len(qb_rows) < 3:
+            return None  # no prior-season bridge yet for Completions — flagged above as a known next step
+        if 'completions' not in qb_rows.columns:
+            return None
+
+        qb_rows = qb_rows.sort_values('week')
+        qb_rows = qb_rows[qb_rows['attempts'] > 0]  # avoid divide-by-zero on a genuinely attempt-less row
+        if len(qb_rows) < 3:
+            return None
+        qb_rows['game_completion_pct'] = qb_rows['completions'] / qb_rows['attempts']
+
+        season_pct = qb_rows['game_completion_pct'].mean()
+        last5_pct = qb_rows['game_completion_pct'].tail(5).mean()
+        last10_pct = qb_rows['game_completion_pct'].tail(10).mean()
+        base_completion_pct = (season_pct * 0.45) + (last5_pct * 0.35) + (last10_pct * 0.20)
+
+        baselines = get_nfl_league_baselines(season, as_of_week)
+        opp_completion_pct_allowed = get_nfl_opponent_completion_pct_allowed(season, opponent, as_of_week)
+
+        # Opponent factor — dampened, same multiplicative-deviation
+        # pattern as every other opponent adjustment built this session.
+        opp_factor = 1.0
+        if opp_completion_pct_allowed is not None:
+            opp_factor = 1 + ((opp_completion_pct_allowed / baselines['completion_pct_baseline']) - 1) * 0.4
+
+        # Weather — wind hurts completion rate too, not just volume.
+        # Reuses the same game_context already fetched inside the
+        # Attempts call (available via attempts_result), not a second
+        # separate fetch.
+        weather_factor = 1.0
+        game_context = attempts_result.get('game_context')
+        if game_context:
+            wind = game_context.get('wind')
+            roof = game_context.get('roof')
+            if roof in ('outdoors', 'open') and wind is not None and wind >= 15:
+                weather_factor = 0.96  # a real, if modest, completion-rate hit in genuine wind
+
+        projected_completion_pct = base_completion_pct * opp_factor * weather_factor
+        projected_completion_pct = max(0.40, min(0.80, projected_completion_pct))  # sanity bounds — a real NFL completion% is never outside this range
+        projected_completions = projected_attempts * projected_completion_pct
+
+        # Confidence tier — sample size and completion-pct volatility
+        # only (NOT architecture-gap-style disagreement — that signal was
+        # PROVEN non-predictive for Attempts across two full seasons, so
+        # it's not being reused here even informationally until Completions
+        # has its own real backtest evidence one way or the other).
+        pct_history = qb_rows['game_completion_pct'].tail(10)
+        pct_cv = (pct_history.std() / pct_history.mean()) if len(pct_history) > 1 and pct_history.mean() > 0 else 1.0
+        if len(qb_rows) < 4 or pct_cv > 0.20:
+            confidence_tier = "🔴 Volatile — Consider Pass"
+        elif len(qb_rows) >= 8 and pct_cv < 0.12:
+            confidence_tier = "🟢 Reliable"
+        else:
+            confidence_tier = "🟠 Moderate"
+
+        return {
+            'projection': round(projected_completions, 1),
+            'projected_attempts': round(projected_attempts, 1),
+            'projected_completion_pct': round(projected_completion_pct, 3),
+            'base_completion_pct': round(base_completion_pct, 3),
+            'season_completion_pct': round(season_pct, 3),
+            'last5_completion_pct': round(last5_pct, 3),
+            'last10_completion_pct': round(last10_pct, 3),
+            'opp_completion_pct_allowed': round(opp_completion_pct_allowed, 3) if opp_completion_pct_allowed is not None else None,
+            'opp_factor': round(opp_factor, 3),
+            'weather_factor': round(weather_factor, 3),
+            'confidence_tier': confidence_tier,
+            'completion_pct_cv': round(pct_cv, 3),
+            'games_used': len(qb_rows),
+            'starter_filter_used': starter_filter_used,
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
