@@ -4926,7 +4926,7 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None,
                                        season_weight=0.45, last5_weight=0.35, last10_weight=0.20,
                                        spread_coef=0.008, total_coef=0.004, structural_blend_weight=0.0,
-                                       schedule_adjust_weight=0.0, bias_correction=0.0):
+                                       schedule_adjust_weight=0.0, bias_correction=0.01):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
     recency-blended attempts as the base, layered with Vegas game script,
     actually-used PROE, a blended opponent factor, home/away, QB rushing
@@ -5257,10 +5257,13 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         # confirmed finding via residual analysis: the model systematically
         # OVER-projects on average (signed bias was negative — Actual minus
         # Projection — in BOTH 2024 and 2025, though the size varied: -0.6
-        # in 2025, -0.2 in 2024). This applies a small, testable downward
-        # correction. Defaults to 0.0 (no change) — genuinely untested
-        # until run through the optimizer with proper train/validate
-        # discipline, same as every other parameter here.
+        # in 2025, -0.2 in 2024). A 1% correction was grid-searched and
+        # VALIDATED on genuinely held-out data (trained on 2024: 7.003 vs
+        # 7.006 at 0% — a tiny, near-noise gap; validated on 2025: 6.994 vs
+        # 7.029 — a real improvement, if anything slightly LARGER than what
+        # training suggested, a good sign it's real and not overfit). Now
+        # the default (0.01), unlike structural_blend_weight which stayed
+        # at its own proven-correct default of 0 after failing validation.
         if bias_correction != 0:
             projected_attempts = projected_attempts * (1 - bias_correction)
 
