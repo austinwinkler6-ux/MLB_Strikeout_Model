@@ -6198,6 +6198,41 @@ elif nav == "🏈 NFL Models":
                     st.code(traceback.format_exc())
 
             st.markdown("---")
+            st.subheader("📏 Theoretical Accuracy Floor")
+            st.caption("What's the best possible MAE, even with a 'perfect hindsight' predictor that already knows each QB's TRUE full-season average attempts (something no real, pre-game model could ever have)? This tells us how much of our real model's error is genuinely irreducible game-to-game variance — weather, injuries mid-game, unexpected game script — versus real room a better model could still close.")
+            floor_season = st.selectbox("Season", ["2024", "2025"], key="nfl_floor_season")
+            floor_week_start = st.number_input("Week range - start", min_value=1, max_value=18, value=1, key="nfl_floor_week_start")
+            floor_week_end = st.number_input("Week range - end", min_value=1, max_value=18, value=18, key="nfl_floor_week_end")
+
+            if st.button("📐 Compute Theoretical Floor"):
+                try:
+                    weekly_floor = get_nfl_player_stats([int(floor_season)])
+                    qb_floor = weekly_floor[weekly_floor['position'] == 'QB'].copy()
+                    qb_floor['attempts'] = pd.to_numeric(qb_floor['attempts'], errors='coerce').fillna(0)
+                    if 'season_type' in qb_floor.columns:
+                        qb_floor = qb_floor[qb_floor['season_type'] == 'REG']
+                    qb_floor = qb_floor[qb_floor['attempts'] >= 15]  # real starts only
+                    qb_floor = qb_floor[(qb_floor['week'] >= int(floor_week_start)) & (qb_floor['week'] <= int(floor_week_end))]
+
+                    floor_errors = []
+                    for qb_name, group in qb_floor.groupby('player_display_name'):
+                        if len(group) < 3:
+                            continue
+                        true_season_avg = group['attempts'].mean()  # deliberate hindsight — this is the theoretical floor, not a real model
+                        for _, row in group.iterrows():
+                            floor_errors.append(abs(true_season_avg - row['attempts']))
+
+                    if floor_errors:
+                        floor_mae = round(sum(floor_errors) / len(floor_errors), 2)
+                        st.metric("Theoretical floor MAE (perfect hindsight)", floor_mae, help=f"Based on {len(floor_errors)} real QB-games")
+                        st.caption(f"Our real model's actual MAE this season was roughly ~7. Compare that against this floor to see how much genuine room is left versus how much is irreducible variance.")
+                    else:
+                        st.warning("Not enough real starts found in this range to compute a floor.")
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
             st.subheader("🏈 Pass Attempts Model (v1) — Live Test")
             st.caption("v1 = QB's own recency-blended attempts x team pace factor x opponent pass-funnel factor. Deliberately excludes completion% and any accuracy-related variable — this model answers ONE question: how many times will this team throw. Test this before we build Completions/Receptions on top of it.")
 
