@@ -4856,7 +4856,7 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
 
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None,
                                        season_weight=0.45, last5_weight=0.35, last10_weight=0.20,
-                                       spread_coef=0.008, total_coef=0.004):
+                                       spread_coef=0.008, total_coef=0.004, structural_blend_weight=0.0):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
     recency-blended attempts as the base, layered with Vegas game script,
     actually-used PROE, a blended opponent factor, home/away, QB rushing
@@ -5155,6 +5155,20 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         # before being compared.
         structural_projection = expected_plays_x_rate * opp_factor * vegas_factor * (1 + rest_adj) * (1 + weather_adj) if expected_plays_x_rate is not None else None
 
+        # Structural blend (July 2026, round 11) — a real, testable
+        # question we'd never actually tried: does incorporating the
+        # independent structural (Expected Plays x Rate) view directly
+        # into the final number improve accuracy, rather than relying
+        # purely on the QB-history-based projection with structural_
+        # projection kept as informational-only? structural_blend_weight
+        # of 0.0 (the default) reproduces the exact prior behavior —
+        # nothing changes unless a caller deliberately overrides it, same
+        # pattern as the coefficient parameters. Falls back gracefully to
+        # pure QB-history if structural_projection couldn't be computed.
+        qb_history_projection = projected_attempts
+        if structural_projection is not None and structural_blend_weight > 0:
+            projected_attempts = ((1 - structural_blend_weight) * qb_history_projection) + (structural_blend_weight * structural_projection)
+
         # Confidence tiers — built in from this round rather than added
         # later, per review (this made real validation easier for MLB and
         # should do the same here). Based on real, checkable signals:
@@ -5250,6 +5264,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'confidence_tier': confidence_tier, 'attempts_cv': round(attempts_cv, 3),
             'architecture_gap': round(architecture_gap, 1), 'data_quality_warnings': warnings,
             'structural_projection': round(structural_projection, 1) if structural_projection is not None else None,
+            'qb_history_projection': round(qb_history_projection, 1), 'structural_blend_weight_used': structural_blend_weight,
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
@@ -7499,14 +7514,16 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    blend_options = [
-                        (0.45, 0.35, 0.20),  # current default
-                        (0.50, 0.30, 0.20),
-                        (0.40, 0.40, 0.20),
-                        (0.35, 0.45, 0.20),
-                    ]
-                    spread_options = [0.003, 0.004, 0.005, 0.006, 0.008]
-                    total_options = [0.001, 0.002, 0.003, 0.004]
+                    # Simplified (July 2026, round 11) — base weighting and
+                    # Vegas coefficients are fixed at current defaults now,
+                    # since a prior grid search already confirmed they
+                    # barely move MAE within reasonable ranges (top-10
+                    # combinations spanned just 0.006 MAE). This search
+                    # focuses entirely on structural_blend_weight — mixing
+                    # in the independent Expected Plays x Rate projection
+                    # instead of relying purely on QB history — the one
+                    # genuinely untested, potentially higher-leverage lever.
+                    blend_weight_options = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0]
 
                     train_weeks = list(range(int(opt_week_start), int(opt_week_end) + 1))
                     schedules_opt = get_nfl_schedules([int(opt_train_season)])
@@ -7520,21 +7537,21 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    combos = [(b, s, t) for b in blend_options for s in spread_options for t in total_options]
-                    st.caption(f"Testing {len(combos)} combinations across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks) — this will take a while.")
+                    combos = [((0.45, 0.35, 0.20), 0.008, 0.004, bw) for bw in blend_weight_options]
+                    st.caption(f"Testing {len(combos)} structural blend weights (0% = pure QB-history like now, up to 100% = pure structural) across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks).")
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     combo_results = []
 
-                    for ci, (blend, spread_c, total_c) in enumerate(combos):
-                        status_text.text(f"Combo {ci+1} of {len(combos)}: blend={blend}, spread={spread_c}, total={total_c}")
+                    for ci, (blend, spread_c, total_c, blend_w) in enumerate(combos):
+                        status_text.text(f"Testing blend weight {blend_w} ({ci+1} of {len(combos)})")
                         progress_bar.progress((ci + 1) / len(combos))
                         errors = []
                         for m in matchups_opt:
                             result = run_nfl_pass_attempts_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season), as_of_week=m['week'],
                                 season_weight=blend[0], last5_weight=blend[1], last10_weight=blend[2],
-                                spread_coef=spread_c, total_coef=total_c,
+                                spread_coef=spread_c, total_coef=total_c, structural_blend_weight=blend_w,
                             )
                             if not result:
                                 continue
@@ -7544,8 +7561,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['attempts'].iloc[0]))
                         if errors:
                             combo_results.append({
-                                'Season Weight': blend[0], 'Last-5 Weight': blend[1], 'Last-10 Weight': blend[2],
-                                'Spread Coef': spread_c, 'Total Coef': total_c,
+                                'Structural Blend Weight': blend_w,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -7562,11 +7578,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'nfl_optimizer_results' in st.session_state:
             combo_df = st.session_state['nfl_optimizer_results']
-            st.write(f"**Top 10 combinations (trained on {st.session_state.get('nfl_optimizer_train_season', '')}):**")
-            st.dataframe(combo_df.head(10), use_container_width=True)
+            st.write(f"**All blend weights tested (trained on {st.session_state.get('nfl_optimizer_train_season', '')}), sorted best to worst:**")
+            st.dataframe(combo_df, use_container_width=True)
 
             best = combo_df.iloc[0]
-            st.success(f"Best on training season: MAE {best['MAE']} with blend ({best['Season Weight']}/{best['Last-5 Weight']}/{best['Last-10 Weight']}), spread={best['Spread Coef']}, total={best['Total Coef']}")
+            st.success(f"Best on training season: MAE {best['MAE']} at structural_blend_weight={best['Structural Blend Weight']}")
 
             if st.button("✅ Validate Best Combination on the OTHER season", use_container_width=True):
                 validate_season = "2025" if st.session_state.get('nfl_optimizer_train_season') == "2024" else "2024"
@@ -7589,8 +7605,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val:
                             result_new = run_nfl_pass_attempts_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'],
-                                season_weight=best['Season Weight'], last5_weight=best['Last-5 Weight'], last10_weight=best['Last-10 Weight'],
-                                spread_coef=best['Spread Coef'], total_coef=best['Total Coef'],
+                                structural_blend_weight=best['Structural Blend Weight'],
                             )
                             result_old = run_nfl_pass_attempts_projection(m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'])
                             actual_row = actual_stats_val[(actual_stats_val['player_display_name'] == m['qb']) & (actual_stats_val['week'] == m['week']) & (actual_stats_val['position'] == 'QB')]
