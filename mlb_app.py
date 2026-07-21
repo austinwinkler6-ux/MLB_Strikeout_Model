@@ -4927,7 +4927,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
                                        season_weight=0.45, last5_weight=0.35, last10_weight=0.20,
                                        spread_coef=0.008, total_coef=0.004, structural_blend_weight=0.0,
                                        schedule_adjust_weight=0.0, bias_correction=0.01, underdog_bias_correction=0.01,
-                                       moderate_tier_bias_correction=0.03):
+                                       moderate_tier_bias_correction=0.03, reliable_tier_bias_correction=0.0):
     """v1 Pass Attempts model, round 2 (July 2026 review) — QB's own
     recency-blended attempts as the base, layered with Vegas game script,
     actually-used PROE, a blended opponent factor, home/away, QB rushing
@@ -5365,6 +5365,19 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         if moderate_tier_bias_correction != 0 and confidence_tier == "🟠 Moderate":
             projected_attempts = projected_attempts * (1 - moderate_tier_bias_correction)
 
+        # Reliable-tier-specific bias correction (July 2026, round 17) —
+        # real residual analysis found the Reliable tier showed a
+        # consistent POSITIVE bias (under-projection, opposite direction
+        # from the other three corrections) in BOTH 2024 (+0.29) and
+        # 2025 (+0.69) — smaller in magnitude than Moderate's issue, but
+        # same-direction in both seasons, the same bar every other real
+        # correction this session had to clear. This applies an
+        # ADDITIONAL upward correction specifically for Reliable-tier
+        # predictions. Defaults to 0.0 — genuinely untested until run
+        # through the optimizer with proper train/validate discipline.
+        if reliable_tier_bias_correction != 0 and confidence_tier == "🟢 Reliable":
+            projected_attempts = projected_attempts * (1 + reliable_tier_bias_correction)
+
         return {
             'projection': round(projected_attempts, 1),
             'base_attempts': round(base_attempts, 1),
@@ -5404,6 +5417,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
             'bias_correction_used': bias_correction,
             'underdog_bias_correction_used': underdog_bias_correction,
             'moderate_tier_bias_correction_used': moderate_tier_bias_correction,
+            'reliable_tier_bias_correction_used': reliable_tier_bias_correction,
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
@@ -7743,18 +7757,19 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    # Updated (July 2026, round 16) — underdog_bias_
-                    # correction VALIDATED and locked in last round (0.01,
-                    # second real win of the session). This search tests
-                    # moderate_tier_bias_correction — real residual analysis
-                    # found the Moderate confidence tier specifically showed
-                    # a consistent negative bias in BOTH seasons (-1.06 in
-                    # 2024, -0.97 in 2025) — larger than the overall bias
-                    # already corrected for. ADDITIONAL downward correction
-                    # specifically for Moderate-tier predictions, layered on
-                    # top of both already-validated corrections (left unset
-                    # below, so they use their 0.01 defaults).
-                    moderate_correction_options = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05]
+                    # Updated (July 2026, round 17) — moderate_tier_bias_
+                    # correction VALIDATED and locked in last round (0.03,
+                    # third real win of the session, the most convincing
+                    # yet — a genuine peaked shape in training). This
+                    # search tests reliable_tier_bias_correction — real
+                    # residual analysis found the Reliable tier showed a
+                    # consistent POSITIVE bias (under-projection, opposite
+                    # direction from the other three) in BOTH 2024 (+0.29)
+                    # and 2025 (+0.69). ADDITIONAL upward correction
+                    # specifically for Reliable-tier predictions, layered
+                    # on top of all 3 already-validated corrections (left
+                    # unset below, so they use their locked-in defaults).
+                    reliable_correction_options = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05]
 
                     train_weeks = list(range(int(opt_week_start), int(opt_week_end) + 1))
                     schedules_opt = get_nfl_schedules([int(opt_train_season)])
@@ -7768,21 +7783,21 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    combos = [((0.45, 0.35, 0.20), 0.008, 0.004, mc) for mc in moderate_correction_options]
-                    st.caption(f"Testing {len(combos)} Moderate-tier-specific correction sizes (0% = no extra correction like now, up to 5% additional downward for Moderate-tier predictions only) across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks). General bias_correction=0.01 and underdog_bias_correction=0.01 are both active in every combination.")
+                    combos = [((0.45, 0.35, 0.20), 0.008, 0.004, rc) for rc in reliable_correction_options]
+                    st.caption(f"Testing {len(combos)} Reliable-tier-specific correction sizes (0% = no extra correction like now, up to 5% additional UPWARD for Reliable-tier predictions only) across {len(matchups_opt)} QB-weeks ({len(train_weeks)} weeks). All 3 already-validated corrections are active in every combination.")
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     combo_results = []
 
-                    for ci, (blend, spread_c, total_c, moderate_c) in enumerate(combos):
-                        status_text.text(f"Testing Moderate-tier correction {moderate_c} ({ci+1} of {len(combos)})")
+                    for ci, (blend, spread_c, total_c, reliable_c) in enumerate(combos):
+                        status_text.text(f"Testing Reliable-tier correction {reliable_c} ({ci+1} of {len(combos)})")
                         progress_bar.progress((ci + 1) / len(combos))
                         errors = []
                         for m in matchups_opt:
                             result = run_nfl_pass_attempts_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season), as_of_week=m['week'],
                                 season_weight=blend[0], last5_weight=blend[1], last10_weight=blend[2],
-                                spread_coef=spread_c, total_coef=total_c, moderate_tier_bias_correction=moderate_c,
+                                spread_coef=spread_c, total_coef=total_c, reliable_tier_bias_correction=reliable_c,
                             )
                             if not result:
                                 continue
@@ -7792,7 +7807,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['attempts'].iloc[0]))
                         if errors:
                             combo_results.append({
-                                'Moderate Tier Bias Correction': moderate_c,
+                                'Reliable Tier Bias Correction': reliable_c,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -7809,11 +7824,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'nfl_optimizer_results' in st.session_state:
             combo_df = st.session_state['nfl_optimizer_results']
-            st.write(f"**All Moderate-tier bias corrections tested (trained on {st.session_state.get('nfl_optimizer_train_season', '')}), sorted best to worst:**")
+            st.write(f"**All Reliable-tier bias corrections tested (trained on {st.session_state.get('nfl_optimizer_train_season', '')}), sorted best to worst:**")
             st.dataframe(combo_df, use_container_width=True)
 
             best = combo_df.iloc[0]
-            st.success(f"Best on training season: MAE {best['MAE']} at moderate_tier_bias_correction={best['Moderate Tier Bias Correction']}")
+            st.success(f"Best on training season: MAE {best['MAE']} at reliable_tier_bias_correction={best['Reliable Tier Bias Correction']}")
 
             if st.button("✅ Validate Best Combination on the OTHER season", use_container_width=True):
                 validate_season = "2025" if st.session_state.get('nfl_optimizer_train_season') == "2024" else "2024"
@@ -7836,7 +7851,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val:
                             result_new = run_nfl_pass_attempts_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'],
-                                moderate_tier_bias_correction=best['Moderate Tier Bias Correction'],
+                                reliable_tier_bias_correction=best['Reliable Tier Bias Correction'],
                             )
                             result_old = run_nfl_pass_attempts_projection(m['qb'], m['team'], m['opponent'], int(validate_season), as_of_week=m['week'])
                             actual_row = actual_stats_val[(actual_stats_val['player_display_name'] == m['qb']) & (actual_stats_val['week'] == m['week']) & (actual_stats_val['position'] == 'QB')]
