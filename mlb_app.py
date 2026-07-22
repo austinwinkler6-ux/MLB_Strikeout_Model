@@ -8142,13 +8142,23 @@ elif nav == "🧪 Backtest" and is_admin:
                         last_week_events = list(events_by_week.values())[-1] if events_by_week else []
                         st.write("Real event team names (from The Odds API):", [(ev.get('away_team'), ev.get('home_team')) for ev in last_week_events])
                     st.success(f"✅ Checked {checked_games_nfl} game(s) across {len(nfl_weeks_in_results)} week(s), matched real lines for {matched_nfl}/{len(nfl_results_df)} QBs.")
-                    line_results_nfl = nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][['QB', 'Week', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']] if 'Week' in nfl_results_df.columns else nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][['QB', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']]
+                    result_cols_nfl = ['QB', 'Week', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']
+                    if 'Confidence Tier' in nfl_results_df.columns:
+                        result_cols_nfl.append('Confidence Tier')
+                    if 'Week' not in nfl_results_df.columns:
+                        result_cols_nfl.remove('Week')
+                    line_results_nfl = nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][result_cols_nfl]
                     st.dataframe(line_results_nfl, use_container_width=True)
                     graded_nfl = line_results_nfl[line_results_nfl['Bet Result'].isin(['Win', 'Loss'])]
                     if not graded_nfl.empty:
                         win_rate_nfl = round((graded_nfl['Bet Result'] == 'Win').mean() * 100, 1)
                         st.metric(f"Win rate vs. real historical lines (all {len(nfl_weeks_in_results)} week(s) combined)", f"{win_rate_nfl}% ({len(graded_nfl)} graded bets)")
                         st.caption("A rate meaningfully above ~52.4% (the -110 breakeven point) across a real, combined multi-week sample is a genuine signal — this is now the full-range number you were previously having to piece together week by week yourself.")
+                        if 'Confidence Tier' in graded_nfl.columns:
+                            st.write("**Win rate by Confidence Tier** — this is the real question. The blended win rate above lumps every prediction together, but nobody actually bets a Volatile-tier pick the same way as a Reliable one — this shows whether the tiers you'd genuinely trust look different from the overall number.")
+                            tier_win_summary_nfl = graded_nfl.groupby('Confidence Tier').apply(lambda g: round((g['Bet Result'] == 'Win').mean() * 100, 1)).reset_index(name='Win Rate %')
+                            tier_win_summary_nfl['Graded Bets'] = graded_nfl.groupby('Confidence Tier').size().values
+                            st.dataframe(tier_win_summary_nfl.sort_values('Win Rate %', ascending=False), use_container_width=True)
                         if 'Week' in line_results_nfl.columns and line_results_nfl['Week'].nunique() > 1:
                             st.write("**Win rate by week** (useful to spot whether one specific week is dragging the average)")
                             week_win_summary = graded_nfl.groupby('Week').apply(lambda g: round((g['Bet Result'] == 'Win').mean() * 100, 1)).reset_index(name='Win Rate %')
@@ -8550,13 +8560,21 @@ elif nav == "🧪 Backtest" and is_admin:
                         last_week_events_comp = list(events_by_week_comp.values())[-1] if events_by_week_comp else []
                         st.write("Real event team names (from The Odds API):", [(ev.get('away_team'), ev.get('home_team')) for ev in last_week_events_comp])
                     st.success(f"✅ Checked {checked_games_comp} game(s) across {len(comp_weeks_in_results)} week(s), matched real lines for {matched_comp}/{len(comp_df)} QBs.")
-                    line_results_comp = comp_df[comp_df['Sportsbook Line'].notna()][['QB', 'Week', 'Matchup', 'Proj Completions', 'Sportsbook Line', 'Actual Completions', 'Model Side', 'Bet Result']]
+                    result_cols_comp = ['QB', 'Week', 'Matchup', 'Proj Completions', 'Sportsbook Line', 'Actual Completions', 'Model Side', 'Bet Result']
+                    if 'Confidence Tier' in comp_df.columns:
+                        result_cols_comp.append('Confidence Tier')
+                    line_results_comp = comp_df[comp_df['Sportsbook Line'].notna()][result_cols_comp]
                     st.dataframe(line_results_comp, use_container_width=True)
                     graded_comp = line_results_comp[line_results_comp['Bet Result'].isin(['Win', 'Loss'])]
                     if not graded_comp.empty:
                         win_rate_comp = round((graded_comp['Bet Result'] == 'Win').mean() * 100, 1)
                         st.metric(f"Win rate vs. real historical lines (all {len(comp_weeks_in_results)} week(s) combined)", f"{win_rate_comp}% ({len(graded_comp)} graded bets)")
                         st.caption("A rate meaningfully above ~52.4% (the -110 breakeven point) across a real, combined multi-week sample is a genuine signal.")
+                        if 'Confidence Tier' in graded_comp.columns:
+                            st.write("**Win rate by Confidence Tier** — the blended win rate above lumps every prediction together; nobody actually bets a Volatile-tier pick the same way as a Reliable one.")
+                            tier_win_summary_comp = graded_comp.groupby('Confidence Tier').apply(lambda g: round((g['Bet Result'] == 'Win').mean() * 100, 1)).reset_index(name='Win Rate %')
+                            tier_win_summary_comp['Graded Bets'] = graded_comp.groupby('Confidence Tier').size().values
+                            st.dataframe(tier_win_summary_comp.sort_values('Win Rate %', ascending=False), use_container_width=True)
                         if line_results_comp['Week'].nunique() > 1:
                             st.write("**Win rate by week**")
                             week_win_summary_comp = graded_comp.groupby('Week').apply(lambda g: round((g['Bet Result'] == 'Win').mean() * 100, 1)).reset_index(name='Win Rate %')
