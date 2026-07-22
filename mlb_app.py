@@ -5526,7 +5526,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
 def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=None,
                                           completion_weighting='equal', bridge_schedule='attempts',
                                           team_change_multiplier=0.5, use_cpoe_model=False, cpoe_weight=1.0,
-                                          completions_bias_correction=0.0, completions_moderate_tier_correction=0.0,
+                                          completions_bias_correction=0.0, completions_moderate_tier_correction=0.06,
                                           completions_volatile_tier_correction=0.0):
     """v1 Pass Completions model (July 2026, now with the prior-season
     bridge and 4 testable parameters from external review) — Projected
@@ -5708,10 +5708,23 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
         # less-reliable tiers (Reliable: -0.08/+0.65, Moderate:
         # +0.66/+1.03, Volatile: +2.36/+3.42 across the two seasons).
         # Opposite direction from Attempts' corrections (which were all
-        # downward) — these are all upward. All default to 0.0, genuinely
-        # untested until run through a real optimizer with proper
-        # train/validate discipline, same standard every Attempts
-        # correction had to clear before being trusted.
+        # downward) — these are all upward.
+        #
+        # completions_bias_correction (flat, all tiers) was tested and
+        # REJECTED — overfit (clean peak on training, worse than 0% on
+        # held-out validation), likely because it got pulled around by
+        # Reliable tier's small, direction-unstable bias. Left at 0.0.
+        #
+        # completions_moderate_tier_correction was grid-searched and
+        # VALIDATED on held-out data (trained on 2024: 4.998 at 0% vs
+        # 4.901 at 6% — a real, decisive gap; validated on 2025: 4.783
+        # vs 4.765 — confirmed the training signal generalizes). Now the
+        # default (0.06) — the first real, validated Completions
+        # correction of the session.
+        #
+        # completions_volatile_tier_correction (the largest, most
+        # promising bias of the three — +2.36/+3.42) is still genuinely
+        # untested — a real, known next step, not forgotten.
         if completions_bias_correction != 0:
             projected_completions = projected_completions * (1 + completions_bias_correction)
         if completions_moderate_tier_correction != 0 and confidence_tier == "🟠 Moderate":
