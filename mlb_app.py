@@ -8361,6 +8361,128 @@ elif nav == "🧪 Backtest" and is_admin:
             with st.expander(f"Skipped ({len(st.session_state['comp_backtest_skipped'])})"):
                 st.dataframe(pd.DataFrame(st.session_state['comp_backtest_skipped']), use_container_width=True)
 
+        st.markdown("---")
+        st.subheader("🎛️ Completions Coefficient Optimizer")
+        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. Testing the general bias correction first, same sequential order that worked for Attempts (general, then Moderate-tier, then Volatile-tier, one at a time).")
+
+        opt_train_season_comp = st.selectbox("Train on", ["2024", "2025"], key="comp_opt_train_season")
+        col_owk1, col_owk2 = st.columns(2)
+        with col_owk1:
+            opt_week_start_comp = st.number_input("Training week range - start", min_value=1, max_value=18, value=7, key="comp_opt_week_start")
+        with col_owk2:
+            opt_week_end_comp = st.number_input("Training week range - end", min_value=1, max_value=18, value=18, key="comp_opt_week_end")
+
+        if st.button("🔍 Run Grid Search", key="comp_opt_run", use_container_width=True):
+            with st.spinner("Running grid search..."):
+                try:
+                    general_correction_options = [0.0, 0.02, 0.04, 0.06, 0.08, 0.10]
+
+                    train_weeks_comp = list(range(int(opt_week_start_comp), int(opt_week_end_comp) + 1))
+                    schedules_opt_comp = get_nfl_schedules([int(opt_train_season_comp)])
+                    actual_stats_opt_comp = get_nfl_player_stats([int(opt_train_season_comp)])
+                    matchups_opt_comp = []
+                    for wk in train_weeks_comp:
+                        week_games = schedules_opt_comp[schedules_opt_comp['week'] == wk]
+                        for _, g in week_games.iterrows():
+                            if pd.notna(g.get('home_qb_name')):
+                                matchups_opt_comp.append({'qb': g['home_qb_name'], 'team': g['home_team'], 'opponent': g['away_team'], 'week': wk})
+                            if pd.notna(g.get('away_qb_name')):
+                                matchups_opt_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
+
+                    st.caption(f"Testing {len(general_correction_options)} general correction sizes across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer.")
+                    progress_bar_comp_opt = st.progress(0)
+                    status_text_comp_opt = st.empty()
+                    combo_results_comp = []
+
+                    for ci, gc in enumerate(general_correction_options):
+                        status_text_comp_opt.text(f"Testing general correction {gc} ({ci+1} of {len(general_correction_options)})")
+                        progress_bar_comp_opt.progress((ci + 1) / len(general_correction_options))
+                        errors = []
+                        for m in matchups_opt_comp:
+                            result = run_nfl_pass_completions_projection(
+                                m['qb'], m['team'], m['opponent'], int(opt_train_season_comp), as_of_week=m['week'],
+                                completions_bias_correction=gc,
+                            )
+                            if not result:
+                                continue
+                            actual_row = actual_stats_opt_comp[(actual_stats_opt_comp['player_display_name'] == m['qb']) & (actual_stats_opt_comp['week'] == m['week']) & (actual_stats_opt_comp['position'] == 'QB')]
+                            if actual_row.empty:
+                                continue
+                            errors.append(abs(result['projection'] - actual_row['completions'].iloc[0]))
+                        if errors:
+                            combo_results_comp.append({
+                                'General Correction': gc,
+                                'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
+                            })
+
+                    combo_df_comp = pd.DataFrame(combo_results_comp).sort_values('MAE')
+                    st.session_state['comp_optimizer_results'] = combo_df_comp
+                    st.session_state['comp_optimizer_train_season'] = opt_train_season_comp
+                    st.session_state['comp_optimizer_weeks'] = train_weeks_comp
+                    status_text_comp_opt.text(f"✅ Done! Tested {len(general_correction_options)} combinations.")
+                    progress_bar_comp_opt.progress(1.0)
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        if 'comp_optimizer_results' in st.session_state:
+            combo_df_comp = st.session_state['comp_optimizer_results']
+            st.write(f"**All general corrections tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
+            st.dataframe(combo_df_comp, use_container_width=True)
+
+            best_comp = combo_df_comp.iloc[0]
+            st.success(f"Best on training season: MAE {best_comp['MAE']} at completions_bias_correction={best_comp['General Correction']}")
+
+            if st.button("✅ Validate Best Combination on the OTHER season", key="comp_opt_validate", use_container_width=True):
+                validate_season_comp = "2025" if st.session_state.get('comp_optimizer_train_season') == "2024" else "2024"
+                val_weeks_comp = st.session_state.get('comp_optimizer_weeks', list(range(int(opt_week_start_comp), int(opt_week_end_comp) + 1)))
+                with st.spinner(f"Validating against {validate_season_comp} (same week range)..."):
+                    try:
+                        schedules_val_comp = get_nfl_schedules([int(validate_season_comp)])
+                        actual_stats_val_comp = get_nfl_player_stats([int(validate_season_comp)])
+                        matchups_val_comp = []
+                        for wk in val_weeks_comp:
+                            week_games = schedules_val_comp[schedules_val_comp['week'] == wk]
+                            for _, g in week_games.iterrows():
+                                if pd.notna(g.get('home_qb_name')):
+                                    matchups_val_comp.append({'qb': g['home_qb_name'], 'team': g['home_team'], 'opponent': g['away_team'], 'week': wk})
+                                if pd.notna(g.get('away_qb_name')):
+                                    matchups_val_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
+
+                        val_errors_new_comp = []
+                        val_errors_old_comp = []
+                        for m in matchups_val_comp:
+                            result_new = run_nfl_pass_completions_projection(
+                                m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'],
+                                completions_bias_correction=best_comp['General Correction'],
+                            )
+                            result_old = run_nfl_pass_completions_projection(m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'])
+                            actual_row = actual_stats_val_comp[(actual_stats_val_comp['player_display_name'] == m['qb']) & (actual_stats_val_comp['week'] == m['week']) & (actual_stats_val_comp['position'] == 'QB')]
+                            if actual_row.empty:
+                                continue
+                            actual_val = actual_row['completions'].iloc[0]
+                            if result_new:
+                                val_errors_new_comp.append(abs(result_new['projection'] - actual_val))
+                            if result_old:
+                                val_errors_old_comp.append(abs(result_old['projection'] - actual_val))
+
+                        new_mae_comp = round(sum(val_errors_new_comp) / len(val_errors_new_comp), 3) if val_errors_new_comp else None
+                        old_mae_comp = round(sum(val_errors_old_comp) / len(val_errors_old_comp), 3) if val_errors_old_comp else None
+                        st.write(f"**On {validate_season_comp} (held-out, same week range):**")
+                        vcol1c, vcol2c = st.columns(2)
+                        vcol1c.metric("Current defaults MAE", old_mae_comp)
+                        vcol2c.metric("New combination MAE", new_mae_comp, delta=round(new_mae_comp - old_mae_comp, 3) if new_mae_comp and old_mae_comp else None, delta_color="inverse")
+                        if new_mae_comp and old_mae_comp:
+                            if new_mae_comp < old_mae_comp:
+                                st.success("✅ The new combination genuinely improves on the held-out season too — real evidence, not just overfitting to the training season.")
+                            else:
+                                st.warning("⚠️ The new combination does NOT improve (or is worse) on the held-out season — this looks like overfitting to the training season's noise. Don't lock these values in.")
+                    except Exception as e:
+                        st.error(f"Real error: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
     else:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
         is_assists = backtest_sport == "NBA Assists"
