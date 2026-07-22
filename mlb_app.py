@@ -8380,7 +8380,7 @@ elif nav == "🧪 Backtest" and is_admin:
 
         st.markdown("---")
         st.subheader("🎛️ Completions Coefficient Optimizer")
-        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected (overfit). Moderate-tier correction: validated and locked in (0.06). Now testing Volatile-tier correction — the largest bias of the three.")
+        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Now testing completion_weighting — equal vs. attempt-weighted, from the original external review's first item.")
 
         opt_train_season_comp = st.selectbox("Train on", ["2024", "2025"], key="comp_opt_train_season")
         col_owk1, col_owk2 = st.columns(2)
@@ -8392,13 +8392,17 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", key="comp_opt_run", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    # Updated — Moderate-tier correction VALIDATED and
-                    # locked in last round (0.06, first real win for
-                    # Completions). Now testing Volatile-tier correction —
-                    # by far the largest bias of the three (+2.36 in 2025,
-                    # +3.42 in 2024), roughly 2-3x Moderate's size, so
-                    # using a wider test range to properly cover it.
-                    volatile_correction_options_comp = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25]
+                    # Updated — Volatile-tier correction VALIDATED and
+                    # locked in last round (0.20, second real win for
+                    # Completions). Now testing completion_weighting — a
+                    # categorical choice (not a numeric range): 'equal'
+                    # averages each game's own completion% equally
+                    # regardless of volume; 'attempt_weighted' sums
+                    # completions/sums attempts across games, weighting
+                    # high-volume games more heavily. The original
+                    # external review's first, and arguably most
+                    # fundamental, suggestion.
+                    weighting_options_comp = ['equal', 'attempt_weighted']
 
                     train_weeks_comp = list(range(int(opt_week_start_comp), int(opt_week_end_comp) + 1))
                     schedules_opt_comp = get_nfl_schedules([int(opt_train_season_comp)])
@@ -8412,19 +8416,19 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    st.caption(f"Testing {len(volatile_correction_options_comp)} Volatile-tier-specific correction sizes across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer.")
+                    st.caption(f"Testing {len(weighting_options_comp)} completion weighting methods across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. Both already-validated tier corrections (0.06 Moderate, 0.20 Volatile) stay active in every combination, since they're left unset and use their locked-in defaults.")
                     progress_bar_comp_opt = st.progress(0)
                     status_text_comp_opt = st.empty()
                     combo_results_comp = []
 
-                    for ci, vc in enumerate(volatile_correction_options_comp):
-                        status_text_comp_opt.text(f"Testing Volatile-tier correction {vc} ({ci+1} of {len(volatile_correction_options_comp)})")
-                        progress_bar_comp_opt.progress((ci + 1) / len(volatile_correction_options_comp))
+                    for ci, wopt in enumerate(weighting_options_comp):
+                        status_text_comp_opt.text(f"Testing completion_weighting='{wopt}' ({ci+1} of {len(weighting_options_comp)})")
+                        progress_bar_comp_opt.progress((ci + 1) / len(weighting_options_comp))
                         errors = []
                         for m in matchups_opt_comp:
                             result = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season_comp), as_of_week=m['week'],
-                                completions_volatile_tier_correction=vc,
+                                completion_weighting=wopt,
                             )
                             if not result:
                                 continue
@@ -8434,7 +8438,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['completions'].iloc[0]))
                         if errors:
                             combo_results_comp.append({
-                                'Volatile Tier Correction': vc,
+                                'Completion Weighting': wopt,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -8442,7 +8446,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['comp_optimizer_results'] = combo_df_comp
                     st.session_state['comp_optimizer_train_season'] = opt_train_season_comp
                     st.session_state['comp_optimizer_weeks'] = train_weeks_comp
-                    status_text_comp_opt.text(f"✅ Done! Tested {len(volatile_correction_options_comp)} combinations.")
+                    status_text_comp_opt.text(f"✅ Done! Tested {len(weighting_options_comp)} combinations.")
                     progress_bar_comp_opt.progress(1.0)
                 except Exception as e:
                     st.error(f"Real error: {e}")
@@ -8451,11 +8455,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'comp_optimizer_results' in st.session_state:
             combo_df_comp = st.session_state['comp_optimizer_results']
-            st.write(f"**All Volatile-tier corrections tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
+            st.write(f"**Completion weighting methods tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
             st.dataframe(combo_df_comp, use_container_width=True)
 
             best_comp = combo_df_comp.iloc[0]
-            st.success(f"Best on training season: MAE {best_comp['MAE']} at completions_volatile_tier_correction={best_comp['Volatile Tier Correction']}")
+            st.success(f"Best on training season: MAE {best_comp['MAE']} at completion_weighting='{best_comp['Completion Weighting']}'")
 
             if st.button("✅ Validate Best Combination on the OTHER season", key="comp_opt_validate", use_container_width=True):
                 validate_season_comp = "2025" if st.session_state.get('comp_optimizer_train_season') == "2024" else "2024"
@@ -8478,7 +8482,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val_comp:
                             result_new = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'],
-                                completions_volatile_tier_correction=best_comp['Volatile Tier Correction'],
+                                completion_weighting=best_comp['Completion Weighting'],
                             )
                             result_old = run_nfl_pass_completions_projection(m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'])
                             actual_row = actual_stats_val_comp[(actual_stats_val_comp['player_display_name'] == m['qb']) & (actual_stats_val_comp['week'] == m['week']) & (actual_stats_val_comp['position'] == 'QB')]
