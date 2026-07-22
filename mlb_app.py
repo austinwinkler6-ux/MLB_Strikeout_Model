@@ -8273,6 +8273,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             'Comp% Error': round(abs(projected_completion_pct - actual_completion_pct), 3),
                             'Proj Completions': projected_completions, 'Actual Completions': actual_completions,
                             'Completions Error': round(abs(projected_completions - actual_completions), 1),
+                            'Signed Residual': round(actual_completions - projected_completions, 1),
                             'Oracle Volume Error': round(abs(oracle_volume_completions - actual_completions), 1),
                             'Oracle Efficiency Error': round(abs(oracle_efficiency_completions - actual_completions), 1),
                             'Confidence Tier': result.get('confidence_tier'),
@@ -8314,9 +8315,11 @@ elif nav == "🧪 Backtest" and is_admin:
                 st.caption(f"**Bottleneck read:** attempts-stage error ({oracle_efficiency_mae}) is smaller than completion-rate error ({oracle_volume_mae}) — the COMPLETION-RATE projection is contributing more to the final error here. Worth focusing improvement efforts on completion% specifically, not attempts.")
 
             st.markdown("---")
-            st.write("**Completions MAE by Confidence Tier**")
-            tier_summary_comp = comp_df.groupby('Confidence Tier').agg(Predictions=('Completions Error', 'count'), MAE=('Completions Error', 'mean')).reset_index()
+            st.write("**Completions MAE + Bias by Confidence Tier**")
+            st.caption("Bias (signed: Actual - Projection) is the real test of whether a tier's error is a fixable systematic pattern or genuine noise. High MAE with bias near 0 means the tier is just noisier (small sample, high variance) — not something a correction can fix, since there's no consistent direction to correct toward. High MAE WITH a real, non-zero bias means there's a genuine, fixable pattern, the same way Moderate tier's bias was found and corrected for Attempts.")
+            tier_summary_comp = comp_df.groupby('Confidence Tier').agg(Predictions=('Completions Error', 'count'), MAE=('Completions Error', 'mean'), Bias=('Signed Residual', 'mean')).reset_index()
             tier_summary_comp['MAE'] = tier_summary_comp['MAE'].round(2)
+            tier_summary_comp['Bias'] = tier_summary_comp['Bias'].round(2)
             st.dataframe(tier_summary_comp, use_container_width=True)
 
         if 'comp_backtest_skipped' in st.session_state and st.session_state['comp_backtest_skipped']:
