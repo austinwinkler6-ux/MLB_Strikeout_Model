@@ -5525,7 +5525,9 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
 
 def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=None,
                                           completion_weighting='equal', bridge_schedule='attempts',
-                                          team_change_multiplier=0.5, use_cpoe_model=False, cpoe_weight=1.0):
+                                          team_change_multiplier=0.5, use_cpoe_model=False, cpoe_weight=1.0,
+                                          completions_bias_correction=0.0, completions_moderate_tier_correction=0.0,
+                                          completions_volatile_tier_correction=0.0):
     """v1 Pass Completions model (July 2026, now with the prior-season
     bridge and 4 testable parameters from external review) — Projected
     Attempts x Expected Completion%, per the original build order.
@@ -5699,6 +5701,24 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
         else:
             confidence_tier = "🟠 Moderate"
 
+        # Bias corrections (July 2026) — real, cross-season-confirmed via
+        # residual analysis: this model systematically UNDER-projects
+        # (Actual - Projection was positive in BOTH 2024 and 2025), with
+        # a real, replicated gradient that gets progressively worse in
+        # less-reliable tiers (Reliable: -0.08/+0.65, Moderate:
+        # +0.66/+1.03, Volatile: +2.36/+3.42 across the two seasons).
+        # Opposite direction from Attempts' corrections (which were all
+        # downward) — these are all upward. All default to 0.0, genuinely
+        # untested until run through a real optimizer with proper
+        # train/validate discipline, same standard every Attempts
+        # correction had to clear before being trusted.
+        if completions_bias_correction != 0:
+            projected_completions = projected_completions * (1 + completions_bias_correction)
+        if completions_moderate_tier_correction != 0 and confidence_tier == "🟠 Moderate":
+            projected_completions = projected_completions * (1 + completions_moderate_tier_correction)
+        if completions_volatile_tier_correction != 0 and confidence_tier == "🔴 Volatile — Consider Pass":
+            projected_completions = projected_completions * (1 + completions_volatile_tier_correction)
+
         return {
             'projection': round(projected_completions, 1),
             'projected_attempts': round(projected_attempts, 1),
@@ -5719,6 +5739,9 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
             'completion_weighting_used': completion_weighting, 'bridge_schedule_used': bridge_schedule,
             'team_change_multiplier_used': team_change_multiplier,
             'use_cpoe_model_used': use_cpoe_model, 'qb_cpoe': round(qb_cpoe, 2) if qb_cpoe is not None and pd.notna(qb_cpoe) else None,
+            'completions_bias_correction_used': completions_bias_correction,
+            'completions_moderate_tier_correction_used': completions_moderate_tier_correction,
+            'completions_volatile_tier_correction_used': completions_volatile_tier_correction,
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
@@ -8202,6 +8225,15 @@ elif nav == "🧪 Backtest" and is_admin:
             comp_team_mult = st.slider("Team-change multiplier", 0.0, 1.0, 0.5, 0.05, key="comp_team_mult_test")
             comp_use_cpoe = st.checkbox("Use CPOE challenger model instead of historical blend", key="comp_use_cpoe_test")
 
+        st.write("**Bias corrections** (real, cross-season-confirmed via residual analysis — genuinely untested until run here, same standard every Attempts correction had to clear)")
+        col_cb1, col_cb2, col_cb3 = st.columns(3)
+        with col_cb1:
+            comp_bias_correction = st.slider("General correction (all tiers)", 0.0, 0.15, 0.0, 0.01, key="comp_bias_correction_test", help="Upward — the model under-projects overall")
+        with col_cb2:
+            comp_moderate_correction = st.slider("Additional: Moderate tier", 0.0, 0.15, 0.0, 0.01, key="comp_moderate_correction_test")
+        with col_cb3:
+            comp_volatile_correction = st.slider("Additional: Volatile tier", 0.0, 0.30, 0.0, 0.01, key="comp_volatile_correction_test", help="Volatile showed the largest bias of the three (+2.36/+3.42 across seasons)")
+
         accumulate_comp = st.checkbox("➕ Accumulate — add to existing results instead of replacing", key="comp_backtest_accumulate")
         debug_comp = st.checkbox("🔧 Show real errors (debug)", key="comp_backtest_debug")
 
@@ -8242,6 +8274,9 @@ elif nav == "🧪 Backtest" and is_admin:
                                 m['qb'], m['team'], m['opponent'], int(backtest_season_comp), as_of_week=m['week'],
                                 completion_weighting=comp_weighting, bridge_schedule=comp_bridge,
                                 team_change_multiplier=comp_team_mult, use_cpoe_model=comp_use_cpoe,
+                                completions_bias_correction=comp_bias_correction,
+                                completions_moderate_tier_correction=comp_moderate_correction,
+                                completions_volatile_tier_correction=comp_volatile_correction,
                             )
                         except Exception as e:
                             skipped_comp.append({'QB': m['qb'], 'Week': m['week'], 'Reason': f'Exception: {e}'})
