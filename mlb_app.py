@@ -5525,7 +5525,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
 
 def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=None,
                                           completion_weighting='attempt_weighted', bridge_schedule='attempts',
-                                          team_change_multiplier=0.5, use_cpoe_model=False, cpoe_weight=1.0,
+                                          team_change_multiplier=0.0, use_cpoe_model=False, cpoe_weight=1.0,
                                           completions_bias_correction=0.0, completions_moderate_tier_correction=0.06,
                                           completions_volatile_tier_correction=0.20):
     """v1 Pass Completions model (July 2026, now with the prior-season
@@ -5551,15 +5551,20 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
         2025: 4.751 vs 4.723 — the validation gap was actually LARGER
         than training, a good sign of real signal). Fourth real,
         validated Completions improvement of the session.
-      - bridge_schedule: 'attempts' (original, copied from the Attempts
-        model), 'slow_fade', or 'medium_fade' — completion% is generally
-        more stable than attempt volume, so a slower decay may be more
-        appropriate here than the schedule built for a different stat.
-      - team_change_multiplier: 0.5 (original) or any other value —
-        accuracy/completion skill plausibly carries over across a team
-        change more than attempt VOLUME does, so a flat 50% penalty
-        (copied from Attempts, where it made more sense) may be too
-        severe here.
+      - bridge_schedule: TESTED, NO REAL EFFECT — 'attempts' (original),
+        'slow_fade', and 'medium_fade' came back essentially tied on
+        both training (0.006 spread) and validation (exact tie, 4.756 vs
+        4.756). Kept at 'attempts'; genuinely doesn't matter within the
+        range tested.
+      - team_change_multiplier: VALIDATED (July 2026) — 0.0 (no penalty
+        at all for a team change) is now the default, confirmed to beat
+        0.5 (the original, copied from Attempts) on held-out data
+        (trained on 2024: 4.942 at 0.0 vs 4.949 at 0.5; held-out 2025:
+        4.716 vs 4.756 — one of the LARGER validation gaps of the
+        session). Confirms the original hypothesis: completion/accuracy
+        skill is a personal trait that carries over fully across a team
+        change, unlike attempt volume, which is far more scheme-
+        dependent. Fifth real, validated Completions improvement.
       - use_cpoe_model / cpoe_weight: an entirely different, CPOE-based
         challenger. completion_pct_baseline + QB's own CPOE, instead of
         the historical-blend approach — CPOE isolates completion
