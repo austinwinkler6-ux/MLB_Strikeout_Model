@@ -4980,7 +4980,8 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
     except Exception:
         return pd.DataFrame(), "error"
 
-def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_starts_count):
+def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_starts_count,
+                                  bridge_schedule='attempts', team_change_multiplier=0.5):
     """Shared prior-season bridge logic (July 2026) — extracted for reuse
     by the Completions model (and future Receptions), WITHOUT touching
     Attempts' existing inline version at all, since that logic is
@@ -4991,8 +4992,22 @@ def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_start
     halves the carryover weight if the QB changed teams since last
     season (a different team's real prior-season volume reflects a
     different offensive context). Returns (prior_qb_rows, prior_weight,
-    team_changed, prior_starter_filter_used)."""
-    prior_weight_table = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4, 4: 0.2}
+    team_changed, prior_starter_filter_used).
+
+    bridge_schedule and team_change_multiplier are now real, testable
+    parameters (July 2026 review) — completion percentage is generally
+    more stable than attempt volume (which can change substantially with
+    a new offense, coach, or role), so a slower decay schedule and a
+    less severe team-change penalty may be more appropriate for
+    Completions specifically than the schedule copied from Attempts.
+    Defaults match Attempts' exact original values, so nothing changes
+    unless a caller deliberately overrides them."""
+    bridge_schedules = {
+        'attempts': {0: 1.00, 1: 0.80, 2: 0.60, 3: 0.40, 4: 0.20},
+        'slow_fade': {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.40},
+        'medium_fade': {0: 1.00, 1: 0.85, 2: 0.70, 3: 0.50, 4: 0.30},
+    }
+    prior_weight_table = bridge_schedules.get(bridge_schedule, bridge_schedules['attempts'])
     prior_weight = prior_weight_table.get(current_starts_count, 0.0)
     team_changed = False
     prior_qb_rows = pd.DataFrame()
@@ -5004,7 +5019,7 @@ def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_start
             prior_team = prior_qb_rows['team'].iloc[-1] if 'team' in prior_qb_rows.columns else None
             if prior_team and prior_team != team:
                 team_changed = True
-                prior_weight = prior_weight * 0.5
+                prior_weight = prior_weight * team_change_multiplier
 
     return prior_qb_rows, prior_weight, team_changed, prior_starter_filter_used
 
@@ -5508,45 +5523,75 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         if st.session_state.get("_nfl_debug_mode"): raise
         return None
 
-def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=None):
+def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=None,
+                                          completion_weighting='equal', bridge_schedule='attempts',
+                                          team_change_multiplier=0.5, use_cpoe_model=False, cpoe_weight=1.0):
     """v1 Pass Completions model (July 2026, now with the prior-season
-    bridge) — Projected Attempts x Expected Completion%, per the original
-    build order (Completions depends directly on Attempts, which had to
-    work and get validated first). Deliberately reuses as much of the
-    Attempts infrastructure as possible rather than rebuilding it:
-    run_nfl_pass_attempts_projection directly for the volume component,
-    get_qb_starter_rows for the same starter-ID-joined, season_type-
-    filtered QB history, get_nfl_league_baselines for a real computed
-    completion_pct_baseline, and (new) compute_prior_season_bridge for
-    the same starts-based prior-season blending Attempts has — added
-    right away this time instead of waiting to discover the same "every
-    QB returns None for weeks 1-3" problem Attempts had before its
-    bridge was built.
+    bridge and 4 testable parameters from external review) — Projected
+    Attempts x Expected Completion%, per the original build order.
+    Deliberately reuses as much of the Attempts infrastructure as
+    possible: run_nfl_pass_attempts_projection directly for the volume
+    component, get_qb_starter_rows for the same starter-ID-joined,
+    season_type-filtered QB history, get_nfl_league_baselines for a real
+    computed completion_pct_baseline, and compute_prior_season_bridge for
+    the same starts-based prior-season blending Attempts has.
 
-    completion_pct = QB's own season/last5/last10 blend, itself blended
-    with prior-season completion% using the SAME starts-based phase-out
-    table as Attempts (0 starts=100% prior, 1=80%, 2=60%, 3=40%, 4=20%,
-    5+=0%, halved on a team change) x opponent completion% allowed x a
-    small wind adjustment. Then:
-
-    projected_completions = projected_attempts x completion_pct
+    Four real, testable parameters added this round, ALL defaulting to
+    preserve the exact original v1 behavior — none of these are assumed
+    to be improvements, they're hypotheses to backtest, same discipline
+    used throughout the Attempts build:
+      - completion_weighting: 'equal' (original — averages each game's
+        own completion%, treating a 5-attempt game the same as a
+        45-attempt game) or 'attempt_weighted' (sums completions/sums
+        attempts across games — weights high-volume games more, which
+        may reduce noise since they carry more real information).
+      - bridge_schedule: 'attempts' (original, copied from the Attempts
+        model), 'slow_fade', or 'medium_fade' — completion% is generally
+        more stable than attempt volume, so a slower decay may be more
+        appropriate here than the schedule built for a different stat.
+      - team_change_multiplier: 0.5 (original) or any other value —
+        accuracy/completion skill plausibly carries over across a team
+        change more than attempt VOLUME does, so a flat 50% penalty
+        (copied from Attempts, where it made more sense) may be too
+        severe here.
+      - use_cpoe_model / cpoe_weight: an entirely different, CPOE-based
+        challenger. completion_pct_baseline + QB's own CPOE, instead of
+        the historical-blend approach — CPOE isolates completion
+        performance relative to throw difficulty, which the raw
+        historical blend can't separate from scheme/receiver/situation
+        effects.
 
     Honest, explicit scope limits for this v1 (flagged, not hidden):
-      - Does NOT yet have any of the bias corrections Attempts has
-        (general, underdog, tier-specific) — those were found through
-        real backtesting on Attempts specifically; Completions needs its
-        OWN backtest history before any correction could be trusted here.
-      - Pressure/blitz/sack-rate context (explicitly deferred in the
-        original build plan pending data verification) still not
-        verified or used.
-      - Rookie / limited-sample labeling (Attempts has "🔴 Limited NFL
-        Sample" as its own tier) not yet added here — a real, known gap.
+      - Does NOT yet have any of the bias corrections Attempts has —
+        those need Completions' OWN backtest history first.
+      - Opponent factor is still the RAW version (completions allowed /
+        attempts faced) — a schedule-adjusted version (like the one
+        built, tested, and REJECTED for Attempts) is a real possible
+        upgrade, but per review: backtest the simple version first,
+        don't build the complex one before learning if the basic factor
+        even helps — exactly the lesson Attempts' own schedule-adjustment
+        experiment already taught us the hard way.
+      - Pressure/blitz/sack-rate context still not verified or used.
+      - Rookie / limited-sample labeling not yet added here.
     """
     try:
         attempts_result = run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=as_of_week)
         if not attempts_result:
             return None
         projected_attempts = attempts_result['projection']
+
+        def _weighted_pct(rows):
+            """Attempt-weighted completion% (July 2026 review, item 1) —
+            sums completions/sums attempts across games, instead of
+            averaging each game's own ratio equally. A 45-attempt game
+            carries more real information about a QB's true rate than a
+            5-attempt game; equal-weighting treats them the same."""
+            if rows.empty:
+                return None
+            total_attempts = rows['attempts'].sum()
+            if total_attempts <= 0:
+                return None
+            return rows['completions'].sum() / total_attempts
 
         qb_rows, starter_filter_used = get_qb_starter_rows(qb_name, season, as_of_week)
         if 'completions' not in qb_rows.columns or 'attempts' not in qb_rows.columns:
@@ -5557,11 +5602,12 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
         starts_this_season = len(qb_rows)
 
         # Prior-season bridge (July 2026) — reused via the shared helper,
-        # not duplicated inline, so both Attempts and Completions stay in
-        # sync with the same starts-based phase-out logic without two
-        # separate copies drifting apart over time.
+        # now with testable bridge_schedule and team_change_multiplier
+        # (review items 2), instead of always copying Attempts' exact
+        # schedule and penalty.
         prior_qb_rows, prior_weight, team_changed, prior_starter_filter_used = compute_prior_season_bridge(
-            qb_name, season, team, as_of_week, starts_this_season
+            qb_name, season, team, as_of_week, starts_this_season,
+            bridge_schedule=bridge_schedule, team_change_multiplier=team_change_multiplier,
         )
         if not prior_qb_rows.empty and 'completions' in prior_qb_rows.columns and 'attempts' in prior_qb_rows.columns:
             prior_qb_rows = prior_qb_rows[prior_qb_rows['attempts'] > 0].copy()
@@ -5572,20 +5618,49 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
             return None
 
         current_weight = 1 - prior_weight
-        current_season_pct = qb_rows['game_completion_pct'].mean() if not qb_rows.empty else None
-        prior_season_pct = prior_qb_rows['game_completion_pct'].mean() if not prior_qb_rows.empty else None
+        combined_rows = pd.concat([prior_qb_rows, qb_rows]).reset_index(drop=True) if not prior_qb_rows.empty else qb_rows
+
+        if completion_weighting == 'attempt_weighted':
+            current_season_pct = _weighted_pct(qb_rows)
+            prior_season_pct = _weighted_pct(prior_qb_rows)
+            last5_pct = _weighted_pct(combined_rows.tail(5))
+            last10_pct = _weighted_pct(combined_rows.tail(10))
+        else:
+            current_season_pct = qb_rows['game_completion_pct'].mean() if not qb_rows.empty else None
+            prior_season_pct = prior_qb_rows['game_completion_pct'].mean() if not prior_qb_rows.empty else None
+            last5_pct = combined_rows['game_completion_pct'].tail(5).mean()
+            last10_pct = combined_rows['game_completion_pct'].tail(10).mean()
 
         if prior_weight > 0 and prior_season_pct is not None:
             season_pct = (prior_season_pct * prior_weight) + (current_season_pct * current_weight) if current_season_pct is not None else prior_season_pct
         else:
             season_pct = current_season_pct
 
-        combined_rows = pd.concat([prior_qb_rows, qb_rows]).reset_index(drop=True) if not prior_qb_rows.empty else qb_rows
-        last5_pct = combined_rows['game_completion_pct'].tail(5).mean()
-        last10_pct = combined_rows['game_completion_pct'].tail(10).mean()
         base_completion_pct = (season_pct * 0.45) + (last5_pct * 0.35) + (last10_pct * 0.20)
 
         baselines = get_nfl_league_baselines(season, as_of_week)
+
+        # CPOE-based challenger (July 2026 review, item 4) — an entirely
+        # different approach from the historical-blend one above. Raw
+        # completion% mixes accuracy, throw difficulty, depth of target,
+        # receiver separation, game situation, and scheme all together;
+        # CPOE (completion percentage over expected) attempts to isolate
+        # completion PERFORMANCE specifically relative to throw
+        # difficulty. cpoe_projection = league baseline + QB's own CPOE,
+        # optionally dampened via cpoe_weight. Does NOT replace
+        # base_completion_pct by default (use_cpoe_model=False) — this
+        # is a genuine challenger to backtest against the historical
+        # version, not an assumed improvement.
+        qb_cpoe = None
+        if use_cpoe_model and 'passing_cpoe' in combined_rows.columns:
+            qb_cpoe = combined_rows['passing_cpoe'].tail(10).mean()
+            if pd.notna(qb_cpoe):
+                # nflverse stores passing_cpoe as percentage points (e.g.
+                # 3.5 means +3.5 percentage points), not a decimal — added
+                # directly to the baseline, which IS a decimal (e.g. 0.64).
+                cpoe_completion_pct = baselines['completion_pct_baseline'] + ((qb_cpoe / 100) * cpoe_weight)
+                base_completion_pct = cpoe_completion_pct
+
         opp_completion_pct_allowed = get_nfl_opponent_completion_pct_allowed(season, opponent, as_of_week)
 
         # Opponent factor — dampened, same multiplicative-deviation
@@ -5641,6 +5716,9 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
             'starts_this_season': starts_this_season, 'prior_season_weight': round(prior_weight, 2),
             'team_changed': team_changed,
             'starter_filter_used': starter_filter_used, 'prior_starter_filter_used': prior_starter_filter_used,
+            'completion_weighting_used': completion_weighting, 'bridge_schedule_used': bridge_schedule,
+            'team_change_multiplier_used': team_change_multiplier,
+            'use_cpoe_model_used': use_cpoe_model, 'qb_cpoe': round(qb_cpoe, 2) if qb_cpoe is not None and pd.notna(qb_cpoe) else None,
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
@@ -7639,8 +7717,8 @@ elif nav == "🧪 Backtest" and is_admin:
             finally:
                 st.session_state['_nba_debug_mode'] = False
 
-    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists", "NFL Pass Attempts"], key="backtest_sport")
-    if backtest_sport != "NFL Pass Attempts":
+    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists", "NFL Pass Attempts", "NFL Pass Completions"], key="backtest_sport")
+    if backtest_sport not in ("NFL Pass Attempts", "NFL Pass Completions"):
         backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
     if backtest_sport == "MLB Strikeouts":
@@ -8105,6 +8183,145 @@ elif nav == "🧪 Backtest" and is_admin:
         if 'nfl_backtest_skipped' in st.session_state and st.session_state['nfl_backtest_skipped']:
             with st.expander(f"Skipped ({len(st.session_state['nfl_backtest_skipped'])})"):
                 st.dataframe(pd.DataFrame(st.session_state['nfl_backtest_skipped']), use_container_width=True)
+
+    elif backtest_sport == "NFL Pass Completions":
+        st.caption("Full error decomposition (external review) — completions error has TWO sources (attempts volume error and completion-rate error), and this separates them instead of showing one blended number. Also computes two oracle diagnostics: 'actual attempts x projected completion%' isolates how good the completion-rate model would be if attempts were known perfectly, and 'projected attempts x actual completion%' isolates how much error comes from the attempts stage specifically.")
+        backtest_season_comp = st.selectbox("Season", ["2025", "2024", "2023"], key="backtest_season_comp")
+        col_cwk1, col_cwk2 = st.columns(2)
+        with col_cwk1:
+            backtest_week_start_comp = st.number_input("Start week", min_value=1, max_value=18, value=7, key="backtest_week_start_comp")
+        with col_cwk2:
+            backtest_week_end_comp = st.number_input("End week", min_value=1, max_value=18, value=18, key="backtest_week_end_comp")
+
+        st.write("**Testable parameters** (all default to the original v1 behavior — change these to test the review's hypotheses)")
+        col_cp1, col_cp2 = st.columns(2)
+        with col_cp1:
+            comp_weighting = st.selectbox("Completion weighting", ["equal", "attempt_weighted"], key="comp_weighting_test")
+            comp_bridge = st.selectbox("Bridge schedule", ["attempts", "slow_fade", "medium_fade"], key="comp_bridge_test")
+        with col_cp2:
+            comp_team_mult = st.slider("Team-change multiplier", 0.0, 1.0, 0.5, 0.05, key="comp_team_mult_test")
+            comp_use_cpoe = st.checkbox("Use CPOE challenger model instead of historical blend", key="comp_use_cpoe_test")
+
+        accumulate_comp = st.checkbox("➕ Accumulate — add to existing results instead of replacing", key="comp_backtest_accumulate")
+        debug_comp = st.checkbox("🔧 Show real errors (debug)", key="comp_backtest_debug")
+
+        col_run_comp, col_clear_comp = st.columns([3, 1])
+        with col_clear_comp:
+            if st.button("🗑️ Clear All", key="comp_clear_all", use_container_width=True):
+                st.session_state['comp_backtest_results'] = []
+                st.rerun()
+        with col_run_comp:
+            run_comp_clicked = st.button("🔍 Load Week(s) & Run Projections", key="comp_run_button", use_container_width=True)
+
+        if run_comp_clicked:
+            st.session_state['_nfl_debug_mode'] = debug_comp
+            weeks_to_test_comp = list(range(int(backtest_week_start_comp), int(backtest_week_end_comp) + 1))
+            with st.spinner(f"Pulling {len(weeks_to_test_comp)} week(s) of games..."):
+                try:
+                    schedules_comp = get_nfl_schedules([int(backtest_season_comp)])
+                    actual_stats_comp = get_nfl_player_stats([int(backtest_season_comp)])
+                    results_comp = list(st.session_state.get('comp_backtest_results', [])) if accumulate_comp else []
+                    skipped_comp = []
+                    progress_bar_comp = st.progress(0)
+                    status_text_comp = st.empty()
+
+                    matchups_comp = []
+                    for wk in weeks_to_test_comp:
+                        week_games = schedules_comp[schedules_comp['week'] == wk]
+                        for _, g in week_games.iterrows():
+                            if pd.notna(g.get('home_qb_name')):
+                                matchups_comp.append({'qb': g['home_qb_name'], 'team': g['home_team'], 'opponent': g['away_team'], 'week': wk})
+                            if pd.notna(g.get('away_qb_name')):
+                                matchups_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
+
+                    for i, m in enumerate(matchups_comp):
+                        status_text_comp.text(f"Week {m['week']}: {m['qb']} ({i+1} of {len(matchups_comp)})")
+                        progress_bar_comp.progress((i+1) / len(matchups_comp))
+                        try:
+                            result = run_nfl_pass_completions_projection(
+                                m['qb'], m['team'], m['opponent'], int(backtest_season_comp), as_of_week=m['week'],
+                                completion_weighting=comp_weighting, bridge_schedule=comp_bridge,
+                                team_change_multiplier=comp_team_mult, use_cpoe_model=comp_use_cpoe,
+                            )
+                        except Exception as e:
+                            skipped_comp.append({'QB': m['qb'], 'Week': m['week'], 'Reason': f'Exception: {e}'})
+                            continue
+                        actual_row = actual_stats_comp[(actual_stats_comp['player_display_name'] == m['qb']) & (actual_stats_comp['week'] == m['week']) & (actual_stats_comp['position'] == 'QB')]
+                        if actual_row.empty:
+                            skipped_comp.append({'QB': m['qb'], 'Week': m['week'], 'Reason': "Didn't play or no stats found"})
+                            continue
+                        actual_attempts = actual_row['attempts'].iloc[0]
+                        actual_completions = actual_row['completions'].iloc[0]
+                        if not result or actual_attempts <= 0:
+                            skipped_comp.append({'QB': m['qb'], 'Week': m['week'], 'Reason': "Insufficient history or zero actual attempts"})
+                            continue
+                        actual_completion_pct = actual_completions / actual_attempts
+
+                        # Full error decomposition (external review item 5)
+                        projected_attempts = result['projected_attempts']
+                        projected_completion_pct = result['projected_completion_pct']
+                        projected_completions = result['projection']
+
+                        oracle_volume_completions = actual_attempts * projected_completion_pct  # isolates completion-rate model quality
+                        oracle_efficiency_completions = projected_attempts * actual_completion_pct  # isolates attempts-stage contribution
+
+                        results_comp.append({
+                            'QB': m['qb'], 'Week': m['week'], 'Matchup': f"{m['opponent']} @ {m['team']}",
+                            'Proj Attempts': projected_attempts, 'Actual Attempts': actual_attempts,
+                            'Attempts Error': round(abs(projected_attempts - actual_attempts), 1),
+                            'Proj Comp%': round(projected_completion_pct, 3), 'Actual Comp%': round(actual_completion_pct, 3),
+                            'Comp% Error': round(abs(projected_completion_pct - actual_completion_pct), 3),
+                            'Proj Completions': projected_completions, 'Actual Completions': actual_completions,
+                            'Completions Error': round(abs(projected_completions - actual_completions), 1),
+                            'Oracle Volume Error': round(abs(oracle_volume_completions - actual_completions), 1),
+                            'Oracle Efficiency Error': round(abs(oracle_efficiency_completions - actual_completions), 1),
+                            'Confidence Tier': result.get('confidence_tier'),
+                        })
+                    st.session_state['comp_backtest_results'] = results_comp
+                    st.session_state['comp_backtest_skipped'] = skipped_comp
+                    status_text_comp.text(f"✅ Done! {len(results_comp)} total projections, {len(skipped_comp)} skipped.")
+                    progress_bar_comp.progress(1.0)
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                finally:
+                    st.session_state['_nfl_debug_mode'] = False
+
+        if 'comp_backtest_results' in st.session_state and st.session_state['comp_backtest_results']:
+            comp_df = pd.DataFrame(st.session_state['comp_backtest_results'])
+            st.dataframe(comp_df, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("📊 Error Decomposition")
+            attempts_mae = round(comp_df['Attempts Error'].mean(), 2)
+            comp_pct_mae = round(comp_df['Comp% Error'].mean(), 4)
+            completions_mae = round(comp_df['Completions Error'].mean(), 2)
+            oracle_volume_mae = round(comp_df['Oracle Volume Error'].mean(), 2)
+            oracle_efficiency_mae = round(comp_df['Oracle Efficiency Error'].mean(), 2)
+
+            col_e1, col_e2, col_e3 = st.columns(3)
+            col_e1.metric("Attempts MAE", attempts_mae, help="Error in the underlying Attempts projection this model depends on")
+            col_e2.metric("Completion% MAE", comp_pct_mae, help="Error in the completion-rate projection specifically")
+            col_e3.metric("Completions MAE", completions_mae, help="The real, final, blended error")
+
+            col_o1, col_o2 = st.columns(2)
+            col_o1.metric("Oracle: Actual Attempts x Proj Comp%", oracle_volume_mae, help="If attempts were known PERFECTLY, this is how good the completion-rate model alone would be")
+            col_o2.metric("Oracle: Proj Attempts x Actual Comp%", oracle_efficiency_mae, help="If completion% were known PERFECTLY, this shows how much error comes from the attempts stage alone")
+            if oracle_volume_mae < oracle_efficiency_mae:
+                st.caption(f"**Bottleneck read:** completion-rate error ({oracle_volume_mae}) is smaller than attempts-stage error ({oracle_efficiency_mae}) — the ATTEMPTS projection is contributing more to the final error here. Improving Completions further may mean improving Attempts, not this model's own logic.")
+            else:
+                st.caption(f"**Bottleneck read:** attempts-stage error ({oracle_efficiency_mae}) is smaller than completion-rate error ({oracle_volume_mae}) — the COMPLETION-RATE projection is contributing more to the final error here. Worth focusing improvement efforts on completion% specifically, not attempts.")
+
+            st.markdown("---")
+            st.write("**Completions MAE by Confidence Tier**")
+            tier_summary_comp = comp_df.groupby('Confidence Tier').agg(Predictions=('Completions Error', 'count'), MAE=('Completions Error', 'mean')).reset_index()
+            tier_summary_comp['MAE'] = tier_summary_comp['MAE'].round(2)
+            st.dataframe(tier_summary_comp, use_container_width=True)
+
+        if 'comp_backtest_skipped' in st.session_state and st.session_state['comp_backtest_skipped']:
+            with st.expander(f"Skipped ({len(st.session_state['comp_backtest_skipped'])})"):
+                st.dataframe(pd.DataFrame(st.session_state['comp_backtest_skipped']), use_container_width=True)
 
     else:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
