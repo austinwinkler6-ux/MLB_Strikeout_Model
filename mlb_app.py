@@ -4967,7 +4967,20 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
         qb_rows_all = qb_rows_all.sort_values('week')
 
         starter_filter_used = "starter_id_join"
-        if 'game_id' in qb_rows_all.columns and 'player_id' in qb_rows_all.columns:
+        if qb_rows_all.empty:
+            # Real bug fix (July 2026) — calling .apply(axis=1) on an
+            # EMPTY DataFrame can throw in pandas (it tries to probe a
+            # dummy row for type inference), which was silently caught by
+            # the outer except below, returning a fully empty, COLUMNLESS
+            # DataFrame — breaking any downstream code that checks for
+            # specific columns (like Completions' prior-season bridge,
+            # which needs qb_rows_all to have real columns even when it
+            # has zero rows, e.g. testing week 1 of a season). An empty
+            # DataFrame with 0 rows this season is a completely normal,
+            # expected case (especially week 1) — return it AS-IS,
+            # columns intact, rather than let it become a real crash.
+            qb_rows = qb_rows_all.copy()
+        elif 'game_id' in qb_rows_all.columns and 'player_id' in qb_rows_all.columns:
             starter_ids = get_nfl_starter_game_ids(season)
             qb_rows = qb_rows_all[qb_rows_all.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1)].copy()
             if len(qb_rows_all) >= 3 and len(qb_rows) < max(3, len(qb_rows_all) * 0.5):
@@ -5607,8 +5620,19 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
 
         qb_rows, starter_filter_used = get_qb_starter_rows(qb_name, season, as_of_week)
         if 'completions' not in qb_rows.columns or 'attempts' not in qb_rows.columns:
-            st.session_state.setdefault('_completions_fail_reasons', {})[qb_name] = f"qb_rows missing completions/attempts columns (columns found: {list(qb_rows.columns)})"
-            return None
+            # Defense-in-depth (July 2026) — even if the current-season
+            # fetch genuinely came back malformed, don't give up
+            # immediately here. Treat it as zero current-season starts
+            # and let the prior-season bridge below attempt a rescue,
+            # exactly like it correctly does for a real week-1 QB with
+            # legitimately zero current-season games. The real root cause
+            # (an unguarded .apply(axis=1) call on an empty DataFrame,
+            # which could throw and get silently caught, producing a
+            # columnless DataFrame) is now fixed directly in
+            # get_qb_starter_rows — this is just a second layer of safety
+            # on top of that fix, not a replacement for it.
+            st.session_state.setdefault('_completions_fail_reasons', {})[qb_name] = f"qb_rows missing completions/attempts columns (columns found: {list(qb_rows.columns)}) — falling back to treating as zero current-season starts"
+            qb_rows = pd.DataFrame(columns=['completions', 'attempts', 'week', 'team'])
         qb_rows = qb_rows.sort_values('week')
         qb_rows = qb_rows[qb_rows['attempts'] > 0]  # avoid divide-by-zero on a genuinely attempt-less row
         qb_rows['game_completion_pct'] = qb_rows['completions'] / qb_rows['attempts']
