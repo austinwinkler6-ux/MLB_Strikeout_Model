@@ -8384,7 +8384,7 @@ elif nav == "🧪 Backtest" and is_admin:
 
         st.markdown("---")
         st.subheader("🎛️ Completions Coefficient Optimizer")
-        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Now testing completion_weighting — equal vs. attempt-weighted, from the original external review's first item.")
+        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Completion weighting: validated (attempt_weighted). Now testing bridge_schedule — completion% may be more stable than attempt volume, so a slower prior-season decay might fit better than the schedule copied from Attempts.")
 
         opt_train_season_comp = st.selectbox("Train on", ["2024", "2025"], key="comp_opt_train_season")
         col_owk1, col_owk2 = st.columns(2)
@@ -8396,17 +8396,17 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", key="comp_opt_run", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    # Updated — Volatile-tier correction VALIDATED and
-                    # locked in last round (0.20, second real win for
-                    # Completions). Now testing completion_weighting — a
-                    # categorical choice (not a numeric range): 'equal'
-                    # averages each game's own completion% equally
-                    # regardless of volume; 'attempt_weighted' sums
-                    # completions/sums attempts across games, weighting
-                    # high-volume games more heavily. The original
-                    # external review's first, and arguably most
-                    # fundamental, suggestion.
-                    weighting_options_comp = ['equal', 'attempt_weighted']
+                    # Updated — completion_weighting VALIDATED and locked
+                    # in last round (attempt_weighted, third real win for
+                    # Completions, and the validation gap was actually
+                    # LARGER than training — a good sign). Now testing
+                    # bridge_schedule — a categorical choice: 'attempts'
+                    # (original, copied from the Attempts model's fast
+                    # decay), 'slow_fade', or 'medium_fade'. Completion%
+                    # is generally a more stable, personal skill than
+                    # attempt volume (which swings with scheme/role), so
+                    # a slower decay may fit better here.
+                    bridge_options_comp = ['attempts', 'slow_fade', 'medium_fade']
 
                     train_weeks_comp = list(range(int(opt_week_start_comp), int(opt_week_end_comp) + 1))
                     schedules_opt_comp = get_nfl_schedules([int(opt_train_season_comp)])
@@ -8420,19 +8420,19 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    st.caption(f"Testing {len(weighting_options_comp)} completion weighting methods across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. Both already-validated tier corrections (0.06 Moderate, 0.20 Volatile) stay active in every combination, since they're left unset and use their locked-in defaults.")
+                    st.caption(f"Testing {len(bridge_options_comp)} bridge schedules across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. All 3 already-validated pieces (Moderate 0.06, Volatile 0.20, attempt-weighted completion%) stay active in every combination.")
                     progress_bar_comp_opt = st.progress(0)
                     status_text_comp_opt = st.empty()
                     combo_results_comp = []
 
-                    for ci, wopt in enumerate(weighting_options_comp):
-                        status_text_comp_opt.text(f"Testing completion_weighting='{wopt}' ({ci+1} of {len(weighting_options_comp)})")
-                        progress_bar_comp_opt.progress((ci + 1) / len(weighting_options_comp))
+                    for ci, bopt in enumerate(bridge_options_comp):
+                        status_text_comp_opt.text(f"Testing bridge_schedule='{bopt}' ({ci+1} of {len(bridge_options_comp)})")
+                        progress_bar_comp_opt.progress((ci + 1) / len(bridge_options_comp))
                         errors = []
                         for m in matchups_opt_comp:
                             result = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season_comp), as_of_week=m['week'],
-                                completion_weighting=wopt,
+                                bridge_schedule=bopt,
                             )
                             if not result:
                                 continue
@@ -8442,7 +8442,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['completions'].iloc[0]))
                         if errors:
                             combo_results_comp.append({
-                                'Completion Weighting': wopt,
+                                'Bridge Schedule': bopt,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -8450,7 +8450,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['comp_optimizer_results'] = combo_df_comp
                     st.session_state['comp_optimizer_train_season'] = opt_train_season_comp
                     st.session_state['comp_optimizer_weeks'] = train_weeks_comp
-                    status_text_comp_opt.text(f"✅ Done! Tested {len(weighting_options_comp)} combinations.")
+                    status_text_comp_opt.text(f"✅ Done! Tested {len(bridge_options_comp)} combinations.")
                     progress_bar_comp_opt.progress(1.0)
                 except Exception as e:
                     st.error(f"Real error: {e}")
@@ -8459,11 +8459,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'comp_optimizer_results' in st.session_state:
             combo_df_comp = st.session_state['comp_optimizer_results']
-            st.write(f"**Completion weighting methods tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
+            st.write(f"**Bridge schedules tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
             st.dataframe(combo_df_comp, use_container_width=True)
 
             best_comp = combo_df_comp.iloc[0]
-            st.success(f"Best on training season: MAE {best_comp['MAE']} at completion_weighting='{best_comp['Completion Weighting']}'")
+            st.success(f"Best on training season: MAE {best_comp['MAE']} at bridge_schedule='{best_comp['Bridge Schedule']}'")
 
             if st.button("✅ Validate Best Combination on the OTHER season", key="comp_opt_validate", use_container_width=True):
                 validate_season_comp = "2025" if st.session_state.get('comp_optimizer_train_season') == "2024" else "2024"
@@ -8486,7 +8486,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val_comp:
                             result_new = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'],
-                                completion_weighting=best_comp['Completion Weighting'],
+                                bridge_schedule=best_comp['Bridge Schedule'],
                             )
                             result_old = run_nfl_pass_completions_projection(m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'])
                             actual_row = actual_stats_val_comp[(actual_stats_val_comp['player_display_name'] == m['qb']) & (actual_stats_val_comp['week'] == m['week']) & (actual_stats_val_comp['position'] == 'QB')]
