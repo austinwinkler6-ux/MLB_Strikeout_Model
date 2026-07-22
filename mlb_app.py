@@ -8363,7 +8363,7 @@ elif nav == "🧪 Backtest" and is_admin:
 
         st.markdown("---")
         st.subheader("🎛️ Completions Coefficient Optimizer")
-        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. Testing the general bias correction first, same sequential order that worked for Attempts (general, then Moderate-tier, then Volatile-tier, one at a time).")
+        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction was tested and rejected (overfit). Now testing the Moderate-tier-specific correction, which showed a much larger, more consistent bias across both seasons.")
 
         opt_train_season_comp = st.selectbox("Train on", ["2024", "2025"], key="comp_opt_train_season")
         col_owk1, col_owk2 = st.columns(2)
@@ -8433,7 +8433,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['comp_optimizer_results'] = combo_df_comp
                     st.session_state['comp_optimizer_train_season'] = opt_train_season_comp
                     st.session_state['comp_optimizer_weeks'] = train_weeks_comp
-                    status_text_comp_opt.text(f"✅ Done! Tested {len(general_correction_options)} combinations.")
+                    status_text_comp_opt.text(f"✅ Done! Tested {len(moderate_correction_options_comp)} combinations.")
                     progress_bar_comp_opt.progress(1.0)
                 except Exception as e:
                     st.error(f"Real error: {e}")
