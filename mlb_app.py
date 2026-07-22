@@ -8389,7 +8389,7 @@ elif nav == "🧪 Backtest" and is_admin:
 
         st.markdown("---")
         st.subheader("🎛️ Completions Coefficient Optimizer")
-        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Completion weighting: validated (attempt_weighted). Bridge schedule: no real effect either way (both training AND validation came back essentially tied — genuinely doesn't matter). Now testing team_change_multiplier — like bridge_schedule, this only matters during the prior-season bridge period, so the week range defaults to 1 this time, not 7.")
+        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Completion weighting: validated (attempt_weighted). Bridge schedule: no real effect. Team-change multiplier: validated (0.0). Now testing the LAST of the four structural parameters — the CPOE challenger model (historical blend vs. league baseline + QB's own CPOE).")
 
         opt_train_season_comp = st.selectbox("Train on", ["2024", "2025"], key="comp_opt_train_season")
         col_owk1, col_owk2 = st.columns(2)
@@ -8401,25 +8401,19 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", key="comp_opt_run", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    # Updated — bridge_schedule tested, NO real effect
-                    # (training: 4.949/4.951/4.955 — a 0.006 spread, pure
-                    # noise; validation: exact tie at 4.756, confirming
-                    # there's nothing here to chase). Kept at 'attempts'.
-                    # Now testing team_change_multiplier — a continuous
-                    # parameter (0-1), currently fixed at 0.5 (halving
-                    # prior-season carryover on a team change, copied from
-                    # Attempts). Per review: accuracy/completion skill
-                    # plausibly carries over across a team change MORE
-                    # than attempt volume does, since it's more a personal
-                    # skill than a scheme-dependent number — so a flat 50%
-                    # penalty (built for a different stat) may be too
-                    # severe here. IMPORTANT: like bridge_schedule, this
-                    # only affects QBs still inside the prior-season
-                    # bridge window, so the week range needs to include
-                    # early weeks to actually test it — unlike the
-                    # earlier tests (Vegas coefficients, tier corrections)
-                    # which deliberately excluded them.
-                    multiplier_options_comp = [0.0, 0.25, 0.5, 0.75, 1.0]
+                    # Updated — team_change_multiplier VALIDATED and
+                    # locked in last round (0.0, fifth real win for
+                    # Completions, one of the LARGER validation gaps of
+                    # the whole session). Now testing the last of the
+                    # four structural parameters: use_cpoe_model. A binary
+                    # comparison per the original review's framing —
+                    # historical blend (current default, False) vs. league
+                    # baseline + QB's own CPOE (True). CPOE isolates
+                    # completion performance relative to throw difficulty,
+                    # which the raw historical blend can't separate from
+                    # scheme/receiver/situation effects — a genuinely
+                    # different approach, not another tweak to the same one.
+                    cpoe_options_comp = [False, True]
 
                     train_weeks_comp = list(range(int(opt_week_start_comp), int(opt_week_end_comp) + 1))
                     schedules_opt_comp = get_nfl_schedules([int(opt_train_season_comp)])
@@ -8433,19 +8427,19 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    st.caption(f"Testing {len(multiplier_options_comp)} team-change multipliers across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. All 3 already-validated pieces (Moderate 0.06, Volatile 0.20, attempt-weighted completion%) stay active in every combination.")
+                    st.caption(f"Testing {len(cpoe_options_comp)} completion% approaches (historical blend vs. CPOE) across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. All 4 already-validated pieces stay active in every combination.")
                     progress_bar_comp_opt = st.progress(0)
                     status_text_comp_opt = st.empty()
                     combo_results_comp = []
 
-                    for ci, mopt in enumerate(multiplier_options_comp):
-                        status_text_comp_opt.text(f"Testing team_change_multiplier={mopt} ({ci+1} of {len(multiplier_options_comp)})")
-                        progress_bar_comp_opt.progress((ci + 1) / len(multiplier_options_comp))
+                    for ci, copt in enumerate(cpoe_options_comp):
+                        status_text_comp_opt.text(f"Testing use_cpoe_model={copt} ({ci+1} of {len(cpoe_options_comp)})")
+                        progress_bar_comp_opt.progress((ci + 1) / len(cpoe_options_comp))
                         errors = []
                         for m in matchups_opt_comp:
                             result = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season_comp), as_of_week=m['week'],
-                                team_change_multiplier=mopt,
+                                use_cpoe_model=copt,
                             )
                             if not result:
                                 continue
@@ -8455,7 +8449,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['completions'].iloc[0]))
                         if errors:
                             combo_results_comp.append({
-                                'Team Change Multiplier': mopt,
+                                'Use CPOE Model': copt,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -8463,7 +8457,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['comp_optimizer_results'] = combo_df_comp
                     st.session_state['comp_optimizer_train_season'] = opt_train_season_comp
                     st.session_state['comp_optimizer_weeks'] = train_weeks_comp
-                    status_text_comp_opt.text(f"✅ Done! Tested {len(multiplier_options_comp)} combinations.")
+                    status_text_comp_opt.text(f"✅ Done! Tested {len(cpoe_options_comp)} combinations.")
                     progress_bar_comp_opt.progress(1.0)
                 except Exception as e:
                     st.error(f"Real error: {e}")
@@ -8472,11 +8466,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'comp_optimizer_results' in st.session_state:
             combo_df_comp = st.session_state['comp_optimizer_results']
-            st.write(f"**Team-change multipliers tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
+            st.write(f"**CPOE vs. historical blend tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
             st.dataframe(combo_df_comp, use_container_width=True)
 
             best_comp = combo_df_comp.iloc[0]
-            st.success(f"Best on training season: MAE {best_comp['MAE']} at team_change_multiplier={best_comp['Team Change Multiplier']}")
+            st.success(f"Best on training season: MAE {best_comp['MAE']} at use_cpoe_model={best_comp['Use CPOE Model']}")
 
             if st.button("✅ Validate Best Combination on the OTHER season", key="comp_opt_validate", use_container_width=True):
                 validate_season_comp = "2025" if st.session_state.get('comp_optimizer_train_season') == "2024" else "2024"
@@ -8499,7 +8493,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val_comp:
                             result_new = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'],
-                                team_change_multiplier=best_comp['Team Change Multiplier'],
+                                use_cpoe_model=best_comp['Use CPOE Model'],
                             )
                             result_old = run_nfl_pass_completions_projection(m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'])
                             actual_row = actual_stats_val_comp[(actual_stats_val_comp['player_display_name'] == m['qb']) & (actual_stats_val_comp['week'] == m['week']) & (actual_stats_val_comp['position'] == 'QB')]
