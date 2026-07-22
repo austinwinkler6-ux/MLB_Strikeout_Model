@@ -5588,6 +5588,7 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
     try:
         attempts_result = run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=as_of_week)
         if not attempts_result:
+            st.session_state.setdefault('_completions_fail_reasons', {})[qb_name] = "attempts_result was None/empty (the underlying Attempts projection itself failed)"
             return None
         projected_attempts = attempts_result['projection']
 
@@ -5606,6 +5607,7 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
 
         qb_rows, starter_filter_used = get_qb_starter_rows(qb_name, season, as_of_week)
         if 'completions' not in qb_rows.columns or 'attempts' not in qb_rows.columns:
+            st.session_state.setdefault('_completions_fail_reasons', {})[qb_name] = f"qb_rows missing completions/attempts columns (columns found: {list(qb_rows.columns)})"
             return None
         qb_rows = qb_rows.sort_values('week')
         qb_rows = qb_rows[qb_rows['attempts'] > 0]  # avoid divide-by-zero on a genuinely attempt-less row
@@ -5626,6 +5628,7 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
 
         combined_available = starts_this_season + len(prior_qb_rows)
         if combined_available < 3:
+            st.session_state.setdefault('_completions_fail_reasons', {})[qb_name] = f"combined_available={combined_available} (starts_this_season={starts_this_season}, prior_qb_rows={len(prior_qb_rows)}, prior_weight={prior_weight}, prior_starter_filter_used={prior_starter_filter_used})"
             return None
 
         current_weight = 1 - prior_weight
@@ -8324,7 +8327,8 @@ elif nav == "🧪 Backtest" and is_admin:
                         actual_attempts = actual_row['attempts'].iloc[0]
                         actual_completions = actual_row['completions'].iloc[0]
                         if not result or actual_attempts <= 0:
-                            skipped_comp.append({'QB': m['qb'], 'Week': m['week'], 'Reason': "Insufficient history or zero actual attempts"})
+                            real_reason = st.session_state.get('_completions_fail_reasons', {}).get(m['qb'], "Insufficient history or zero actual attempts")
+                            skipped_comp.append({'QB': m['qb'], 'Week': m['week'], 'Reason': real_reason})
                             continue
                         actual_completion_pct = actual_completions / actual_attempts
 
