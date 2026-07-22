@@ -5540,7 +5540,7 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
                                           completion_weighting='attempt_weighted', bridge_schedule='attempts',
                                           team_change_multiplier=0.0, use_cpoe_model=False, cpoe_weight=1.0,
                                           completions_bias_correction=0.0, completions_moderate_tier_correction=0.06,
-                                          completions_volatile_tier_correction=0.20):
+                                          completions_volatile_tier_correction=0.20, cpoe_blend_weight=0.0):
     """v1 Pass Completions model (July 2026, now with the prior-season
     bridge and 4 testable parameters from external review) — Projected
     Attempts x Expected Completion%, per the original build order.
@@ -5678,7 +5678,7 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
 
         baselines = get_nfl_league_baselines(season, as_of_week)
 
-        # CPOE-based challenger (July 2026 review, item 4) — an entirely
+        # CPOE-based challenger (July 2026 review) — an entirely
         # different approach from the historical-blend one above. Raw
         # completion% mixes accuracy, throw difficulty, depth of target,
         # receiver separation, game situation, and scheme all together;
@@ -5689,15 +5689,28 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
         # base_completion_pct by default (use_cpoe_model=False) — this
         # is a genuine challenger to backtest against the historical
         # version, not an assumed improvement.
+        #
+        # use_cpoe_model (FULL REPLACEMENT) was tested and REJECTED —
+        # the historical blend won outright (4.942 vs 4.954 on training,
+        # no validation even needed). Per a follow-up review: full
+        # replacement losing doesn't mean CPOE has zero signal — it may
+        # just mean throwing away the historical model entirely was too
+        # aggressive. cpoe_blend_weight tests a genuinely different idea:
+        # MIXING a small amount of CPOE into the historical projection
+        # instead of swapping it out. Defaults to 0.0 (no blend, same as
+        # today) — untested until run through the optimizer.
         qb_cpoe = None
-        if use_cpoe_model and 'passing_cpoe' in combined_rows.columns:
+        if (use_cpoe_model or cpoe_blend_weight > 0) and 'passing_cpoe' in combined_rows.columns:
             qb_cpoe = combined_rows['passing_cpoe'].tail(10).mean()
             if pd.notna(qb_cpoe):
                 # nflverse stores passing_cpoe as percentage points (e.g.
                 # 3.5 means +3.5 percentage points), not a decimal — added
                 # directly to the baseline, which IS a decimal (e.g. 0.64).
                 cpoe_completion_pct = baselines['completion_pct_baseline'] + ((qb_cpoe / 100) * cpoe_weight)
-                base_completion_pct = cpoe_completion_pct
+                if use_cpoe_model:
+                    base_completion_pct = cpoe_completion_pct
+                elif cpoe_blend_weight > 0:
+                    base_completion_pct = ((1 - cpoe_blend_weight) * base_completion_pct) + (cpoe_blend_weight * cpoe_completion_pct)
 
         opp_completion_pct_allowed = get_nfl_opponent_completion_pct_allowed(season, opponent, as_of_week)
 
@@ -5728,9 +5741,21 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
         # PROVEN non-predictive for Attempts across two full seasons, so
         # it's not being reused here even informationally until Completions
         # has its own real backtest evidence one way or the other).
+        #
+        # Limited-sample check (per a follow-up external review) — added
+        # to match Attempts' own "🔴 Limited NFL Sample" tier, which takes
+        # priority over every other check. A rookie or a QB with
+        # essentially no real career starts behaves genuinely differently
+        # than a stable veteran with a temporarily volatile CV, even if
+        # the raw numbers happen to look similar — worth a distinct
+        # label rather than folding into the generic Volatile tier.
+        is_limited_sample = starts_this_season < 3 and len(prior_qb_rows) == 0
+
         pct_history = combined_rows['game_completion_pct'].tail(10)
         pct_cv = (pct_history.std() / pct_history.mean()) if len(pct_history) > 1 and pct_history.mean() > 0 else 1.0
-        if len(combined_rows) < 4 or pct_cv > 0.20:
+        if is_limited_sample:
+            confidence_tier = "🔴 Limited NFL Sample"
+        elif len(combined_rows) < 4 or pct_cv > 0.20:
             confidence_tier = "🔴 Volatile — Consider Pass"
         elif len(combined_rows) >= 8 and pct_cv < 0.12:
             confidence_tier = "🟢 Reliable"
@@ -5787,11 +5812,12 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
             'completion_pct_cv': round(pct_cv, 3),
             'games_used': len(combined_rows),
             'starts_this_season': starts_this_season, 'prior_season_weight': round(prior_weight, 2),
-            'team_changed': team_changed,
+            'team_changed': team_changed, 'is_limited_sample': is_limited_sample,
             'starter_filter_used': starter_filter_used, 'prior_starter_filter_used': prior_starter_filter_used,
             'completion_weighting_used': completion_weighting, 'bridge_schedule_used': bridge_schedule,
             'team_change_multiplier_used': team_change_multiplier,
             'use_cpoe_model_used': use_cpoe_model, 'qb_cpoe': round(qb_cpoe, 2) if qb_cpoe is not None and pd.notna(qb_cpoe) else None,
+            'cpoe_blend_weight_used': cpoe_blend_weight,
             'completions_bias_correction_used': completions_bias_correction,
             'completions_moderate_tier_correction_used': completions_moderate_tier_correction,
             'completions_volatile_tier_correction_used': completions_volatile_tier_correction,
@@ -8427,7 +8453,7 @@ elif nav == "🧪 Backtest" and is_admin:
 
         st.markdown("---")
         st.subheader("🎛️ Completions Coefficient Optimizer")
-        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Completion weighting: validated (attempt_weighted). Bridge schedule: no real effect. Team-change multiplier: validated (0.0). Now testing the LAST of the four structural parameters — the CPOE challenger model (historical blend vs. league baseline + QB's own CPOE).")
+        st.caption("Same proven train/validate pattern as the Attempts optimizer — search on one season, validate the winner on the OTHER season before trusting it. General correction: rejected. Moderate-tier: validated (0.06). Volatile-tier: validated (0.20). Completion weighting: validated (attempt_weighted). Bridge schedule: no real effect. Team-change multiplier: validated (0.0). CPOE full replacement: rejected (historical blend won outright). Now testing a genuinely different idea from a follow-up review — BLENDING a small amount of CPOE into the historical projection instead of replacing it entirely.")
 
         opt_train_season_comp = st.selectbox("Train on", ["2024", "2025"], key="comp_opt_train_season")
         col_owk1, col_owk2 = st.columns(2)
@@ -8439,19 +8465,16 @@ elif nav == "🧪 Backtest" and is_admin:
         if st.button("🔍 Run Grid Search", key="comp_opt_run", use_container_width=True):
             with st.spinner("Running grid search..."):
                 try:
-                    # Updated — team_change_multiplier VALIDATED and
-                    # locked in last round (0.0, fifth real win for
-                    # Completions, one of the LARGER validation gaps of
-                    # the whole session). Now testing the last of the
-                    # four structural parameters: use_cpoe_model. A binary
-                    # comparison per the original review's framing —
-                    # historical blend (current default, False) vs. league
-                    # baseline + QB's own CPOE (True). CPOE isolates
-                    # completion performance relative to throw difficulty,
-                    # which the raw historical blend can't separate from
-                    # scheme/receiver/situation effects — a genuinely
-                    # different approach, not another tweak to the same one.
-                    cpoe_options_comp = [False, True]
+                    # Updated — use_cpoe_model (full replacement) tested
+                    # and REJECTED (historical blend won outright, 4.942
+                    # vs 4.954, no validation even needed). Per a follow-
+                    # up review: that doesn't mean CPOE has zero signal —
+                    # replacing the whole model may have just been too
+                    # aggressive. Now testing cpoe_blend_weight — MIXING
+                    # a small amount of CPOE into the historical
+                    # projection instead of swapping it out entirely,
+                    # using the reviewer's own suggested test values.
+                    blend_options_comp = [0.0, 0.10, 0.20, 0.30, 0.40]
 
                     train_weeks_comp = list(range(int(opt_week_start_comp), int(opt_week_end_comp) + 1))
                     schedules_opt_comp = get_nfl_schedules([int(opt_train_season_comp)])
@@ -8465,19 +8488,19 @@ elif nav == "🧪 Backtest" and is_admin:
                             if pd.notna(g.get('away_qb_name')):
                                 matchups_opt_comp.append({'qb': g['away_qb_name'], 'team': g['away_team'], 'opponent': g['home_team'], 'week': wk})
 
-                    st.caption(f"Testing {len(cpoe_options_comp)} completion% approaches (historical blend vs. CPOE) across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. All 4 already-validated pieces stay active in every combination.")
+                    st.caption(f"Testing {len(blend_options_comp)} CPOE blend weights across {len(matchups_opt_comp)} QB-weeks ({len(train_weeks_comp)} weeks). This runs Attempts internally for every QB too, so it'll take roughly 2x as long as the Attempts-only optimizer. All 5 already-validated pieces stay active in every combination.")
                     progress_bar_comp_opt = st.progress(0)
                     status_text_comp_opt = st.empty()
                     combo_results_comp = []
 
-                    for ci, copt in enumerate(cpoe_options_comp):
-                        status_text_comp_opt.text(f"Testing use_cpoe_model={copt} ({ci+1} of {len(cpoe_options_comp)})")
-                        progress_bar_comp_opt.progress((ci + 1) / len(cpoe_options_comp))
+                    for ci, bopt in enumerate(blend_options_comp):
+                        status_text_comp_opt.text(f"Testing cpoe_blend_weight={bopt} ({ci+1} of {len(blend_options_comp)})")
+                        progress_bar_comp_opt.progress((ci + 1) / len(blend_options_comp))
                         errors = []
                         for m in matchups_opt_comp:
                             result = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(opt_train_season_comp), as_of_week=m['week'],
-                                use_cpoe_model=copt,
+                                cpoe_blend_weight=bopt,
                             )
                             if not result:
                                 continue
@@ -8487,7 +8510,7 @@ elif nav == "🧪 Backtest" and is_admin:
                             errors.append(abs(result['projection'] - actual_row['completions'].iloc[0]))
                         if errors:
                             combo_results_comp.append({
-                                'Use CPOE Model': copt,
+                                'CPOE Blend Weight': bopt,
                                 'MAE': round(sum(errors) / len(errors), 3), 'N': len(errors),
                             })
 
@@ -8495,7 +8518,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.session_state['comp_optimizer_results'] = combo_df_comp
                     st.session_state['comp_optimizer_train_season'] = opt_train_season_comp
                     st.session_state['comp_optimizer_weeks'] = train_weeks_comp
-                    status_text_comp_opt.text(f"✅ Done! Tested {len(cpoe_options_comp)} combinations.")
+                    status_text_comp_opt.text(f"✅ Done! Tested {len(blend_options_comp)} combinations.")
                     progress_bar_comp_opt.progress(1.0)
                 except Exception as e:
                     st.error(f"Real error: {e}")
@@ -8504,11 +8527,11 @@ elif nav == "🧪 Backtest" and is_admin:
 
         if 'comp_optimizer_results' in st.session_state:
             combo_df_comp = st.session_state['comp_optimizer_results']
-            st.write(f"**CPOE vs. historical blend tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
+            st.write(f"**CPOE blend weights tested (trained on {st.session_state.get('comp_optimizer_train_season', '')}), sorted best to worst:**")
             st.dataframe(combo_df_comp, use_container_width=True)
 
             best_comp = combo_df_comp.iloc[0]
-            st.success(f"Best on training season: MAE {best_comp['MAE']} at use_cpoe_model={best_comp['Use CPOE Model']}")
+            st.success(f"Best on training season: MAE {best_comp['MAE']} at cpoe_blend_weight={best_comp['CPOE Blend Weight']}")
 
             if st.button("✅ Validate Best Combination on the OTHER season", key="comp_opt_validate", use_container_width=True):
                 validate_season_comp = "2025" if st.session_state.get('comp_optimizer_train_season') == "2024" else "2024"
@@ -8531,7 +8554,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         for m in matchups_val_comp:
                             result_new = run_nfl_pass_completions_projection(
                                 m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'],
-                                use_cpoe_model=best_comp['Use CPOE Model'],
+                                cpoe_blend_weight=best_comp['CPOE Blend Weight'],
                             )
                             result_old = run_nfl_pass_completions_projection(m['qb'], m['team'], m['opponent'], int(validate_season_comp), as_of_week=m['week'])
                             actual_row = actual_stats_val_comp[(actual_stats_val_comp['player_display_name'] == m['qb']) & (actual_stats_val_comp['week'] == m['week']) & (actual_stats_val_comp['position'] == 'QB')]
