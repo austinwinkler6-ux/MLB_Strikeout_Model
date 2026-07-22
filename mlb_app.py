@@ -3855,23 +3855,42 @@ def get_odds_api_sport_and_market(sport):
 @st.cache_data(ttl=604800)
 def get_historical_events_cached(api_sport, snapshot_time):
     try:
-        resp = requests.get(
+        r = requests.get(
             f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events",
             params={'apiKey': ODDS_API_KEY, 'date': snapshot_time}
-        ).json()
+        )
+        r.raise_for_status()
+        resp = r.json()
         return resp.get('data', [])
-    except:
+    except Exception as e:
+        # Real error surfacing (July 2026) — this was a bare `except:`
+        # silently swallowing EVERYTHING (auth failures, network errors,
+        # rate limits, malformed responses) and just returning an empty
+        # list, with no way to tell WHY. That's exactly what was hiding
+        # a real, diagnosable problem behind a confusing "0 events, 0
+        # credits used" symptom. Now captures the real status
+        # code/message for inspection.
+        status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+        st.session_state.setdefault('_historical_odds_errors', []).append(
+            {'call': 'events', 'sport': api_sport, 'snapshot': snapshot_time, 'status_code': status_code, 'error': str(e)}
+        )
         return []
 
 @st.cache_data(ttl=604800)
 def get_historical_event_odds_cached(api_sport, event_id, market, commence_time):
     try:
-        resp = requests.get(
+        r = requests.get(
             f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events/{event_id}/odds",
             params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': market, 'oddsFormat': 'american', 'date': commence_time}
-        ).json()
+        )
+        r.raise_for_status()
+        resp = r.json()
         return resp.get('data', {}) or {}
-    except:
+    except Exception as e:
+        status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+        st.session_state.setdefault('_historical_odds_errors', []).append(
+            {'call': 'event_odds', 'sport': api_sport, 'event_id': event_id, 'market': market, 'status_code': status_code, 'error': str(e)}
+        )
         return {}
 
 def fetch_closing_line(sport, player_name, direction, game_date_str):
@@ -8127,6 +8146,10 @@ elif nav == "🧪 Backtest" and is_admin:
                     progress_bar_odds.progress(1.0)
                     st.write("**Per-week diagnostic — this shows exactly where any gaps are coming from**")
                     st.dataframe(pd.DataFrame(week_diagnostics_nfl), use_container_width=True)
+                    if st.session_state.get('_historical_odds_errors'):
+                        st.error(f"⚠️ {len(st.session_state['_historical_odds_errors'])} real API error(s) captured — this is the ACTUAL reason behind any zero/empty results above, not a silent failure anymore:")
+                        st.dataframe(pd.DataFrame(st.session_state['_historical_odds_errors']), use_container_width=True)
+                        st.session_state['_historical_odds_errors'] = []
 
                     nfl_results_df['Sportsbook Line'] = nfl_results_df.apply(lambda r: all_lines_nfl.get((r['QB'], r['Week']) if 'Week' in nfl_results_df.columns else (r['QB'], nfl_weeks_in_results[0])), axis=1)
 
@@ -8561,6 +8584,10 @@ elif nav == "🧪 Backtest" and is_admin:
                     progress_bar_odds_comp.progress(1.0)
                     st.write("**Per-week diagnostic — this shows exactly where any gaps are coming from**")
                     st.dataframe(pd.DataFrame(week_diagnostics_comp), use_container_width=True)
+                    if st.session_state.get('_historical_odds_errors'):
+                        st.error(f"⚠️ {len(st.session_state['_historical_odds_errors'])} real API error(s) captured — this is the ACTUAL reason behind any zero/empty results above, not a silent failure anymore:")
+                        st.dataframe(pd.DataFrame(st.session_state['_historical_odds_errors']), use_container_width=True)
+                        st.session_state['_historical_odds_errors'] = []
 
                     comp_df['Sportsbook Line'] = comp_df.apply(lambda r: all_lines_comp.get((r['QB'], r['Week'])), axis=1)
 
