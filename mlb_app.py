@@ -8464,6 +8464,110 @@ elif nav == "🧪 Backtest" and is_admin:
             tier_summary_comp['Bias'] = tier_summary_comp['Bias'].round(2)
             st.dataframe(tier_summary_comp, use_container_width=True)
 
+            st.markdown("---")
+            st.subheader("💰 Check Against Real Historical Sportsbook Lines")
+            comp_weeks_in_results = sorted(comp_df['Week'].unique()) if 'Week' in comp_df.columns else []
+            unique_games_comp = comp_df['Matchup'].nunique()
+            est_quota_comp = unique_games_comp * 10
+            st.caption(f"Same question as the Attempts version: did the model's recommended side (Over/Under vs. the ACTUAL sportsbook line) actually win. Market: player_pass_completions, confirmed real on The Odds API. Works across your full accumulated week range automatically. **Your results span {len(comp_weeks_in_results)} week(s) with {unique_games_comp} unique games total, so roughly {est_quota_comp} quota units** — check your remaining Odds API quota before running a wide range.")
+            if st.button(f"Check Historical Lines (~{est_quota_comp} quota units)", key="comp_check_lines_btn"):
+                with st.spinner(f"Fetching historical NFL events and lines across {len(comp_weeks_in_results)} week(s)..."):
+                    schedules_for_odds_comp = get_nfl_schedules([int(backtest_season_comp)])
+                    all_lines_comp = {}
+                    checked_games_comp = 0
+                    events_by_week_comp = {}
+                    progress_bar_odds_comp = st.progress(0)
+                    status_text_odds_comp = st.empty()
+
+                    for wi, wk in enumerate(comp_weeks_in_results):
+                        status_text_odds_comp.text(f"Week {wk} ({wi+1} of {len(comp_weeks_in_results)})")
+                        progress_bar_odds_comp.progress((wi + 1) / len(comp_weeks_in_results))
+                        week_games_for_odds = schedules_for_odds_comp[schedules_for_odds_comp['week'] == wk]
+                        if week_games_for_odds.empty:
+                            continue
+                        week_start_row = week_games_for_odds.iloc[0]
+                        snapshot_date = pd.to_datetime(week_start_row['gameday']).strftime('%Y-%m-%dT12:00:00Z')
+                        events = get_historical_events_cached("americanfootball_nfl", snapshot_date)
+                        events_by_week_comp[wk] = events
+                        matchup_to_event_comp = {}
+                        for ev in events:
+                            h, a = ev.get('home_team'), ev.get('away_team')
+                            if h and a:
+                                matchup_to_event_comp[f"{a} @ {h}"] = (ev.get('id'), ev.get('commence_time'))
+
+                        week_matchups = comp_df[comp_df['Week'] == wk]['Matchup'].unique()
+                        for matchup in week_matchups:
+                            away_abbrev, home_abbrev = matchup.split(' @ ')
+                            away_full = nfl_abbrev_to_name.get(away_abbrev, away_abbrev)
+                            home_full = nfl_abbrev_to_name.get(home_abbrev, home_abbrev)
+                            full_matchup = f"{away_full} @ {home_full}"
+                            event_info = matchup_to_event_comp.get(full_matchup)
+                            if not event_info:
+                                continue
+                            event_id, commence_time = event_info
+                            game_data = get_historical_event_odds_cached("americanfootball_nfl", event_id, "player_pass_completions", commence_time)
+                            for bookmaker in game_data.get('bookmakers', []):
+                                for market in bookmaker.get('markets', []):
+                                    if market.get('key') == 'player_pass_completions':
+                                        for outcome in market.get('outcomes', []):
+                                            pname = outcome.get('description')
+                                            point = outcome.get('point')
+                                            if pname and point is not None:
+                                                all_lines_comp[(pname, wk)] = point
+                            checked_games_comp += 1
+                            time.sleep(0.5)
+
+                    status_text_odds_comp.text(f"✅ Done checking {len(comp_weeks_in_results)} week(s).")
+                    progress_bar_odds_comp.progress(1.0)
+
+                    comp_df['Sportsbook Line'] = comp_df.apply(lambda r: all_lines_comp.get((r['QB'], r['Week'])), axis=1)
+
+                    def _comp_model_side(row):
+                        if pd.isna(row['Sportsbook Line']):
+                            return None
+                        return 'Over' if row['Proj Completions'] > row['Sportsbook Line'] else ('Under' if row['Proj Completions'] < row['Sportsbook Line'] else 'Push')
+
+                    def _comp_did_win(row):
+                        if pd.isna(row['Sportsbook Line']):
+                            return None
+                        if row['Actual Completions'] > row['Sportsbook Line']:
+                            actual_side = 'Over'
+                        elif row['Actual Completions'] < row['Sportsbook Line']:
+                            actual_side = 'Under'
+                        else:
+                            return 'Push'
+                        model_side = _comp_model_side(row)
+                        if model_side in (None, 'Push'):
+                            return None
+                        return 'Win' if model_side == actual_side else 'Loss'
+
+                    comp_df['Model Side'] = comp_df.apply(_comp_model_side, axis=1)
+                    comp_df['Bet Result'] = comp_df.apply(_comp_did_win, axis=1)
+                    matched_comp = comp_df['Sportsbook Line'].notna().sum()
+                    if checked_games_comp == 0:
+                        st.error("0 games matched across any week — likely a team name format mismatch. Diagnostic below (most recent week checked):")
+                        st.write("Our Matchup strings (from nflverse):", list(comp_df['Matchup'].unique()))
+                        last_week_events_comp = list(events_by_week_comp.values())[-1] if events_by_week_comp else []
+                        st.write("Real event team names (from The Odds API):", [(ev.get('away_team'), ev.get('home_team')) for ev in last_week_events_comp])
+                    st.success(f"✅ Checked {checked_games_comp} game(s) across {len(comp_weeks_in_results)} week(s), matched real lines for {matched_comp}/{len(comp_df)} QBs.")
+                    line_results_comp = comp_df[comp_df['Sportsbook Line'].notna()][['QB', 'Week', 'Matchup', 'Proj Completions', 'Sportsbook Line', 'Actual Completions', 'Model Side', 'Bet Result']]
+                    st.dataframe(line_results_comp, use_container_width=True)
+                    graded_comp = line_results_comp[line_results_comp['Bet Result'].isin(['Win', 'Loss'])]
+                    if not graded_comp.empty:
+                        win_rate_comp = round((graded_comp['Bet Result'] == 'Win').mean() * 100, 1)
+                        st.metric(f"Win rate vs. real historical lines (all {len(comp_weeks_in_results)} week(s) combined)", f"{win_rate_comp}% ({len(graded_comp)} graded bets)")
+                        st.caption("A rate meaningfully above ~52.4% (the -110 breakeven point) across a real, combined multi-week sample is a genuine signal.")
+                        if line_results_comp['Week'].nunique() > 1:
+                            st.write("**Win rate by week**")
+                            week_win_summary_comp = graded_comp.groupby('Week').apply(lambda g: round((g['Bet Result'] == 'Win').mean() * 100, 1)).reset_index(name='Win Rate %')
+                            week_win_summary_comp['Graded Bets'] = graded_comp.groupby('Week').size().values
+                            st.dataframe(week_win_summary_comp, use_container_width=True)
+                        result_counts_comp = line_results_comp['Bet Result'].fillna('No Bet/Push').value_counts()
+                        st.bar_chart(result_counts_comp)
+                        chart_df_comp = line_results_comp[line_results_comp['Bet Result'].isin(['Win', 'Loss'])].copy()
+                        chart_df_comp['Result Color'] = chart_df_comp['Bet Result'].map({'Win': '#2ecc71', 'Loss': '#e74c3c'})
+                        st.scatter_chart(chart_df_comp, x='Proj Completions', y='Actual Completions', color='Result Color')
+
         if 'comp_backtest_skipped' in st.session_state and st.session_state['comp_backtest_skipped']:
             with st.expander(f"Skipped ({len(st.session_state['comp_backtest_skipped'])})"):
                 st.dataframe(pd.DataFrame(st.session_state['comp_backtest_skipped']), use_container_width=True)
