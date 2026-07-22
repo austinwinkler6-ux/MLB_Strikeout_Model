@@ -8242,23 +8242,33 @@ elif nav == "🧪 Backtest" and is_admin:
         with col_cwk2:
             backtest_week_end_comp = st.number_input("End week", min_value=1, max_value=18, value=18, key="backtest_week_end_comp")
 
-        st.write("**Testable parameters** (all default to the original v1 behavior — change these to test the review's hypotheses)")
+        if st.button("🔄 Reset to Validated Defaults", key="comp_reset_defaults"):
+            st.session_state['comp_weighting_test'] = 'attempt_weighted'
+            st.session_state['comp_bridge_test'] = 'attempts'
+            st.session_state['comp_team_mult_test'] = 0.0
+            st.session_state['comp_use_cpoe_test'] = False
+            st.session_state['comp_bias_correction_test'] = 0.0
+            st.session_state['comp_moderate_correction_test'] = 0.06
+            st.session_state['comp_volatile_correction_test'] = 0.20
+            st.rerun()
+
+        st.write("**Testable parameters** — defaults now match what's actually been VALIDATED (attempt_weighted, team-change=0.0), not the original pre-correction values. A real bug was just caught here: these widgets were silently overriding the model's own validated defaults with stale ones every time a normal backtest ran, which is why full-season results looked identical to the very first, pre-correction run.")
         col_cp1, col_cp2 = st.columns(2)
         with col_cp1:
-            comp_weighting = st.selectbox("Completion weighting", ["equal", "attempt_weighted"], key="comp_weighting_test")
+            comp_weighting = st.selectbox("Completion weighting", ["attempt_weighted", "equal"], key="comp_weighting_test")
             comp_bridge = st.selectbox("Bridge schedule", ["attempts", "slow_fade", "medium_fade"], key="comp_bridge_test")
         with col_cp2:
-            comp_team_mult = st.slider("Team-change multiplier", 0.0, 1.0, 0.5, 0.05, key="comp_team_mult_test")
+            comp_team_mult = st.slider("Team-change multiplier", 0.0, 1.0, 0.0, 0.05, key="comp_team_mult_test")
             comp_use_cpoe = st.checkbox("Use CPOE challenger model instead of historical blend", key="comp_use_cpoe_test")
 
-        st.write("**Bias corrections** (real, cross-season-confirmed via residual analysis — genuinely untested until run here, same standard every Attempts correction had to clear)")
+        st.write("**Bias corrections** — Moderate and Volatile now default to their VALIDATED values (0.06 / 0.20); general correction stays at 0.0, since it was tested and rejected.")
         col_cb1, col_cb2, col_cb3 = st.columns(3)
         with col_cb1:
-            comp_bias_correction = st.slider("General correction (all tiers)", 0.0, 0.15, 0.0, 0.01, key="comp_bias_correction_test", help="Upward — the model under-projects overall")
+            comp_bias_correction = st.slider("General correction (all tiers)", 0.0, 0.15, 0.0, 0.01, key="comp_bias_correction_test", help="Rejected — stays at 0.0. Upward would mean the model under-projects overall.")
         with col_cb2:
-            comp_moderate_correction = st.slider("Additional: Moderate tier", 0.0, 0.15, 0.0, 0.01, key="comp_moderate_correction_test")
+            comp_moderate_correction = st.slider("Additional: Moderate tier", 0.0, 0.15, 0.06, 0.01, key="comp_moderate_correction_test", help="Validated — first real Completions correction of the session.")
         with col_cb3:
-            comp_volatile_correction = st.slider("Additional: Volatile tier", 0.0, 0.30, 0.0, 0.01, key="comp_volatile_correction_test", help="Volatile showed the largest bias of the three (+2.36/+3.42 across seasons)")
+            comp_volatile_correction = st.slider("Additional: Volatile tier", 0.0, 0.30, 0.20, 0.01, key="comp_volatile_correction_test", help="Validated — largest bias of the three, and the largest correction.")
 
         accumulate_comp = st.checkbox("➕ Accumulate — add to existing results instead of replacing", key="comp_backtest_accumulate")
         debug_comp = st.checkbox("🔧 Show real errors (debug)", key="comp_backtest_debug")
