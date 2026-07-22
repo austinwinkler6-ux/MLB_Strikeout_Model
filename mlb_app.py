@@ -8065,6 +8065,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     all_lines_nfl = {}
                     checked_games_nfl = 0
                     events_by_week = {}
+                    week_diagnostics_nfl = []
                     progress_bar_odds = st.progress(0)
                     status_text_odds = st.empty()
 
@@ -8073,6 +8074,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         progress_bar_odds.progress((wi + 1) / len(nfl_weeks_in_results))
                         week_games_for_odds = schedules_for_odds[schedules_for_odds['week'] == wk]
                         if week_games_for_odds.empty:
+                            week_diagnostics_nfl.append({'Week': wk, 'Events Returned': 0, 'Expected Matchups': 0, 'Matched': 0, 'Lines Found': 0, 'Note': 'No schedule rows found for this week'})
                             continue
                         week_start_row = week_games_for_odds.iloc[0]
                         snapshot_date = pd.to_datetime(week_start_row['gameday']).strftime('%Y-%m-%dT12:00:00Z')
@@ -8085,6 +8087,8 @@ elif nav == "🧪 Backtest" and is_admin:
                                 matchup_to_event_nfl[f"{a} @ {h}"] = (ev.get('id'), ev.get('commence_time'))
 
                         week_matchups = nfl_results_df[nfl_results_df['Week'] == wk]['Matchup'].unique() if 'Week' in nfl_results_df.columns else nfl_results_df['Matchup'].unique()
+                        week_matched_nfl = 0
+                        week_lines_found_nfl = 0
                         for matchup in week_matchups:
                             away_abbrev, home_abbrev = matchup.split(' @ ')
                             away_full = nfl_abbrev_to_name.get(away_abbrev, away_abbrev)
@@ -8093,8 +8097,10 @@ elif nav == "🧪 Backtest" and is_admin:
                             event_info = matchup_to_event_nfl.get(full_matchup)
                             if not event_info:
                                 continue
+                            week_matched_nfl += 1
                             event_id, commence_time = event_info
                             game_data = get_historical_event_odds_cached("americanfootball_nfl", event_id, "player_pass_attempts", commence_time)
+                            lines_this_game_nfl = 0
                             for bookmaker in game_data.get('bookmakers', []):
                                 for market in bookmaker.get('markets', []):
                                     if market.get('key') == 'player_pass_attempts':
@@ -8106,11 +8112,21 @@ elif nav == "🧪 Backtest" and is_admin:
                                             # week has its own real line.
                                             if pname and point is not None:
                                                 all_lines_nfl[(pname, wk)] = point
+                                                lines_this_game_nfl += 1
+                            week_lines_found_nfl += lines_this_game_nfl
                             checked_games_nfl += 1
                             time.sleep(0.5)
+                        week_diagnostics_nfl.append({
+                            'Week': wk, 'Events Returned': len(events),
+                            'Expected Matchups': len(week_matchups), 'Matched': week_matched_nfl,
+                            'Lines Found': week_lines_found_nfl,
+                            'Note': 'OK' if len(events) > 0 else 'ZERO events returned from historical API for this snapshot date',
+                        })
 
                     status_text_odds.text(f"✅ Done checking {len(nfl_weeks_in_results)} week(s).")
                     progress_bar_odds.progress(1.0)
+                    st.write("**Per-week diagnostic — this shows exactly where any gaps are coming from**")
+                    st.dataframe(pd.DataFrame(week_diagnostics_nfl), use_container_width=True)
 
                     nfl_results_df['Sportsbook Line'] = nfl_results_df.apply(lambda r: all_lines_nfl.get((r['QB'], r['Week']) if 'Week' in nfl_results_df.columns else (r['QB'], nfl_weeks_in_results[0])), axis=1)
 
@@ -8486,6 +8502,7 @@ elif nav == "🧪 Backtest" and is_admin:
                     all_lines_comp = {}
                     checked_games_comp = 0
                     events_by_week_comp = {}
+                    week_diagnostics_comp = []
                     progress_bar_odds_comp = st.progress(0)
                     status_text_odds_comp = st.empty()
 
@@ -8494,6 +8511,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         progress_bar_odds_comp.progress((wi + 1) / len(comp_weeks_in_results))
                         week_games_for_odds = schedules_for_odds_comp[schedules_for_odds_comp['week'] == wk]
                         if week_games_for_odds.empty:
+                            week_diagnostics_comp.append({'Week': wk, 'Events Returned': 0, 'Expected Matchups': 0, 'Matched': 0, 'Lines Found': 0, 'Note': 'No schedule rows found for this week'})
                             continue
                         week_start_row = week_games_for_odds.iloc[0]
                         snapshot_date = pd.to_datetime(week_start_row['gameday']).strftime('%Y-%m-%dT12:00:00Z')
@@ -8506,6 +8524,8 @@ elif nav == "🧪 Backtest" and is_admin:
                                 matchup_to_event_comp[f"{a} @ {h}"] = (ev.get('id'), ev.get('commence_time'))
 
                         week_matchups = comp_df[comp_df['Week'] == wk]['Matchup'].unique()
+                        week_matched = 0
+                        week_lines_found = 0
                         for matchup in week_matchups:
                             away_abbrev, home_abbrev = matchup.split(' @ ')
                             away_full = nfl_abbrev_to_name.get(away_abbrev, away_abbrev)
@@ -8514,8 +8534,10 @@ elif nav == "🧪 Backtest" and is_admin:
                             event_info = matchup_to_event_comp.get(full_matchup)
                             if not event_info:
                                 continue
+                            week_matched += 1
                             event_id, commence_time = event_info
                             game_data = get_historical_event_odds_cached("americanfootball_nfl", event_id, "player_pass_completions", commence_time)
+                            lines_this_game = 0
                             for bookmaker in game_data.get('bookmakers', []):
                                 for market in bookmaker.get('markets', []):
                                     if market.get('key') == 'player_pass_completions':
@@ -8524,11 +8546,21 @@ elif nav == "🧪 Backtest" and is_admin:
                                             point = outcome.get('point')
                                             if pname and point is not None:
                                                 all_lines_comp[(pname, wk)] = point
+                                                lines_this_game += 1
+                            week_lines_found += lines_this_game
                             checked_games_comp += 1
                             time.sleep(0.5)
+                        week_diagnostics_comp.append({
+                            'Week': wk, 'Events Returned': len(events),
+                            'Expected Matchups': len(week_matchups), 'Matched': week_matched,
+                            'Lines Found': week_lines_found,
+                            'Note': 'OK' if len(events) > 0 else 'ZERO events returned from historical API for this snapshot date',
+                        })
 
                     status_text_odds_comp.text(f"✅ Done checking {len(comp_weeks_in_results)} week(s).")
                     progress_bar_odds_comp.progress(1.0)
+                    st.write("**Per-week diagnostic — this shows exactly where any gaps are coming from**")
+                    st.dataframe(pd.DataFrame(week_diagnostics_comp), use_container_width=True)
 
                     comp_df['Sportsbook Line'] = comp_df.apply(lambda r: all_lines_comp.get((r['QB'], r['Week'])), axis=1)
 
