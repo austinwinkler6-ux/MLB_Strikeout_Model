@@ -8055,93 +8055,110 @@ elif nav == "🧪 Backtest" and is_admin:
             st.caption("How to read this: if bias stays close to 0 across every single breakdown, that matches the theoretical-floor finding — the remaining error is likely mostly irreducible variance, and a full structural rebuild is unlikely to move the needle much. If one or more buckets show a real, consistent bias (not just higher MAE, but a real +/- lean), that's genuine evidence worth pursuing further before building anything.")
 
             st.subheader("💰 Check Against Real Historical Sportsbook Lines")
-            nfl_weeks_in_results = nfl_results_df['Week'].nunique() if 'Week' in nfl_results_df.columns else 1
-            if nfl_weeks_in_results > 1:
-                st.info(f"This check is scoped to ONE week at a time (it needs a single snapshot date) — your current results span {nfl_weeks_in_results} weeks. Re-run with Start week = End week to check historical lines for a specific week.")
-            else:
-                single_week_tested = int(nfl_results_df['Week'].iloc[0]) if 'Week' in nfl_results_df.columns else int(backtest_week_start_nfl)
-                unique_games_nfl = nfl_results_df['Matchup'].nunique()
-                st.caption(f"Same question as the NBA version: did the model's recommended side (Over/Under vs. the ACTUAL sportsbook line) actually win — not just how close the raw number was. Market: player_pass_attempts, confirmed real on The Odds API. Costs real quota (~10 units per game). **This week has {unique_games_nfl} unique game(s), so roughly {unique_games_nfl * 10} quota units.**")
-                if st.button(f"Check Historical Lines (~{unique_games_nfl * 10} quota units)", key="nfl_check_lines_btn"):
-                    with st.spinner("Fetching historical NFL events and lines..."):
-                        schedules_for_odds = get_nfl_schedules([int(backtest_season_nfl)])
-                        week_games_for_odds = schedules_for_odds[schedules_for_odds['week'] == single_week_tested]
+            nfl_weeks_in_results = sorted(nfl_results_df['Week'].unique()) if 'Week' in nfl_results_df.columns else [int(backtest_week_start_nfl)]
+            unique_games_nfl = nfl_results_df['Matchup'].nunique()
+            est_quota = unique_games_nfl * 10
+            st.caption(f"Same question as the NBA version: did the model's recommended side (Over/Under vs. the ACTUAL sportsbook line) actually win — not just how close the raw number was. Market: player_pass_attempts, confirmed real on The Odds API. Now works across your FULL accumulated week range automatically (previously required one week at a time) — fetches a separate historical snapshot per week, then combines everything into one final win rate. **Your results span {len(nfl_weeks_in_results)} week(s) with {unique_games_nfl} unique games total, so roughly {est_quota} quota units** — a full 18-week season could run into the thousands, so check your remaining Odds API quota before running a really wide range.")
+            if st.button(f"Check Historical Lines (~{est_quota} quota units)", key="nfl_check_lines_btn"):
+                with st.spinner(f"Fetching historical NFL events and lines across {len(nfl_weeks_in_results)} week(s)..."):
+                    schedules_for_odds = get_nfl_schedules([int(backtest_season_nfl)])
+                    all_lines_nfl = {}
+                    checked_games_nfl = 0
+                    events_by_week = {}
+                    progress_bar_odds = st.progress(0)
+                    status_text_odds = st.empty()
+
+                    for wi, wk in enumerate(nfl_weeks_in_results):
+                        status_text_odds.text(f"Week {wk} ({wi+1} of {len(nfl_weeks_in_results)})")
+                        progress_bar_odds.progress((wi + 1) / len(nfl_weeks_in_results))
+                        week_games_for_odds = schedules_for_odds[schedules_for_odds['week'] == wk]
                         if week_games_for_odds.empty:
-                            st.error("Couldn't re-fetch the schedule for this week — try re-running the projections above first.")
+                            continue
+                        week_start_row = week_games_for_odds.iloc[0]
+                        snapshot_date = pd.to_datetime(week_start_row['gameday']).strftime('%Y-%m-%dT12:00:00Z')
+                        events = get_historical_events_cached("americanfootball_nfl", snapshot_date)
+                        events_by_week[wk] = events
+                        matchup_to_event_nfl = {}
+                        for ev in events:
+                            h, a = ev.get('home_team'), ev.get('away_team')
+                            if h and a:
+                                matchup_to_event_nfl[f"{a} @ {h}"] = (ev.get('id'), ev.get('commence_time'))
+
+                        week_matchups = nfl_results_df[nfl_results_df['Week'] == wk]['Matchup'].unique() if 'Week' in nfl_results_df.columns else nfl_results_df['Matchup'].unique()
+                        for matchup in week_matchups:
+                            away_abbrev, home_abbrev = matchup.split(' @ ')
+                            away_full = nfl_abbrev_to_name.get(away_abbrev, away_abbrev)
+                            home_full = nfl_abbrev_to_name.get(home_abbrev, home_abbrev)
+                            full_matchup = f"{away_full} @ {home_full}"
+                            event_info = matchup_to_event_nfl.get(full_matchup)
+                            if not event_info:
+                                continue
+                            event_id, commence_time = event_info
+                            game_data = get_historical_event_odds_cached("americanfootball_nfl", event_id, "player_pass_attempts", commence_time)
+                            for bookmaker in game_data.get('bookmakers', []):
+                                for market in bookmaker.get('markets', []):
+                                    if market.get('key') == 'player_pass_attempts':
+                                        for outcome in market.get('outcomes', []):
+                                            pname = outcome.get('description')
+                                            point = outcome.get('point')
+                                            # Keyed by (player, week) now, not just player — a QB could
+                                            # appear in multiple weeks across a multi-week range, and each
+                                            # week has its own real line.
+                                            if pname and point is not None:
+                                                all_lines_nfl[(pname, wk)] = point
+                            checked_games_nfl += 1
+                            time.sleep(0.5)
+
+                    status_text_odds.text(f"✅ Done checking {len(nfl_weeks_in_results)} week(s).")
+                    progress_bar_odds.progress(1.0)
+
+                    nfl_results_df['Sportsbook Line'] = nfl_results_df.apply(lambda r: all_lines_nfl.get((r['QB'], r['Week']) if 'Week' in nfl_results_df.columns else (r['QB'], nfl_weeks_in_results[0])), axis=1)
+
+                    def _nfl_model_side(row):
+                        if pd.isna(row['Sportsbook Line']):
+                            return None
+                        return 'Over' if row['Projection'] > row['Sportsbook Line'] else ('Under' if row['Projection'] < row['Sportsbook Line'] else 'Push')
+
+                    def _nfl_did_win(row):
+                        if pd.isna(row['Sportsbook Line']):
+                            return None
+                        if row['Actual'] > row['Sportsbook Line']:
+                            actual_side = 'Over'
+                        elif row['Actual'] < row['Sportsbook Line']:
+                            actual_side = 'Under'
                         else:
-                            week_start_row = week_games_for_odds.iloc[0]
-                            snapshot_date = pd.to_datetime(week_start_row['gameday']).strftime('%Y-%m-%dT12:00:00Z')
-                            events = get_historical_events_cached("americanfootball_nfl", snapshot_date)
-                            matchup_to_event_nfl = {}
-                            for ev in events:
-                                h, a = ev.get('home_team'), ev.get('away_team')
-                                if h and a:
-                                    matchup_to_event_nfl[f"{a} @ {h}"] = (ev.get('id'), ev.get('commence_time'))
+                            return 'Push'
+                        model_side = _nfl_model_side(row)
+                        if model_side in (None, 'Push'):
+                            return None
+                        return 'Win' if model_side == actual_side else 'Loss'
 
-                            all_lines_nfl = {}
-                            checked_games_nfl = 0
-                            for matchup in nfl_results_df['Matchup'].unique():
-                                away_abbrev, home_abbrev = matchup.split(' @ ')
-                                away_full = nfl_abbrev_to_name.get(away_abbrev, away_abbrev)
-                                home_full = nfl_abbrev_to_name.get(home_abbrev, home_abbrev)
-                                full_matchup = f"{away_full} @ {home_full}"
-                                event_info = matchup_to_event_nfl.get(full_matchup)
-                                if not event_info:
-                                    continue
-                                event_id, commence_time = event_info
-                                game_data = get_historical_event_odds_cached("americanfootball_nfl", event_id, "player_pass_attempts", commence_time)
-                                for bookmaker in game_data.get('bookmakers', []):
-                                    for market in bookmaker.get('markets', []):
-                                        if market.get('key') == 'player_pass_attempts':
-                                            for outcome in market.get('outcomes', []):
-                                                pname = outcome.get('description')
-                                                point = outcome.get('point')
-                                                if pname and point is not None and pname not in all_lines_nfl:
-                                                    all_lines_nfl[pname] = point
-                                checked_games_nfl += 1
-                                time.sleep(0.5)
-
-                            nfl_results_df['Sportsbook Line'] = nfl_results_df['QB'].apply(lambda p: all_lines_nfl.get(p))
-
-                            def _nfl_model_side(row):
-                                if pd.isna(row['Sportsbook Line']):
-                                    return None
-                                return 'Over' if row['Projection'] > row['Sportsbook Line'] else ('Under' if row['Projection'] < row['Sportsbook Line'] else 'Push')
-
-                            def _nfl_did_win(row):
-                                if pd.isna(row['Sportsbook Line']):
-                                    return None
-                                if row['Actual'] > row['Sportsbook Line']:
-                                    actual_side = 'Over'
-                                elif row['Actual'] < row['Sportsbook Line']:
-                                    actual_side = 'Under'
-                                else:
-                                    return 'Push'
-                                model_side = _nfl_model_side(row)
-                                if model_side in (None, 'Push'):
-                                    return None
-                                return 'Win' if model_side == actual_side else 'Loss'
-
-                            nfl_results_df['Model Side'] = nfl_results_df.apply(_nfl_model_side, axis=1)
-                            nfl_results_df['Bet Result'] = nfl_results_df.apply(_nfl_did_win, axis=1)
-                            matched_nfl = nfl_results_df['Sportsbook Line'].notna().sum()
-                            if checked_games_nfl == 0:
-                                st.error("0 games matched — likely a team name format mismatch (nflverse uses abbreviations like 'KC', The Odds API uses full names like 'Kansas City Chiefs'). Diagnostic below:")
-                                st.write("Our Matchup strings (from nflverse):", list(nfl_results_df['Matchup'].unique()))
-                                st.write("Real event team names (from The Odds API):", [(ev.get('away_team'), ev.get('home_team')) for ev in events])
-                            st.success(f"✅ Checked {checked_games_nfl} game(s), matched real lines for {matched_nfl}/{len(nfl_results_df)} QBs.")
-                            line_results_nfl = nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][['QB', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']]
-                            st.dataframe(line_results_nfl, use_container_width=True)
-                            graded_nfl = line_results_nfl[line_results_nfl['Bet Result'].isin(['Win', 'Loss'])]
-                            if not graded_nfl.empty:
-                                win_rate_nfl = round((graded_nfl['Bet Result'] == 'Win').mean() * 100, 1)
-                                st.metric("Win rate vs. real historical lines", f"{win_rate_nfl}% ({len(graded_nfl)} graded bets)")
-                                st.caption("Same caution as NBA: a rate meaningfully above ~52.4% (the -110 breakeven point) across a real sample is a genuine signal, but treat any single week very cautiously — this is an even smaller weekly sample than NBA's nightly slates, so it'll take more weeks accumulated before this number means much.")
-                                result_counts_nfl = line_results_nfl['Bet Result'].fillna('No Bet/Push').value_counts()
-                                st.bar_chart(result_counts_nfl)
-                                chart_df_nfl = line_results_nfl[line_results_nfl['Bet Result'].isin(['Win', 'Loss'])].copy()
-                                chart_df_nfl['Result Color'] = chart_df_nfl['Bet Result'].map({'Win': '#2ecc71', 'Loss': '#e74c3c'})
-                                st.scatter_chart(chart_df_nfl, x='Projection', y='Actual', color='Result Color')
+                    nfl_results_df['Model Side'] = nfl_results_df.apply(_nfl_model_side, axis=1)
+                    nfl_results_df['Bet Result'] = nfl_results_df.apply(_nfl_did_win, axis=1)
+                    matched_nfl = nfl_results_df['Sportsbook Line'].notna().sum()
+                    if checked_games_nfl == 0:
+                        st.error("0 games matched across any week — likely a team name format mismatch (nflverse uses abbreviations like 'KC', The Odds API uses full names like 'Kansas City Chiefs'). Diagnostic below (showing the most recent week checked):")
+                        st.write("Our Matchup strings (from nflverse):", list(nfl_results_df['Matchup'].unique()))
+                        last_week_events = list(events_by_week.values())[-1] if events_by_week else []
+                        st.write("Real event team names (from The Odds API):", [(ev.get('away_team'), ev.get('home_team')) for ev in last_week_events])
+                    st.success(f"✅ Checked {checked_games_nfl} game(s) across {len(nfl_weeks_in_results)} week(s), matched real lines for {matched_nfl}/{len(nfl_results_df)} QBs.")
+                    line_results_nfl = nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][['QB', 'Week', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']] if 'Week' in nfl_results_df.columns else nfl_results_df[nfl_results_df['Sportsbook Line'].notna()][['QB', 'Matchup', 'Projection', 'Sportsbook Line', 'Actual', 'Model Side', 'Bet Result']]
+                    st.dataframe(line_results_nfl, use_container_width=True)
+                    graded_nfl = line_results_nfl[line_results_nfl['Bet Result'].isin(['Win', 'Loss'])]
+                    if not graded_nfl.empty:
+                        win_rate_nfl = round((graded_nfl['Bet Result'] == 'Win').mean() * 100, 1)
+                        st.metric(f"Win rate vs. real historical lines (all {len(nfl_weeks_in_results)} week(s) combined)", f"{win_rate_nfl}% ({len(graded_nfl)} graded bets)")
+                        st.caption("A rate meaningfully above ~52.4% (the -110 breakeven point) across a real, combined multi-week sample is a genuine signal — this is now the full-range number you were previously having to piece together week by week yourself.")
+                        if 'Week' in line_results_nfl.columns and line_results_nfl['Week'].nunique() > 1:
+                            st.write("**Win rate by week** (useful to spot whether one specific week is dragging the average)")
+                            week_win_summary = graded_nfl.groupby('Week').apply(lambda g: round((g['Bet Result'] == 'Win').mean() * 100, 1)).reset_index(name='Win Rate %')
+                            week_win_summary['Graded Bets'] = graded_nfl.groupby('Week').size().values
+                            st.dataframe(week_win_summary, use_container_width=True)
+                        result_counts_nfl = line_results_nfl['Bet Result'].fillna('No Bet/Push').value_counts()
+                        st.bar_chart(result_counts_nfl)
+                        chart_df_nfl = line_results_nfl[line_results_nfl['Bet Result'].isin(['Win', 'Loss'])].copy()
+                        chart_df_nfl['Result Color'] = chart_df_nfl['Bet Result'].map({'Win': '#2ecc71', 'Loss': '#e74c3c'})
+                        st.scatter_chart(chart_df_nfl, x='Projection', y='Actual', color='Result Color')
 
         st.markdown("---")
         st.subheader("🎛️ Coefficient Optimizer")
