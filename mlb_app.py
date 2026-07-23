@@ -5028,6 +5028,189 @@ def evaluate_nfl_quotes(info, proj, cv, confidence_tier):
             best = {'ev_result': ev_result, 'book': quote['book'], 'line': line, 'direction': direction, 'odds': selected_odds}
     return best
 
+def run_single_nfl_attempts(qb_name, info, season):
+    """Single-player run for the manual ▶️ Run button (July 2026) — a
+    genuinely separate function from run_all_nfl_projections' internal
+    loop logic, built for the new generic run_nfl_display(), rather than
+    refactoring the already-working batch function to share code (same
+    safe-copy reasoning used throughout this session — the batch
+    version is real, working, and already earning trust). Returns
+    (update_fields_dict, result_dict, opp_abbrev, game_week) or
+    (None, None, None, None) on failure, so the caller can save its own
+    prediction record with the right context."""
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    home_abbrev = name_to_abbrev.get(info['home'])
+    away_abbrev = name_to_abbrev.get(info['away'])
+    weekly_all = get_nfl_player_stats([int(season)])
+    qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+    if qb_recent.empty:
+        return None, None, None, None
+    qb_team_abbrev = qb_recent.iloc[-1]['team']
+    opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
+    if opp_abbrev is None:
+        return None, None, None, None
+    game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time'))
+    if game_week is None:
+        return None, None, None, None
+    result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+    if not result:
+        return None, None, opp_abbrev, game_week
+    proj = result['projection']
+    quote = evaluate_nfl_quotes(info, proj, result['attempts_cv'], result.get('confidence_tier'))
+    if not quote:
+        return None, None, opp_abbrev, game_week
+    ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
+    edge = round(proj - best_line, 1)
+    play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+    update_fields = {
+        'Projection': proj, 'Edge': edge, 'Play': play,
+        'Tier': result['confidence_tier'],
+        'EV%': ev_result['ev_pct'] if ev_result else None,
+        'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+        'MM Tier': ev_result['tier'] if ev_result else None,
+        'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+        'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+        'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+        'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+        'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+        'Direction': direction, 'Odds': selected_odds,
+        'Model Prob': ev_result['model_prob'] if ev_result else None,
+        'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+        'Book': best_book,
+    }
+    save_fields = {
+        'base': result.get('base_attempts'), 'book_line': best_line, 'edge': edge,
+        'cv': result['attempts_cv'], 'ev_pct': ev_result['ev_pct'] if ev_result else None,
+        'mm_tier': ev_result['tier'] if ev_result else None, 'model_prob': ev_result['model_prob'] if ev_result else None,
+        'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None, 'book': best_book,
+        'odds': selected_odds, 'direction': direction,
+    }
+    return update_fields, {'result': result, 'save_fields': save_fields}, opp_abbrev, game_week
+
+def run_single_nfl_completions(qb_name, info, season):
+    """Completions version of run_single_nfl_attempts — same structure,
+    genuinely separate function."""
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    home_abbrev = name_to_abbrev.get(info['home'])
+    away_abbrev = name_to_abbrev.get(info['away'])
+    weekly_all = get_nfl_player_stats([int(season)])
+    qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+    if qb_recent.empty:
+        return None, None, None, None
+    qb_team_abbrev = qb_recent.iloc[-1]['team']
+    opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
+    if opp_abbrev is None:
+        return None, None, None, None
+    game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time'))
+    if game_week is None:
+        return None, None, None, None
+    result = run_nfl_pass_completions_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+    if not result:
+        return None, None, opp_abbrev, game_week
+    proj = result['projection']
+    quote = evaluate_nfl_completions_quotes(info, proj, result['completion_pct_cv'], result.get('confidence_tier'))
+    if not quote:
+        return None, None, opp_abbrev, game_week
+    ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
+    edge = round(proj - best_line, 1)
+    play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+    update_fields = {
+        'Projection': proj, 'Edge': edge, 'Play': play,
+        'Tier': result['confidence_tier'],
+        'EV%': ev_result['ev_pct'] if ev_result else None,
+        'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+        'MM Tier': ev_result['tier'] if ev_result else None,
+        'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+        'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+        'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+        'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+        'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+        'Direction': direction, 'Odds': selected_odds,
+        'Model Prob': ev_result['model_prob'] if ev_result else None,
+        'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+        'Book': best_book,
+    }
+    save_fields = {
+        'base': round(result.get('projected_attempts', 0) * result.get('base_completion_pct', 0), 1), 'book_line': best_line, 'edge': edge,
+        'cv': result['completion_pct_cv'], 'ev_pct': ev_result['ev_pct'] if ev_result else None,
+        'mm_tier': ev_result['tier'] if ev_result else None, 'model_prob': ev_result['model_prob'] if ev_result else None,
+        'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None, 'book': best_book,
+        'odds': selected_odds, 'direction': direction,
+    }
+    return update_fields, {'result': result, 'save_fields': save_fields}, opp_abbrev, game_week
+
+def run_single_nfl_receptions(receiver_name, info, season):
+    """Receptions version — the one genuinely different piece is the
+    real starting-QB lookup, same logic as run_all_nfl_receptions_
+    projections but for a single player: tries live Attempts props
+    first, falls back to the team's most recent QB from weekly stats."""
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    home_abbrev = name_to_abbrev.get(info['home'])
+    away_abbrev = name_to_abbrev.get(info['away'])
+    weekly_all = get_nfl_player_stats([int(season)])
+    receiver_recent = weekly_all[(weekly_all['player_display_name'] == receiver_name) & (weekly_all['position'].isin(RECEPTION_POSITIONS))].sort_values('week')
+    if receiver_recent.empty:
+        return None, None, None, None
+    receiver_team_abbrev = receiver_recent.iloc[-1]['team']
+    opp_abbrev = away_abbrev if receiver_team_abbrev == home_abbrev else (home_abbrev if receiver_team_abbrev == away_abbrev else None)
+    if opp_abbrev is None:
+        return None, None, None, None
+
+    starting_qb = None
+    try:
+        live_qb_props = load_nfl_props_data()
+        for qb_name in live_qb_props.keys():
+            qb_recent_check = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+            if not qb_recent_check.empty and qb_recent_check.iloc[-1]['team'] == receiver_team_abbrev:
+                starting_qb = qb_name
+                break
+    except Exception:
+        pass
+    if not starting_qb:
+        team_qb_recent = weekly_all[(weekly_all['team'] == receiver_team_abbrev) & (weekly_all['position'] == 'QB')].sort_values('week')
+        if not team_qb_recent.empty:
+            starting_qb = team_qb_recent.iloc[-1]['player_display_name']
+    if not starting_qb:
+        return None, None, opp_abbrev, None
+
+    game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time'))
+    if game_week is None:
+        return None, None, opp_abbrev, None
+    result = run_nfl_receptions_projection(receiver_name, receiver_team_abbrev, opp_abbrev, starting_qb, int(season), as_of_week=game_week)
+    if not result:
+        return None, None, opp_abbrev, game_week
+    proj = result['projection']
+    quote = evaluate_nfl_receptions_quotes(info, proj, result['target_share_cv'], result.get('confidence_tier'))
+    if not quote:
+        return None, None, opp_abbrev, game_week
+    ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
+    edge = round(proj - best_line, 1)
+    play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+    update_fields = {
+        'Projection': proj, 'Edge': edge, 'Play': play,
+        'Tier': result['confidence_tier'],
+        'EV%': ev_result['ev_pct'] if ev_result else None,
+        'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+        'MM Tier': ev_result['tier'] if ev_result else None,
+        'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+        'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+        'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+        'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+        'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+        'Direction': direction, 'Odds': selected_odds,
+        'Model Prob': ev_result['model_prob'] if ev_result else None,
+        'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+        'Book': best_book,
+    }
+    save_fields = {
+        'base': result.get('base_target_share'), 'book_line': best_line, 'edge': edge,
+        'cv': result['target_share_cv'], 'ev_pct': ev_result['ev_pct'] if ev_result else None,
+        'mm_tier': ev_result['tier'] if ev_result else None, 'model_prob': ev_result['model_prob'] if ev_result else None,
+        'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None, 'book': best_book,
+        'odds': selected_odds, 'direction': direction,
+    }
+    return update_fields, {'result': result, 'save_fields': save_fields}, opp_abbrev, game_week
+
 def run_all_nfl_projections(all_qbs, season, progress_callback=None):
     """Runs the projection + EV pipeline for every QB in all_qbs (mutated
     in place), saves each as a prediction, and returns the results dict.
@@ -7135,6 +7318,203 @@ def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=
                 })
     return results
 
+def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session_key, player_label, sport_save_label):
+    """Generic NFL model display (July 2026) — built to give NFL the
+    same dropdown-driven, single-shared-display pattern NBA already has
+    via run_nba_display, instead of NFL's three models needing three
+    separate, duplicated page sections. Also fixes a real, pre-existing
+    bug found while building this: the old NFL page's '📝 Log' button
+    set a session_state flag that nothing ever displayed or read —
+    clicking it visibly did nothing. Now uses the same working log
+    modal pattern MLB already has.
+
+    load_fn() -> dict of {player_name: info}
+    run_all_fn(all_players, season, progress_callback) -> results dict
+    run_single_fn(player_name, info, season) -> (update_fields, result_wrapper, opp_abbrev, game_week)
+    """
+    bankroll, risk_style = get_bankroll_context()
+    already_bet_today = get_already_bet_players_today(sport_save_label)
+    col_load, col_run_all = st.columns(2)
+
+    with col_load:
+        if st.button(f"📋 Load This Week's {player_label} Props", use_container_width=True, key=f"load_{session_key}"):
+            with st.spinner(f"Pulling this week's {player_label} props..."):
+                all_players = load_fn()
+                if all_players:
+                    st.session_state[all_players_key] = all_players
+                    st.session_state[f'{session_key}_season'] = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
+                    st.session_state[f'{session_key}_results'] = {}
+                    st.session_state[f'manual_run_order_{session_key}'] = {}
+                    st.session_state[f'manual_run_counter_{session_key}'] = 0
+                else:
+                    real_error = st.session_state.pop(f'_nfl_{session_key}_props_load_error', None) or st.session_state.pop('_nfl_props_load_error', None) or st.session_state.pop('_nfl_completions_props_load_error', None) or st.session_state.pop('_nfl_receptions_props_load_error', None)
+                    if real_error:
+                        st.error(f"Couldn't load this week's props — real error: {real_error}")
+                    else:
+                        st.error("Couldn't load this week's props — either no games are posted yet or it's off-season.")
+
+    with col_run_all:
+        if st.button("🚀 Run All Projections", use_container_width=True, key=f"run_all_{session_key}"):
+            if all_players_key not in st.session_state:
+                st.warning("Load this week's props first!")
+            else:
+                all_players = st.session_state[all_players_key]
+                season = st.session_state.get(f'{session_key}_season', datetime.now().year)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                total = len(all_players)
+
+                def _update_progress(i, total, name):
+                    status_text.text(f"Running {i+1} of {total}: {name}")
+                    progress_bar.progress((i + 1) / total)
+
+                player_results = run_all_fn(all_players, season, progress_callback=_update_progress)
+                st.session_state[all_players_key] = all_players
+                st.session_state.setdefault(f'{session_key}_results', {})
+                st.session_state[f'{session_key}_results'].update(player_results)
+
+                status_text.text(f"✅ Done! All {total} projections complete.")
+                progress_bar.progress(1.0)
+                st.rerun()
+
+    if all_players_key in st.session_state:
+        all_players = st.session_state[all_players_key]
+        season = st.session_state.get(f'{session_key}_season', datetime.now().year)
+        player_results = st.session_state.get(f'{session_key}_results', {})
+
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        started_since_load = []
+        for pname, pdata in all_players.items():
+            ct_str = pdata.get('commence_time')
+            if not ct_str:
+                continue
+            try:
+                ct = datetime.fromisoformat(ct_str.replace('Z', '+00:00'))
+                if ct <= now_utc:
+                    started_since_load.append(pname)
+            except (ValueError, TypeError):
+                pass
+        if started_since_load:
+            names_preview = ", ".join(started_since_load[:5])
+            more = f" and {len(started_since_load) - 5} more" if len(started_since_load) > 5 else ""
+            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"Load This Week's Props\"** again to refresh.")
+
+        manual_run_order = st.session_state.get(f'manual_run_order_{session_key}', {})
+
+        sorted_players = sorted(
+            all_players.items(),
+            key=lambda x: (
+                x[0] in manual_run_order,
+                manual_run_order.get(x[0], 0),
+                TIER_RANK.get(x[1].get('MM Tier'), -1),
+                x[1]['EV%'] if x[1]['EV%'] is not None else -999,
+                abs(x[1]['Edge']) if x[1]['Edge'] is not None else -999
+            ),
+            reverse=True
+        )
+
+        hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
+        header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
+        for hcol, label in [
+            (hcol1, player_label), (hcol2, "FD"), (hcol3, "DK"),
+            (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
+            (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
+            (hcol10, ""), (hcol11, ""),
+        ]:
+            with hcol:
+                st.markdown(f"<div style='{header_style}'>{label}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+
+        for player_name, info in sorted_players:
+            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
+            with col1:
+                st.write(f"**{player_name}**")
+                st.caption(f"{info['away']} @ {info['home']}")
+                if player_name in already_bet_today:
+                    st.caption("✅ Already bet today")
+            with col2:
+                st.write(f"FD: {info['FanDuel Line']}")
+                st.caption(f"O:{fmt_odds(info['FanDuel Over'])} U:{fmt_odds(info['FanDuel Under'])}")
+            with col3:
+                st.write(f"DK: {info['DraftKings Line']}")
+                st.caption(f"O:{fmt_odds(info['DraftKings Over'])} U:{fmt_odds(info['DraftKings Under'])}")
+            with col4:
+                st.write(f"Proj: **{info['Projection']}**" if info['Projection'] else "Proj: —")
+            with col5:
+                st.write(f"Edge: **{info['Edge']}**" if info['Edge'] is not None else "Edge: —")
+            with col6:
+                st.markdown(f"<div style='white-space: nowrap;'>{info['Play']}</div>" if info['Play'] else "—", unsafe_allow_html=True)
+            with col7:
+                st.write(short_tier_label(info.get('Tier')))
+            with col8:
+                ev = info.get('EV%')
+                st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
+            with col9:
+                st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
+                if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
+                    st.caption(info.get('Pass Reason'))
+                elif info.get('Confidence Level') == "🔴 Low":
+                    st.caption("🔴 Confidence: Low")
+            with col10:
+                if st.button("▶️ Run", key=f"{session_key}_run_{player_name}"):
+                    with st.spinner(f"Running {player_name}..."):
+                        update_fields, result_wrapper, opp_abbrev, game_week = run_single_fn(player_name, info, season)
+                        if update_fields and result_wrapper:
+                            st.session_state[all_players_key][player_name].update(update_fields)
+                            st.session_state.setdefault(f'{session_key}_results', {})
+                            st.session_state[f'{session_key}_results'][player_name] = result_wrapper['result']
+                            st.session_state.setdefault(f'manual_run_order_{session_key}', {})
+                            st.session_state[f'manual_run_counter_{session_key}'] = st.session_state.get(f'manual_run_counter_{session_key}', 0) + 1
+                            st.session_state[f'manual_run_order_{session_key}'][player_name] = st.session_state[f'manual_run_counter_{session_key}']
+                            save_prediction({
+                                'date': date.today().strftime('%Y-%m-%d'),
+                                'pitcher': player_name, 'opponent': opp_abbrev, 'home_team': info['home'],
+                                'confidence_tier': result_wrapper['result'].get('confidence_tier'),
+                                'actual': None, 'sport': sport_save_label,
+                                'game_week': game_week, 'commence_time': info.get('commence_time'),
+                                **result_wrapper['save_fields'],
+                            })
+                            st.rerun()
+                        else:
+                            st.error("Couldn't run this projection — insufficient history, no valid quote, or a real starter/week couldn't be matched.")
+            with col11:
+                if info.get('Projection') is not None:
+                    if st.button("📝 Log", key=f"{session_key}_log_{player_name}"):
+                        st.session_state[f'{session_key}_log_modal_{player_name}'] = True
+
+            if st.session_state.get(f'{session_key}_log_modal_{player_name}'):
+                with st.expander(f"📝 Log Bet — {player_name}", expanded=True):
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        log_ou = st.selectbox("Over or Under?", ["Over", "Under"], key=f"{session_key}_log_ou_{player_name}")
+                        log_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"{session_key}_log_bet_{player_name}")
+                        log_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140", step=1, key=f"{session_key}_log_odds_{player_name}")
+                    with col_b:
+                        log_actual = st.number_input(f"Actual {player_label} Result (fill after game)", value=None, placeholder="e.g. 24", key=f"{session_key}_log_actual_{player_name}")
+                        log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"{session_key}_log_result_{player_name}")
+
+                    if st.button(f"✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player_name}", use_container_width=True):
+                        odds = int(log_odds) if log_odds else -110
+                        bet_val = round(float(log_bet), 2) if log_bet else 0.0
+                        profit = calc_profit(bet_val, odds, log_result)
+                        save_bet({
+                            'date': str(date.today()), 'pitcher': player_name,
+                            'projection': info.get('Projection') or 0,
+                            'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
+                            'over_under': log_ou, 'odds': odds,
+                            'bet_amount': bet_val, 'result': log_result,
+                            'actual': log_actual or 0, 'profit': profit,
+                            'sport': sport_save_label, 'ev_pct': info.get('EV%'),
+                            'mm_tier': info.get('MM Tier'),
+                            'no_vig_prob': info.get('No Vig Prob'),
+                            'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
+                        })
+                        st.session_state[f'{session_key}_log_modal_{player_name}'] = False
+                        st.success(f"✅ Bet logged for {player_name}!")
+                        st.rerun()
+
+            st.divider()
+
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
     _bankroll_settings = get_user_settings()
@@ -7756,200 +8136,17 @@ elif nav == "⚾ MLB Models":
 
 
 elif nav == "🏈 NFL Models":
-    st.title("🏈 NFL Pass Attempts Model")
-    bankroll, risk_style = get_bankroll_context()
-    already_bet_today = get_already_bet_players_today('NFL')
+    st.title("🏈 NFL Models")
+    st.markdown("---")
 
-    col_load, col_run_all = st.columns(2)
+    nfl_model_select = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
 
-    with col_load:
-        if st.button("📋 Load This Week's Props", use_container_width=True):
-            with st.spinner("Pulling this week's props..."):
-                all_qbs = load_nfl_props_data()
-                if all_qbs:
-                    st.session_state['all_qbs'] = all_qbs
-                    st.session_state['nfl_season'] = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
-                    st.session_state['qb_results'] = {}
-                    st.session_state['manual_run_order_nfl'] = {}
-                    st.session_state['manual_run_counter_nfl'] = 0
-                else:
-                    real_error = st.session_state.pop('_nfl_props_load_error', None)
-                    if real_error:
-                        st.error(f"Couldn't load this week's props — real error: {real_error}")
-                    else:
-                        st.error("Couldn't load this week's props — either no games are posted yet or it's off-season.")
-
-    with col_run_all:
-        if st.button("🚀 Run All Projections", use_container_width=True):
-            if 'all_qbs' not in st.session_state:
-                st.warning("Load this week's props first!")
-            else:
-                all_qbs = st.session_state['all_qbs']
-                season = st.session_state.get('nfl_season', datetime.now().year)
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                total = len(all_qbs)
-
-                def _update_progress(i, total, name):
-                    status_text.text(f"Running {i+1} of {total}: {name}")
-                    progress_bar.progress((i + 1) / total)
-
-                qb_results = run_all_nfl_projections(all_qbs, season, progress_callback=_update_progress)
-                st.session_state['all_qbs'] = all_qbs
-                st.session_state.setdefault('qb_results', {})
-                st.session_state['qb_results'].update(qb_results)
-
-                status_text.text(f"✅ Done! All {total} projections complete.")
-                progress_bar.progress(1.0)
-                st.rerun()
-
-    if 'all_qbs' in st.session_state:
-        all_qbs = st.session_state['all_qbs']
-        season = st.session_state.get('nfl_season', datetime.now().year)
-        qb_results = st.session_state.get('qb_results', {})
-
-        # Same fix built for MLB after a real incident — warns if a loaded
-        # game has since started, so a stale pre-game projection never
-        # sits unnoticed next to odds that DO shift with the live game
-        # state.
-        now_utc = datetime.now(ZoneInfo("UTC"))
-        started_since_load = []
-        for qname, qdata in all_qbs.items():
-            ct_str = qdata.get('commence_time')
-            if not ct_str:
-                continue
-            try:
-                ct = datetime.fromisoformat(ct_str.replace('Z', '+00:00'))
-                if ct <= now_utc:
-                    started_since_load.append(qname)
-            except (ValueError, TypeError):
-                pass
-        if started_since_load:
-            names_preview = ", ".join(started_since_load[:5])
-            more = f" and {len(started_since_load) - 5} more" if len(started_since_load) > 5 else ""
-            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"Load This Week's Props\"** again to refresh.")
-
-        manual_run_order = st.session_state.get('manual_run_order_nfl', {})
-
-        sorted_qbs = sorted(
-            all_qbs.items(),
-            key=lambda x: (
-                x[0] in manual_run_order,
-                manual_run_order.get(x[0], 0),
-                TIER_RANK.get(x[1].get('MM Tier'), -1),
-                x[1]['EV%'] if x[1]['EV%'] is not None else -999,
-                abs(x[1]['Edge']) if x[1]['Edge'] is not None else -999
-            ),
-            reverse=True
-        )
-
-        hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9, hcol10, hcol11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
-        header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
-        for hcol, label in [
-            (hcol1, "QB"), (hcol2, "FD"), (hcol3, "DK"),
-            (hcol4, "Proj"), (hcol5, "Edge"), (hcol6, "Play"),
-            (hcol7, "Reliability"), (hcol8, "EV%"), (hcol9, "Tier"),
-            (hcol10, ""), (hcol11, ""),
-        ]:
-            with hcol:
-                st.markdown(f"<div style='{header_style}'>{label}</div>", unsafe_allow_html=True)
-        st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
-
-        for qb_name, info in sorted_qbs:
-            col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns([2.0, 0.8, 0.8, 0.7, 0.7, 1.0, 1.4, 0.9, 1.5, 1.1, 1.1])
-            with col1:
-                st.write(f"**{qb_name}**")
-                st.caption(f"{info['away']} @ {info['home']}")
-                if qb_name in already_bet_today:
-                    st.caption("✅ Already bet today")
-            with col2:
-                st.write(f"FD: {info['FanDuel Line']}")
-                st.caption(f"O:{fmt_odds(info['FanDuel Over'])} U:{fmt_odds(info['FanDuel Under'])}")
-            with col3:
-                st.write(f"DK: {info['DraftKings Line']}")
-                st.caption(f"O:{fmt_odds(info['DraftKings Over'])} U:{fmt_odds(info['DraftKings Under'])}")
-            with col4:
-                st.write(f"Proj: **{info['Projection']}**" if info['Projection'] else "Proj: —")
-            with col5:
-                st.write(f"Edge: **{info['Edge']}**" if info['Edge'] is not None else "Edge: —")
-            with col6:
-                st.markdown(f"<div style='white-space: nowrap;'>{info['Play']}</div>" if info['Play'] else "—", unsafe_allow_html=True)
-            with col7:
-                st.write(short_tier_label(info.get('Tier')))
-            with col8:
-                ev = info.get('EV%')
-                st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
-            with col9:
-                st.markdown(tier_badge(info.get('MM Tier'), compact=True), unsafe_allow_html=True)
-                if info.get('MM Tier') == "🔴 Pass" and info.get('Pass Reason'):
-                    st.caption(info.get('Pass Reason'))
-                elif info.get('Confidence Level') == "🔴 Low":
-                    st.caption("🔴 Confidence: Low")
-            with col10:
-                if st.button("▶️ Run", key=f"run_nfl_{qb_name}"):
-                    with st.spinner(f"Running {qb_name}..."):
-                        name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
-                        home_abbrev = name_to_abbrev.get(info['home'])
-                        away_abbrev = name_to_abbrev.get(info['away'])
-                        weekly_all = get_nfl_player_stats([int(season)])
-                        qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
-                        if qb_recent.empty:
-                            st.error("No recent game log found for this QB.")
-                        else:
-                            qb_team_abbrev = qb_recent.iloc[-1]['team']
-                            opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
-                            game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time')) if opp_abbrev else None
-                            if opp_abbrev and game_week is None:
-                                st.error("Could not match this event to a real NFL week — can't safely run a live projection without it.")
-                                result = None
-                            else:
-                                result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week) if opp_abbrev else None
-                            if result:
-                                proj = result['projection']
-                                quote = evaluate_nfl_quotes(info, proj, result['attempts_cv'], result.get('confidence_tier'))
-                                if quote:
-                                    ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
-                                    edge = round(proj - best_line, 1)
-                                    play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
-                                    st.session_state['all_qbs'][qb_name].update({
-                                        'Projection': proj, 'Edge': edge, 'Play': play,
-                                        'Tier': result['confidence_tier'],
-                                        'EV%': ev_result['ev_pct'] if ev_result else None,
-                                        'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
-                                        'MM Tier': ev_result['tier'] if ev_result else None,
-                                        'Pass Reason': ev_result['pass_reason'] if ev_result else None,
-                                        'Confidence Level': ev_result['confidence_level'] if ev_result else None,
-                                        'Model Prob': ev_result['model_prob'] if ev_result else None,
-                                        'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
-                                        'Odds': selected_odds,
-                                        'Direction': direction,
-                                        'Fair Odds': ev_result['fair_odds'] if ev_result else None,
-                                        'Edge Cents': ev_result['edge_cents'] if ev_result else None,
-                                        'Low Confidence': ev_result['low_confidence'] if ev_result else None,
-                                        'Book': best_book,
-                                    })
-                                    st.session_state['qb_results'][qb_name] = result
-                                    st.session_state.setdefault('manual_run_order_nfl', {})
-                                    st.session_state['manual_run_counter_nfl'] = st.session_state.get('manual_run_counter_nfl', 0) + 1
-                                    st.session_state['manual_run_order_nfl'][qb_name] = st.session_state['manual_run_counter_nfl']
-                                    save_prediction({
-                                        'date': date.today().strftime('%Y-%m-%d'),
-                                        'pitcher': qb_name, 'opponent': opp_abbrev, 'home_team': info['home'],
-                                        'projection': proj, 'base': result['base_attempts'], 'book_line': best_line,
-                                        'edge': edge, 'cv': result['attempts_cv'], 'confidence_tier': result['confidence_tier'],
-                                        'actual': None, 'sport': 'NFL',
-                                        'ev_pct': ev_result['ev_pct'] if ev_result else None,
-                                        'mm_tier': ev_result['tier'] if ev_result else None,
-                                        'model_prob': ev_result['model_prob'] if ev_result else None,
-                                        'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
-                                        'book': best_book, 'odds': selected_odds, 'direction': direction,
-                                        'game_week': game_week, 'commence_time': info.get('commence_time'),
-                                    })
-                                    st.rerun()
-            with col11:
-                if info.get('Projection') is not None:
-                    if st.button("📝 Log", key=f"log_nfl_{qb_name}"):
-                        st.session_state[f'log_modal_{qb_name}'] = True
+    if nfl_model_select == "NFL Pass Attempts":
+        run_nfl_display('all_qbs', load_nfl_props_data, run_all_nfl_projections, run_single_nfl_attempts, 'nfl_attempts', 'QB', 'NFL')
+    elif nfl_model_select == "NFL Pass Completions":
+        run_nfl_display('all_qbs_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections, run_single_nfl_completions, 'nfl_completions', 'QB', 'NFL_COMPLETIONS')
+    else:
+        run_nfl_display('all_receivers', load_nfl_receptions_props_data, run_all_nfl_receptions_projections, run_single_nfl_receptions, 'nfl_receptions', 'Player', 'NFL_RECEPTIONS')
 
     st.markdown("---")
     if is_admin:
