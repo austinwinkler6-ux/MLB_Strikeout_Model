@@ -1078,8 +1078,8 @@ def sport_key_to_bet_label(sport_key):
 
 def save_bet(bet):
     try:
-        bet['user_id'] = user_id
-        supabase.table("bets").insert(bet).execute()
+        payload = {**bet, "user_id": user_id}
+        supabase.table("bets").insert(payload).execute()
     except Exception as e:
         st.error(f"Error saving bet: {e}")
 
@@ -1107,18 +1107,18 @@ def load_predictions(sport=None):
 
 def save_prediction(pred):
     try:
-        pred['user_id'] = user_id
+        payload = {**pred, "user_id": user_id}
         # Avoid duplicate rows for the same pitcher/date/sport — the shared
         # cache means projections are cheap to re-serve, but that shouldn't
         # mean a fresh prediction row gets saved every time some session's
         # auto-run happens to re-process a pitcher already logged today.
         existing = supabase.table("predictions").select("id") \
-            .eq("user_id", user_id).eq("pitcher", pred.get("pitcher")) \
-            .eq("date", pred.get("date")).eq("sport", pred.get("sport")) \
+            .eq("user_id", user_id).eq("pitcher", payload.get("pitcher")) \
+            .eq("date", payload.get("date")).eq("sport", payload.get("sport")) \
             .execute()
         if existing.data:
             return
-        supabase.table("predictions").insert(pred).execute()
+        supabase.table("predictions").insert(payload).execute()
     except Exception as e:
         st.error(f"Error saving prediction: {e}")
 
@@ -1167,7 +1167,7 @@ def save_user_settings(starting_bankroll, risk_style, reset_baseline=True):
             "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
         }
         if reset_baseline:
-            payload["bankroll_set_date"] = str(date.today())
+            payload["bankroll_set_date"] = mm_today_str()
         supabase.table("user_settings").upsert(payload, on_conflict="user_id").execute()
         return True
     except Exception as e:
@@ -2048,7 +2048,7 @@ def get_batter_k_pcts():
 @st.cache_data(ttl=1800)
 def get_pitcher_game_info(pitcher_name, game_date=None):
     try:
-        check_date = game_date or date.today().strftime('%Y-%m-%d')
+        check_date = game_date or mm_today_str()
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=probablePitcher"
         data = requests.get(url).json()
         if not data['dates']:
@@ -2247,7 +2247,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         if use_lineup:
             try:
                 k_df = get_batter_k_pcts()
-                check_date = before_date or date.today().strftime('%Y-%m-%d')
+                check_date = before_date or mm_today_str()
                 sched_data = requests.get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=lineups").json()
                 if sched_data.get('dates'):
                     for game in sched_data['dates'][0]['games']:
@@ -2278,7 +2278,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         umpire_name = None
         if use_umpire:
             try:
-                check_date = before_date or date.today().strftime('%Y-%m-%d')
+                check_date = before_date or mm_today_str()
                 sched_data = requests.get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=officials").json()
                 if sched_data.get('dates'):
                     for game in sched_data['dates'][0]['games']:
@@ -4110,7 +4110,7 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                 pitcher_results[pitcher] = result
 
                 save_prediction({
-                    'date': date.today().strftime('%Y-%m-%d'),
+                    'date': mm_today_str(),
                     'pitcher': pitcher, 'opponent': opp, 'home_team': h,
                     'projection': proj, 'base': result['base'], 'book_line': best_line,
                     'edge': edge, 'opp_factor': result['opp_factor'],
@@ -4249,7 +4249,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                 results[player] = result
                 bet_sport_label = nba_bet_sport_label(sport_key)
                 save_prediction({
-                    'date': date.today().strftime('%Y-%m-%d'),
+                    'date': mm_today_str(),
                     'pitcher': player, 'opponent': opp_abbrev, 'home_team': home_team,
                     'projection': proj, 'base': result['base'], 'book_line': best_line,
                     'edge': edge,
@@ -5307,7 +5307,7 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                 })
                 results[qb_name] = result
                 save_prediction({
-                    'date': date.today().strftime('%Y-%m-%d'),
+                    'date': mm_today_str(),
                     'pitcher': qb_name, 'opponent': opp_abbrev, 'home_team': home_team,
                     'projection': proj, 'base': result['base_attempts'], 'book_line': best_line,
                     'edge': edge, 'cv': result['attempts_cv'], 'confidence_tier': result['confidence_tier'],
@@ -5505,7 +5505,7 @@ def run_all_nfl_completions_projections(all_qbs, season, progress_callback=None)
                 })
                 results[qb_name] = result
                 save_prediction({
-                    'date': date.today().strftime('%Y-%m-%d'),
+                    'date': mm_today_str(),
                     'pitcher': qb_name, 'opponent': opp_abbrev, 'home_team': home_team,
                     'projection': proj, 'base': round(result.get('projected_attempts', 0) * result.get('base_completion_pct', 0), 1), 'book_line': best_line,
                     'edge': edge, 'cv': result['completion_pct_cv'], 'confidence_tier': result['confidence_tier'],
@@ -7314,7 +7314,7 @@ def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=
                 })
                 results[receiver_name] = result
                 save_prediction({
-                    'date': date.today().strftime('%Y-%m-%d'),
+                    'date': mm_today_str(),
                     'pitcher': receiver_name, 'opponent': opp_abbrev, 'home_team': home_team,
                     'projection': proj, 'base': result.get('base_target_share'), 'book_line': best_line,
                     'edge': edge, 'cv': result['target_share_cv'], 'confidence_tier': result['confidence_tier'],
@@ -7477,7 +7477,7 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
                             st.session_state[f'manual_run_counter_{session_key}'] = st.session_state.get(f'manual_run_counter_{session_key}', 0) + 1
                             st.session_state[f'manual_run_order_{session_key}'][player_name] = st.session_state[f'manual_run_counter_{session_key}']
                             save_prediction({
-                                'date': date.today().strftime('%Y-%m-%d'),
+                                'date': mm_today_str(),
                                 'pitcher': player_name, 'opponent': opp_abbrev, 'home_team': info['home'],
                                 'confidence_tier': result_wrapper['result'].get('confidence_tier'),
                                 'actual': None, 'sport': sport_save_label,
@@ -7524,24 +7524,27 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
                         log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"{session_key}_log_result_{player_name}")
 
                     if st.button(f"✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player_name}", use_container_width=True):
-                        odds = int(log_odds) if log_odds else -110
-                        bet_val = round(float(log_bet), 2) if log_bet else 0.0
-                        profit = calc_profit(bet_val, odds, log_result)
-                        save_bet({
-                            'date': str(date.today()), 'pitcher': player_name,
-                            'projection': info.get('Projection') or 0,
-                            'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
-                            'over_under': log_ou, 'odds': odds,
-                            'bet_amount': bet_val, 'result': log_result,
-                            'actual': log_actual or 0, 'profit': profit,
-                            'sport': sport_save_label, 'ev_pct': info.get('EV%'),
-                            'mm_tier': info.get('MM Tier'),
-                            'no_vig_prob': info.get('No Vig Prob'),
-                            'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
-                        })
-                        st.session_state[f'{session_key}_log_modal_{player_name}'] = False
-                        st.success(f"✅ Bet logged for {player_name}!")
-                        st.rerun()
+                        if log_result != "Pending" and log_actual is None:
+                            st.error("Enter the actual result before marking the bet settled.")
+                        else:
+                            odds = int(log_odds) if log_odds else -110
+                            bet_val = round(float(log_bet), 2) if log_bet else 0.0
+                            profit = calc_profit(bet_val, odds, log_result)
+                            save_bet({
+                                'date': mm_today_str(), 'pitcher': player_name,
+                                'projection': info.get('Projection') or 0,
+                                'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
+                                'over_under': log_ou, 'odds': odds,
+                                'bet_amount': bet_val, 'result': log_result,
+                                'actual': log_actual or 0, 'profit': profit,
+                                'sport': sport_save_label, 'ev_pct': info.get('EV%'),
+                                'mm_tier': info.get('MM Tier'),
+                                'no_vig_prob': info.get('No Vig Prob'),
+                                'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
+                            })
+                            st.session_state[f'{session_key}_log_modal_{player_name}'] = False
+                            st.success(f"✅ Bet logged for {player_name}!")
+                            st.rerun()
 
             st.divider()
 
@@ -8076,7 +8079,7 @@ elif nav == "⚾ MLB Models":
                                 st.session_state['manual_run_counter'] = st.session_state.get('manual_run_counter', 0) + 1
                                 st.session_state['manual_run_order'][pitcher] = st.session_state['manual_run_counter']
                                 save_prediction({
-                                    'date': date.today().strftime('%Y-%m-%d'),
+                                    'date': mm_today_str(),
                                     'pitcher': pitcher, 'opponent': opp, 'home_team': h,
                                     'projection': proj, 'base': result['base'], 'book_line': best_line,
                                     'edge': edge, 'opp_factor': result['opp_factor'],
@@ -8141,25 +8144,28 @@ elif nav == "⚾ MLB Models":
                                 st.caption(f"💰 MM Stake recommendation: ${log_mm_stake_dollars:,.2f}")
 
                     if st.button(f"✅ Confirm Log Bet", key=f"log_confirm_{pitcher}", use_container_width=True):
-                        odds = int(log_odds) if log_odds else -110
-                        bet_val = round(float(log_bet), 2) if log_bet else 0.0
-                        profit = calc_profit(bet_val, odds, log_result)
-                        save_bet({
-                            'date': str(date.today()), 'pitcher': pitcher,
-                            'projection': info.get('Projection') or 0,
-                            'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
-                            'over_under': log_ou, 'odds': odds,
-                            'bet_amount': bet_val, 'result': log_result,
-                            'actual': log_actual or 0, 'profit': profit,
-                            'sport': 'MLB', 'ev_pct': info.get('EV%'),
-                            'mm_tier': info.get('MM Tier'),
-                            'model_edge': info.get('Model Edge'), 'no_vig_prob': info.get('No Vig Prob'),
-                            'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
-                            'mm_stake_recommended': log_mm_stake_dollars,
-                        })
-                        st.session_state[f'log_modal_{pitcher}'] = False
-                        st.success(f"✅ Bet logged for {pitcher}!")
-                        st.rerun()
+                        if log_result != "Pending" and log_actual is None:
+                            st.error("Enter the actual result before marking the bet settled.")
+                        else:
+                            odds = int(log_odds) if log_odds else -110
+                            bet_val = round(float(log_bet), 2) if log_bet else 0.0
+                            profit = calc_profit(bet_val, odds, log_result)
+                            save_bet({
+                                'date': mm_today_str(), 'pitcher': pitcher,
+                                'projection': info.get('Projection') or 0,
+                                'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
+                                'over_under': log_ou, 'odds': odds,
+                                'bet_amount': bet_val, 'result': log_result,
+                                'actual': log_actual or 0, 'profit': profit,
+                                'sport': 'MLB', 'ev_pct': info.get('EV%'),
+                                'mm_tier': info.get('MM Tier'),
+                                'model_edge': info.get('Model Edge'), 'no_vig_prob': info.get('No Vig Prob'),
+                                'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
+                                'mm_stake_recommended': log_mm_stake_dollars,
+                            })
+                            st.session_state[f'log_modal_{pitcher}'] = False
+                            st.success(f"✅ Bet logged for {pitcher}!")
+                            st.rerun()
 
             st.divider()
 
@@ -8404,25 +8410,28 @@ elif nav == "🏀 NBA Models":
                                     st.caption(f"💰 MM Stake recommendation: ${log_mm_stake_dollars:,.2f}")
 
                         if st.button("✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player}", use_container_width=True):
-                            odds = int(log_odds) if log_odds else -110
-                            bet_val = round(float(log_bet), 2) if log_bet else 0.0
-                            profit = calc_profit(bet_val, odds, log_result)
-                            save_bet({
-                                'date': str(date.today()), 'pitcher': player,
-                                'projection': info.get('Projection') or 0,
-                                'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
-                                'over_under': log_ou, 'odds': odds,
-                                'bet_amount': bet_val, 'result': log_result,
-                                'actual': log_actual or 0, 'profit': profit,
-                                'sport': bet_sport_label, 'ev_pct': info.get('EV%'),
-                                'mm_tier': info.get('MM Tier'),
-                                'model_edge': info.get('Edge'), 'confidence_tier': info.get('Tier'),
-                                'model_prob': info.get('Model Prob'), 'no_vig_prob': info.get('No Vig Prob'),
-                                'mm_stake_recommended': log_mm_stake_dollars,
-                            })
-                            st.session_state[f'{session_key}_log_modal_{player}'] = False
-                            st.success(f"✅ Bet logged for {player}!")
-                            st.rerun()
+                            if log_result != "Pending" and log_actual is None:
+                                st.error("Enter the actual result before marking the bet settled.")
+                            else:
+                                odds = int(log_odds) if log_odds else -110
+                                bet_val = round(float(log_bet), 2) if log_bet else 0.0
+                                profit = calc_profit(bet_val, odds, log_result)
+                                save_bet({
+                                    'date': mm_today_str(), 'pitcher': player,
+                                    'projection': info.get('Projection') or 0,
+                                    'opening_line': info.get('FanDuel Line') or info.get('DraftKings Line') or 0,
+                                    'over_under': log_ou, 'odds': odds,
+                                    'bet_amount': bet_val, 'result': log_result,
+                                    'actual': log_actual or 0, 'profit': profit,
+                                    'sport': bet_sport_label, 'ev_pct': info.get('EV%'),
+                                    'mm_tier': info.get('MM Tier'),
+                                    'model_edge': info.get('Edge'), 'confidence_tier': info.get('Tier'),
+                                    'model_prob': info.get('Model Prob'), 'no_vig_prob': info.get('No Vig Prob'),
+                                    'mm_stake_recommended': log_mm_stake_dollars,
+                                })
+                                st.session_state[f'{session_key}_log_modal_{player}'] = False
+                                st.success(f"✅ Bet logged for {player}!")
+                                st.rerun()
 
                 st.divider()
 
@@ -8613,7 +8622,7 @@ elif nav == "📒 Bet Tracker":
 
         st.markdown("---")
         st.subheader("🎯 Closing Line Tracker")
-        today_str = date.today().strftime('%Y-%m-%d')
+        today_str = mm_today_str()
         all_settled_for_closing = [
             b for b in bets
             if b.get('date') and b['date'] < today_str and b.get('sport') in ('MLB', 'NBA', 'NBA_AST')
@@ -8881,7 +8890,7 @@ elif nav == "🔬 Model Lab" and is_admin:
     preds_with_actual = [p for p in preds if p.get('actual') is not None]
 
     st.subheader("📥 Update Actual Results")
-    today_str = date.today().strftime('%Y-%m-%d')
+    today_str = mm_today_str()
     preds_today = [p for p in preds if p.get('date') == today_str and p.get('actual') is None]
 
     if preds_today:
