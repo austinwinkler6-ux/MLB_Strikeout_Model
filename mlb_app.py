@@ -9967,10 +9967,26 @@ elif nav == "🧪 Backtest" and is_admin:
                         else:
                             return "🟠 Moderate (simulated)"
                     rec_df['Simulated Tier'] = rec_df['Share CV'].apply(_simulated_tier)
-                    sim_summary = rec_df.dropna(subset=['Simulated Tier']).groupby('Simulated Tier').agg(Predictions=('Receptions Error', 'count'), MAE=('Receptions Error', 'mean'), Bias=('Signed Residual', 'mean')).reset_index()
+                    sim_summary = rec_df.dropna(subset=['Simulated Tier']).groupby('Simulated Tier').agg(
+                        Predictions=('Receptions Error', 'count'), MAE=('Receptions Error', 'mean'),
+                        Bias=('Signed Residual', 'mean'), **{'Avg Actual Receptions': ('Actual Receptions', 'mean')}
+                    ).reset_index()
                     sim_summary['MAE'] = sim_summary['MAE'].round(2)
                     sim_summary['Bias'] = sim_summary['Bias'].round(2)
+                    sim_summary['Avg Actual Receptions'] = sim_summary['Avg Actual Receptions'].round(2)
+                    # Real test (per direct question raised while reviewing
+                    # this) — is the MAE "inversion" explained by naturally
+                    # higher-volume players landing in Reliable (a star WR1
+                    # with a stable, low-CV target share also just has more
+                    # receptions to be wrong about), rather than the model
+                    # genuinely performing worse on them? MAE-as-%-of-volume
+                    # answers this directly — if THIS reorders correctly
+                    # (Reliable best, Volatile worst) even though raw MAE
+                    # doesn't, that confirms it's a volume effect, not a
+                    # real modeling problem.
+                    sim_summary['MAE as % of Avg Volume'] = round((sim_summary['MAE'] / sim_summary['Avg Actual Receptions']) * 100, 1)
                     st.write("**What the tiers would look like with these suggested cutoffs (not yet applied to the actual model — for comparison only)**")
+                    st.caption("Avg Actual Receptions and MAE-as-%-of-volume are included to test a real, specific hypothesis: a 'Reliable' player (stable, low-CV target share) is plausibly a high-volume WR1-type with naturally more receptions to be wrong about, while a 'Volatile' player is plausibly a low-volume role player with less room for error. If the raw MAE ordering looks inverted but the %-of-volume ordering looks correct (Reliable best, Volatile worst), that confirms this is a real volume effect, not the model actually performing worse on Reliable players.")
                     st.dataframe(sim_summary, use_container_width=True)
                 else:
                     st.warning("Not enough CV data in this result set to compute reliable percentiles — run a larger backtest first.")
