@@ -8396,15 +8396,6 @@ elif nav == "🏈 NFL Models":
                     st.code(traceback.format_exc())
                 finally:
                     st.session_state['_nfl_debug_mode'] = False
-
-            st.markdown("---")
-            nfl_model = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
-            st.markdown("""
-                <div style='text-align: center; padding: 40px 0;'>
-                    <h3>🚧 Completions and Receptions not built yet</h3>
-                    <p style='color: #64748B; font-size: 16px;'>Pass Attempts (above) needs to work and get validated first — Completions depends directly on it (Projected Attempts x Completion%), per the agreed build order.</p>
-                </div>
-            """, unsafe_allow_html=True)
 elif nav == "🏀 NBA Models":
     st.title("🏀 NBA Models")
     st.markdown("---")
