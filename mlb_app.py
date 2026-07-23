@@ -4585,6 +4585,62 @@ def get_nfl_opponent_completion_pct_allowed(season, opponent, as_of_week=None):
         return current
     return _compute(int(season) - 1, None)
 
+@st.cache_data(ttl=86400)
+def get_nfl_defense_reception_stats(seasons):
+    """Defense-side reception stats for Receptions (July 2026) — built
+    from weekly WR/TE box scores (NOT play-by-play, avoiding a position
+    join PBP doesn't directly support), aggregating targets and
+    receptions ALLOWED by grouping WR/TE rows by their real opponent
+    each game. Defensive check: does NOT assume 'opponent_team' exists
+    as a column — verifies it first and returns an empty DataFrame
+    gracefully if it's missing, rather than crashing or silently
+    returning wrong data. If missing, the opponent factor for Receptions
+    just won't be available (informational gap, not a hard failure) —
+    an honest, known limitation rather than building on an unverified
+    assumption."""
+    weekly = get_nfl_player_stats(seasons)
+    wr_te_rows = weekly[weekly['position'].isin(['WR', 'TE'])].copy()
+    if 'opponent_team' not in wr_te_rows.columns or wr_te_rows.empty:
+        return pd.DataFrame()
+    if 'season_type' in wr_te_rows.columns:
+        wr_te_rows = wr_te_rows[wr_te_rows['season_type'] == 'REG']
+    for col in ['targets', 'receptions']:
+        if col in wr_te_rows.columns:
+            wr_te_rows[col] = pd.to_numeric(wr_te_rows[col], errors='coerce').fillna(0)
+    grouped = wr_te_rows.groupby(['opponent_team', 'season', 'week'], as_index=False).agg(
+        targets_allowed=('targets', 'sum'), receptions_allowed=('receptions', 'sum'),
+    )
+    grouped['catch_rate_allowed'] = grouped['receptions_allowed'] / grouped['targets_allowed'].replace(0, pd.NA)
+    return grouped.rename(columns={'opponent_team': 'team'})
+
+def get_nfl_opponent_reception_factor(season, opponent, as_of_week=None):
+    """Opponent factor for Receptions — how many targets a defense tends
+    to allow WR/TEs per game, and what catch rate they tend to allow.
+    Same early-week-skip and prior-season-fallback pattern proven for
+    Completions. Returns (targets_allowed_per_game, catch_rate_allowed)
+    or (None, None) if the data isn't available (e.g., if
+    opponent_team turned out not to exist as a column)."""
+    def _compute(stats_season, week_filter):
+        try:
+            defense_stats = get_nfl_defense_reception_stats([int(stats_season)])
+            if defense_stats.empty:
+                return None, None
+            opp_rows = defense_stats[defense_stats['team'] == opponent].copy()
+            if week_filter is not None:
+                opp_rows = opp_rows[opp_rows['week'] < week_filter]
+            if len(opp_rows) < 3:
+                return None, None
+            return opp_rows['targets_allowed'].mean(), opp_rows['catch_rate_allowed'].mean()
+        except Exception:
+            return None, None
+
+    if as_of_week is not None and as_of_week <= 6:
+        return _compute(int(season) - 1, None)
+    current_targets, current_catch = _compute(season, as_of_week)
+    if current_targets is not None:
+        return current_targets, current_catch
+    return _compute(int(season) - 1, None)
+
 def get_qb_rush_tendency(season, qb_name, as_of_week=None):
     """A QB's own rushing volume relative to league-average QB rushing —
     computed from real carries data rather than a hardcoded list of known
@@ -5012,6 +5068,45 @@ def get_qb_starter_rows(qb_name, season, as_of_week=None):
     except Exception:
         return pd.DataFrame(), "error"
 
+def get_wr_te_rows(player_name, season, as_of_week=None, min_targets=2):
+    """Fetches one season's weekly stats for a WR/TE and filters to games
+    with a genuinely meaningful role (July 2026, built for Receptions).
+    Unlike QBs, WR/TEs don't have a clean 'starter' concept the same
+    way — target shares are often split across 3-4+ real contributors on
+    a given team, with no single ID-join equivalent to QB starter IDs.
+    Uses a targets-based threshold instead: min_targets=2 (a real,
+    if arguable, design choice — worth revisiting once actually
+    backtested, same honest flag as every other choice made without
+    real evidence yet).
+
+    Returns (rows, filter_used) — rows is empty (not None) if nothing is
+    found. Explicitly filters to season_type == 'REG' and guards against
+    calling .apply()-style operations on an empty DataFrame — both real
+    lessons learned the hard way building Attempts and Completions,
+    applied here from day one instead of rediscovering them a third
+    time."""
+    try:
+        weekly = get_nfl_player_stats([int(season)])
+        rows_all = weekly[(weekly['player_display_name'] == player_name) & (weekly['position'].isin(['WR', 'TE']))].copy()
+        if 'season_type' in rows_all.columns:
+            rows_all = rows_all[rows_all['season_type'] == 'REG']
+        if 'targets' in rows_all.columns:
+            rows_all['targets'] = pd.to_numeric(rows_all['targets'], errors='coerce').fillna(0)
+        if as_of_week is not None:
+            rows_all = rows_all[rows_all['week'] < as_of_week]
+        rows_all = rows_all.sort_values('week')
+
+        if rows_all.empty:
+            # Same real bug already fixed for get_qb_starter_rows — an
+            # empty DataFrame is a completely normal, expected case
+            # (week 1 especially), not something to let become a crash.
+            return rows_all.copy(), "targets_threshold"
+
+        rows = rows_all[rows_all['targets'] >= min_targets].copy()
+        return rows, "targets_threshold"
+    except Exception:
+        return pd.DataFrame(), "error"
+
 def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_starts_count,
                                   bridge_schedule='attempts', team_change_multiplier=0.5):
     """Shared prior-season bridge logic (July 2026) — extracted for reuse
@@ -5054,6 +5149,41 @@ def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_start
                 prior_weight = prior_weight * team_change_multiplier
 
     return prior_qb_rows, prior_weight, team_changed, prior_starter_filter_used
+
+def compute_receptions_prior_season_bridge(player_name, season, team, as_of_week, current_games_count,
+                                             bridge_schedule='attempts', team_change_multiplier=0.5):
+    """Prior-season bridge for Receptions (July 2026) — a genuinely
+    separate copy of the same starts-based phase-out logic used by
+    compute_prior_season_bridge (built for Completions), using
+    get_wr_te_rows instead of get_qb_starter_rows. Deliberately NOT a
+    shared/refactored version of the existing function — that one is
+    validated and has real, locked-in Completions corrections depending
+    on its exact current behavior; any risk of a mistake there wasn't
+    worth taking just to avoid one more genuinely small, separate copy.
+    Same starts-based table as the other two versions: 0 games=100%
+    prior season, 1=80%, 2=60%, 3=40%, 4=20%, 5+=0%, halved (or
+    otherwise adjusted) on a team change. Returns (prior_rows,
+    prior_weight, team_changed, prior_filter_used)."""
+    bridge_schedules = {
+        'attempts': {0: 1.00, 1: 0.80, 2: 0.60, 3: 0.40, 4: 0.20},
+        'slow_fade': {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.40},
+        'medium_fade': {0: 1.00, 1: 0.85, 2: 0.70, 3: 0.50, 4: 0.30},
+    }
+    prior_weight_table = bridge_schedules.get(bridge_schedule, bridge_schedules['attempts'])
+    prior_weight = prior_weight_table.get(current_games_count, 0.0)
+    team_changed = False
+    prior_rows = pd.DataFrame()
+    prior_filter_used = None
+
+    if prior_weight > 0:
+        prior_rows, prior_filter_used = get_wr_te_rows(player_name, int(season) - 1, as_of_week=None)
+        if not prior_rows.empty:
+            prior_team = prior_rows['team'].iloc[-1] if 'team' in prior_rows.columns else None
+            if prior_team and prior_team != team:
+                team_changed = True
+                prior_weight = prior_weight * team_change_multiplier
+
+    return prior_rows, prior_weight, team_changed, prior_filter_used
 
 def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=None,
                                        season_weight=0.45, last5_weight=0.35, last10_weight=0.20,
@@ -5840,6 +5970,166 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
             'completions_bias_correction_used': completions_bias_correction,
             'completions_moderate_tier_correction_used': completions_moderate_tier_correction,
             'completions_volatile_tier_correction_used': completions_volatile_tier_correction,
+        }
+    except Exception as e:
+        if st.session_state.get("_nfl_debug_mode"): raise
+        return None
+
+def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, as_of_week=None,
+                                    target_share_weighting='target_weighted', bridge_schedule='attempts',
+                                    team_change_multiplier=0.0, min_targets=2):
+    """v1 Receptions model (July 2026) — genuinely different structure
+    from Attempts/Completions: this is a WR/TE stat, not a QB stat.
+
+    projected_receptions = projected_team_attempts x player_target_share x player_catch_rate
+
+    Requires qb_name explicitly (the team's real starting QB for this
+    game) — reuses run_nfl_pass_attempts_projection DIRECTLY for the
+    team volume component, same "reuse what's already validated"
+    pattern as Completions reusing Attempts. For backtesting, qb_name
+    comes straight from the schedule (home_qb_name/away_qb_name); for
+    live use, the caller needs to know the real starter, same
+    requirement Attempts and Completions already have.
+
+    Uses get_wr_te_rows and compute_receptions_prior_season_bridge (both
+    genuinely separate from the QB-specific versions, not shared/
+    refactored — same safe-copy pattern used building Completions,
+    protecting the already-validated code those other two models depend
+    on). target_share is a real, pre-computed column in the underlying
+    weekly stats (confirmed available), used directly rather than
+    manually computing team-total-targets.
+
+    target_share_weighting defaults to 'target_weighted' (not 'equal')
+    from day one — applying the attempt-weighting lesson validated for
+    Completions immediately, instead of rediscovering it a third time:
+    a game where a player saw 10 targets carries more real information
+    about their true target share than a game where they saw 2.
+
+    Honest, explicit scope limits for this v1 (flagged, not hidden):
+      - min_targets=2 as the 'meaningful role' threshold is a real,
+        untested design choice — WR/TE don't have a clean starter-ID
+        equivalent the way QBs do, so this hasn't been backtested or
+        validated at all yet.
+      - NO bias corrections of any kind — zero backtest history exists
+        for this model. Any correction would be a guess, not evidence.
+      - Opponent factor requires 'opponent_team' to exist as a real
+        column in the underlying data — verified defensively in
+        get_nfl_defense_reception_stats, but if it's missing, this
+        degrades gracefully to no opponent signal rather than crashing.
+      - No live pipeline, no backtest UI yet — this is the modeling
+        core only, matching exactly how Completions started too.
+      - No rookie/limited-sample tier yet.
+      - TE and WR are treated identically here — no position-specific
+        adjustment for the fact that TEs and WRs are typically covered
+        and used differently. A real, plausible future refinement.
+    """
+    try:
+        attempts_result = run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week=as_of_week)
+        if not attempts_result:
+            return None
+        projected_team_attempts = attempts_result['projection']
+
+        rows, filter_used = get_wr_te_rows(player_name, season, as_of_week, min_targets=min_targets)
+        if 'targets' not in rows.columns or 'receptions' not in rows.columns or 'target_share' not in rows.columns:
+            return None
+        rows = rows.sort_values('week')
+        games_this_season = len(rows)
+
+        prior_rows, prior_weight, team_changed, prior_filter_used = compute_receptions_prior_season_bridge(
+            player_name, season, team, as_of_week, games_this_season,
+            bridge_schedule=bridge_schedule, team_change_multiplier=team_change_multiplier,
+        )
+        if not prior_rows.empty and 'targets' not in prior_rows.columns:
+            prior_rows = pd.DataFrame()  # defensive — shouldn't happen given get_wr_te_rows' own guards, but don't trust blindly
+
+        combined_available = games_this_season + len(prior_rows)
+        if combined_available < 3:
+            return None
+
+        combined_rows = pd.concat([prior_rows, rows]).reset_index(drop=True) if not prior_rows.empty else rows
+
+        def _weighted_share(df):
+            """Target-weighted average — same lesson validated for
+            Completions' attempt-weighted completion%, applied here from
+            day one instead of defaulting to equal-weighting first and
+            discovering this later."""
+            if df.empty or 'target_share' not in df.columns:
+                return None
+            weights = df['targets'].clip(lower=0.1)  # avoid a literal zero-weight game dominating nothing
+            if weights.sum() <= 0:
+                return df['target_share'].mean()
+            return (df['target_share'] * weights).sum() / weights.sum()
+
+        def _weighted_catch_rate(df):
+            if df.empty:
+                return None
+            total_targets = df['targets'].sum()
+            if total_targets <= 0:
+                return None
+            return df['receptions'].sum() / total_targets
+
+        if target_share_weighting == 'target_weighted':
+            season_share = _weighted_share(rows)
+            prior_share = _weighted_share(prior_rows) if not prior_rows.empty else None
+            last5_share = _weighted_share(combined_rows.tail(5))
+            last10_share = _weighted_share(combined_rows.tail(10))
+        else:
+            season_share = rows['target_share'].mean() if not rows.empty else None
+            prior_share = prior_rows['target_share'].mean() if not prior_rows.empty else None
+            last5_share = combined_rows['target_share'].tail(5).mean()
+            last10_share = combined_rows['target_share'].tail(10).mean()
+
+        if prior_weight > 0 and prior_share is not None:
+            current_weight = 1 - prior_weight
+            base_share = (prior_share * prior_weight) + (season_share * current_weight) if season_share is not None else prior_share
+        else:
+            base_share = season_share
+
+        if base_share is None:
+            return None
+
+        base_catch_rate = _weighted_catch_rate(combined_rows.tail(10))
+        if base_catch_rate is None:
+            return None
+
+        blended_share = (base_share * 0.45) + (last5_share * 0.35) + (last10_share * 0.20) if last5_share is not None and last10_share is not None else base_share
+
+        opp_targets_allowed, opp_catch_rate_allowed = get_nfl_opponent_reception_factor(season, opponent, as_of_week)
+        baselines = get_nfl_league_baselines(season, as_of_week)
+        opp_factor = 1.0
+        if opp_catch_rate_allowed is not None and pd.notna(opp_catch_rate_allowed):
+            opp_factor = 1 + ((opp_catch_rate_allowed / baselines['completion_pct_baseline']) - 1) * 0.4
+
+        projected_target_share = max(0.02, min(0.45, blended_share))  # sanity bounds — a real WR/TE target share is essentially never outside this range
+        projected_targets = projected_team_attempts * projected_target_share
+        projected_catch_rate = max(0.35, min(0.90, base_catch_rate * opp_factor))
+        projected_receptions = projected_targets * projected_catch_rate
+
+        share_history = combined_rows['target_share'].tail(10)
+        share_cv = (share_history.std() / share_history.mean()) if len(share_history) > 1 and share_history.mean() > 0 else 1.0
+        if len(combined_rows) < 4 or share_cv > 0.35:
+            confidence_tier = "🔴 Volatile — Consider Pass"
+        elif len(combined_rows) >= 8 and share_cv < 0.20:
+            confidence_tier = "🟢 Reliable"
+        else:
+            confidence_tier = "🟠 Moderate"
+
+        return {
+            'projection': round(projected_receptions, 1),
+            'projected_targets': round(projected_targets, 1),
+            'projected_target_share': round(projected_target_share, 3),
+            'projected_catch_rate': round(projected_catch_rate, 3),
+            'projected_team_attempts': round(projected_team_attempts, 1),
+            'base_target_share': round(base_share, 3) if base_share is not None else None,
+            'base_catch_rate': round(base_catch_rate, 3),
+            'opp_targets_allowed': round(opp_targets_allowed, 1) if opp_targets_allowed is not None and pd.notna(opp_targets_allowed) else None,
+            'opp_catch_rate_allowed': round(opp_catch_rate_allowed, 3) if opp_catch_rate_allowed is not None and pd.notna(opp_catch_rate_allowed) else None,
+            'confidence_tier': confidence_tier,
+            'target_share_cv': round(share_cv, 3),
+            'games_used': len(combined_rows), 'games_this_season': games_this_season,
+            'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
+            'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
+            'target_share_weighting_used': target_share_weighting, 'bridge_schedule_used': bridge_schedule,
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
@@ -7838,8 +8128,8 @@ elif nav == "🧪 Backtest" and is_admin:
             finally:
                 st.session_state['_nba_debug_mode'] = False
 
-    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists", "NFL Pass Attempts", "NFL Pass Completions"], key="backtest_sport")
-    if backtest_sport not in ("NFL Pass Attempts", "NFL Pass Completions"):
+    backtest_sport = st.selectbox("Sport", ["MLB Strikeouts", "NBA Points", "NBA Assists", "NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"], key="backtest_sport")
+    if backtest_sport not in ("NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"):
         backtest_date = st.date_input("Select a past date", value=date.today() - timedelta(days=7))
 
     if backtest_sport == "MLB Strikeouts":
@@ -8779,6 +9069,163 @@ elif nav == "🧪 Backtest" and is_admin:
                         st.error(f"Real error: {e}")
                         import traceback
                         st.code(traceback.format_exc())
+
+    elif backtest_sport == "NFL Receptions":
+        st.caption("Full error decomposition, same discipline as Completions — Targets MAE, Catch Rate MAE, and final Receptions MAE tracked separately, plus oracle diagnostics isolating how much error comes from the volume/share stage vs. the catch-rate stage. This model has ZERO backtest history until you run this for the first time — no corrections have been attempted yet, everything below is genuinely untested.")
+        backtest_season_rec = st.selectbox("Season", ["2025", "2024", "2023"], key="backtest_season_rec")
+        col_rwk1, col_rwk2 = st.columns(2)
+        with col_rwk1:
+            backtest_week_start_rec = st.number_input("Start week", min_value=1, max_value=18, value=1, key="backtest_week_start_rec")
+        with col_rwk2:
+            backtest_week_end_rec = st.number_input("End week", min_value=1, max_value=18, value=18, key="backtest_week_end_rec")
+
+        st.write("**Testable parameters** (all genuinely untested — this is the model's first real backtest)")
+        col_rp1, col_rp2 = st.columns(2)
+        with col_rp1:
+            rec_weighting = st.selectbox("Target share weighting", ["target_weighted", "equal"], key="rec_weighting_test")
+            rec_bridge = st.selectbox("Bridge schedule", ["attempts", "slow_fade", "medium_fade"], key="rec_bridge_test")
+        with col_rp2:
+            rec_team_mult = st.slider("Team-change multiplier", 0.0, 1.0, 0.0, 0.05, key="rec_team_mult_test")
+            rec_min_targets = st.number_input("Min targets threshold (meaningful role)", min_value=1, max_value=5, value=2, key="rec_min_targets_test")
+
+        accumulate_rec = st.checkbox("➕ Accumulate — add to existing results instead of replacing", key="rec_backtest_accumulate")
+        debug_rec = st.checkbox("🔧 Show real errors (debug)", key="rec_backtest_debug")
+
+        col_run_rec, col_clear_rec = st.columns([3, 1])
+        with col_clear_rec:
+            if st.button("🗑️ Clear All", key="rec_clear_all", use_container_width=True):
+                st.session_state['rec_backtest_results'] = []
+                st.rerun()
+        with col_run_rec:
+            run_rec_clicked = st.button("🔍 Load Week(s) & Run Projections", key="rec_run_button", use_container_width=True)
+
+        if run_rec_clicked:
+            st.session_state['_nfl_debug_mode'] = debug_rec
+            weeks_to_test_rec = list(range(int(backtest_week_start_rec), int(backtest_week_end_rec) + 1))
+            with st.spinner(f"Pulling {len(weeks_to_test_rec)} week(s) of games..."):
+                try:
+                    schedules_rec = get_nfl_schedules([int(backtest_season_rec)])
+                    weekly_stats_rec = get_nfl_player_stats([int(backtest_season_rec)])
+                    results_rec = list(st.session_state.get('rec_backtest_results', [])) if accumulate_rec else []
+                    skipped_rec = []
+                    progress_bar_rec = st.progress(0)
+                    status_text_rec = st.empty()
+
+                    # Building the test set: unlike QB models, there's no
+                    # single "starter" per team — iterate every WR/TE who
+                    # actually had a real, meaningful game (targets >=
+                    # the threshold) that week, using their real team's
+                    # real opponent and real starting QB from the schedule.
+                    matchups_rec = []
+                    for wk in weeks_to_test_rec:
+                        week_games = schedules_rec[schedules_rec['week'] == wk]
+                        wr_te_week = weekly_stats_rec[(weekly_stats_rec['week'] == wk) & (weekly_stats_rec['position'].isin(['WR', 'TE']))]
+                        if 'season_type' in wr_te_week.columns:
+                            wr_te_week = wr_te_week[wr_te_week['season_type'] == 'REG']
+                        for _, g in week_games.iterrows():
+                            for side_team, opp_team, qb_col in [(g['home_team'], g['away_team'], 'home_qb_name'), (g['away_team'], g['home_team'], 'away_qb_name')]:
+                                if pd.isna(g.get(qb_col)):
+                                    continue
+                                team_players = wr_te_week[wr_te_week['team'] == side_team]
+                                for _, prow in team_players.iterrows():
+                                    targets_val = pd.to_numeric(prow.get('targets', 0), errors='coerce')
+                                    if pd.isna(targets_val) or targets_val < rec_min_targets:
+                                        continue
+                                    matchups_rec.append({
+                                        'player': prow['player_display_name'], 'team': side_team, 'opponent': opp_team,
+                                        'qb': g[qb_col], 'week': wk,
+                                    })
+
+                    for i, m in enumerate(matchups_rec):
+                        status_text_rec.text(f"Week {m['week']}: {m['player']} ({i+1} of {len(matchups_rec)})")
+                        progress_bar_rec.progress((i+1) / len(matchups_rec))
+                        try:
+                            result = run_nfl_receptions_projection(
+                                m['player'], m['team'], m['opponent'], m['qb'], int(backtest_season_rec), as_of_week=m['week'],
+                                target_share_weighting=rec_weighting, bridge_schedule=rec_bridge,
+                                team_change_multiplier=rec_team_mult, min_targets=rec_min_targets,
+                            )
+                        except Exception as e:
+                            skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': f'Exception: {e}'})
+                            continue
+                        actual_row = weekly_stats_rec[(weekly_stats_rec['player_display_name'] == m['player']) & (weekly_stats_rec['week'] == m['week']) & (weekly_stats_rec['position'].isin(['WR', 'TE']))]
+                        if actual_row.empty:
+                            skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "No stats row found"})
+                            continue
+                        actual_targets = pd.to_numeric(actual_row['targets'].iloc[0], errors='coerce')
+                        actual_receptions = pd.to_numeric(actual_row['receptions'].iloc[0], errors='coerce')
+                        if not result or pd.isna(actual_targets) or actual_targets <= 0:
+                            skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "Insufficient history or zero actual targets"})
+                            continue
+                        actual_catch_rate = actual_receptions / actual_targets
+
+                        projected_targets = result['projected_targets']
+                        projected_catch_rate = result['projected_catch_rate']
+                        projected_receptions = result['projection']
+
+                        oracle_volume_rec = actual_targets * projected_catch_rate
+                        oracle_efficiency_rec = projected_targets * actual_catch_rate
+
+                        results_rec.append({
+                            'Player': m['player'], 'Week': m['week'], 'Matchup': f"{m['opponent']} @ {m['team']}",
+                            'Proj Targets': projected_targets, 'Actual Targets': actual_targets,
+                            'Targets Error': round(abs(projected_targets - actual_targets), 1),
+                            'Proj Catch Rate': round(projected_catch_rate, 3), 'Actual Catch Rate': round(actual_catch_rate, 3),
+                            'Catch Rate Error': round(abs(projected_catch_rate - actual_catch_rate), 3),
+                            'Proj Receptions': projected_receptions, 'Actual Receptions': actual_receptions,
+                            'Receptions Error': round(abs(projected_receptions - actual_receptions), 1),
+                            'Signed Residual': round(actual_receptions - projected_receptions, 1),
+                            'Oracle Volume Error': round(abs(oracle_volume_rec - actual_receptions), 1),
+                            'Oracle Efficiency Error': round(abs(oracle_efficiency_rec - actual_receptions), 1),
+                            'Confidence Tier': result.get('confidence_tier'),
+                        })
+                    st.session_state['rec_backtest_results'] = results_rec
+                    st.session_state['rec_backtest_skipped'] = skipped_rec
+                    status_text_rec.text(f"✅ Done! {len(results_rec)} total projections, {len(skipped_rec)} skipped.")
+                    progress_bar_rec.progress(1.0)
+                except Exception as e:
+                    st.error(f"Real error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                finally:
+                    st.session_state['_nfl_debug_mode'] = False
+
+        if 'rec_backtest_results' in st.session_state and st.session_state['rec_backtest_results']:
+            rec_df = pd.DataFrame(st.session_state['rec_backtest_results'])
+            st.dataframe(rec_df, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("📊 Error Decomposition")
+            targets_mae_rec = round(rec_df['Targets Error'].mean(), 2)
+            catch_rate_mae_rec = round(rec_df['Catch Rate Error'].mean(), 4)
+            receptions_mae_rec = round(rec_df['Receptions Error'].mean(), 2)
+            oracle_volume_mae_rec = round(rec_df['Oracle Volume Error'].mean(), 2)
+            oracle_efficiency_mae_rec = round(rec_df['Oracle Efficiency Error'].mean(), 2)
+
+            col_re1, col_re2, col_re3 = st.columns(3)
+            col_re1.metric("Targets MAE", targets_mae_rec, help="Error in the projected target volume (team attempts x target share)")
+            col_re2.metric("Catch Rate MAE", catch_rate_mae_rec, help="Error in the catch-rate projection specifically")
+            col_re3.metric("Receptions MAE", receptions_mae_rec, help="The real, final, blended error")
+
+            col_ro1, col_ro2 = st.columns(2)
+            col_ro1.metric("Oracle: Actual Targets x Proj Catch Rate", oracle_volume_mae_rec, help="If targets were known PERFECTLY, this is how good the catch-rate model alone would be")
+            col_ro2.metric("Oracle: Proj Targets x Actual Catch Rate", oracle_efficiency_mae_rec, help="If catch rate were known PERFECTLY, this shows how much error comes from the targets/share stage alone")
+            if oracle_volume_mae_rec < oracle_efficiency_mae_rec:
+                st.caption(f"**Bottleneck read:** catch-rate error ({oracle_volume_mae_rec}) is smaller than targets-stage error ({oracle_efficiency_mae_rec}) — the TARGET SHARE / VOLUME projection is contributing more to the final error. Improving Receptions further likely means improving target-share estimation, not catch-rate logic.")
+            else:
+                st.caption(f"**Bottleneck read:** targets-stage error ({oracle_efficiency_mae_rec}) is smaller than catch-rate error ({oracle_volume_mae_rec}) — the CATCH-RATE projection is contributing more to the final error. Worth focusing improvement efforts on catch-rate specifically.")
+
+            st.markdown("---")
+            st.write("**Receptions MAE + Bias by Confidence Tier**")
+            st.caption("Bias (signed: Actual - Projection) distinguishes a fixable systematic pattern from genuine noise — same check that found real, validated corrections for Completions.")
+            tier_summary_rec = rec_df.groupby('Confidence Tier').agg(Predictions=('Receptions Error', 'count'), MAE=('Receptions Error', 'mean'), Bias=('Signed Residual', 'mean')).reset_index()
+            tier_summary_rec['MAE'] = tier_summary_rec['MAE'].round(2)
+            tier_summary_rec['Bias'] = tier_summary_rec['Bias'].round(2)
+            st.dataframe(tier_summary_rec, use_container_width=True)
+
+        if 'rec_backtest_skipped' in st.session_state and st.session_state['rec_backtest_skipped']:
+            with st.expander(f"Skipped ({len(st.session_state['rec_backtest_skipped'])})"):
+                st.dataframe(pd.DataFrame(st.session_state['rec_backtest_skipped']), use_container_width=True)
 
     else:
         backtest_season_nba = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], key="backtest_season_nba")
