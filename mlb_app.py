@@ -273,7 +273,7 @@ EDGE_THRESHOLDS = {
     "nba_assists": 0.75,
     "nba_points": 1.5,
     "nfl_pass_attempts": 2.0,
-    "nfl_completions": 1.5,
+    "nfl_pass_completions": 1.5,
     "nfl_receptions": 1.0,
 }
 
@@ -298,6 +298,36 @@ def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
             return max(4.5, projection * 0.16)
         else:
             return max(3.5, projection * 0.12)
+    elif sport == 'nfl_pass_completions':
+        # Real branch built (July 2026) — previously fell through to the
+        # generic max(1.5, projection*0.25) fallback, never actually
+        # calibrated for this stat. Scaled down from Attempts' pattern,
+        # roughly proportional to Completions' validated ~4.7-4.9 MAE
+        # range (vs. Attempts' ~6.9-7.1) — completions naturally have a
+        # smaller typical magnitude and a somewhat tighter spread than
+        # raw attempts, since a completion also has to clear a
+        # catch/accuracy threshold beyond just being thrown.
+        if cv >= 0.20:
+            return max(4.5, projection * 0.20)
+        elif cv >= 0.12:
+            return max(3.5, projection * 0.15)
+        else:
+            return max(2.8, projection * 0.11)
+    elif sport == 'nfl_receptions':
+        # Real branch built (July 2026) — same gap as completions above.
+        # Calibrated against Receptions Model A's validated ~1.4 MAE
+        # (post-recalibration) — a genuinely smaller-magnitude stat than
+        # either Attempts or Completions, so both the floor and the
+        # multiplier are scaled down accordingly. share_cv now uses the
+        # recalibrated 0.357/0.812 tier thresholds (not the old 0.20/
+        # 0.35 QB-copied ones), so these CV bands are set relative to
+        # THOSE, not Attempts' bands.
+        if cv >= 0.65:
+            return max(1.8, projection * 0.35)
+        elif cv >= 0.40:
+            return max(1.3, projection * 0.28)
+        else:
+            return max(0.9, projection * 0.20)
     return max(1.5, projection * 0.25)
 
 def remove_vig(over_odds, under_odds):
@@ -5102,6 +5132,200 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                 })
     return results
 
+def load_nfl_completions_props_data():
+    """Fetches today's live NFL player_pass_completions props (July
+    2026) — a faithful parallel to load_nfl_props_data(), just built for
+    the Completions market instead of Attempts. Same shape, same
+    per-event error isolation, same stale-game skip. Deliberately a
+    genuinely separate copy rather than a refactor, matching the safe-
+    copy pattern used throughout the Completions/Receptions build —
+    Attempts' live pipeline is real, working, and already earning
+    trust; no reason to risk it for the sake of avoiding a second,
+    small function."""
+    try:
+        events_resp = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}, timeout=15)
+        events_resp.raise_for_status()
+        events_data = events_resp.json()
+        if isinstance(events_data, dict) and events_data.get('message'):
+            raise RuntimeError(f"Odds API error: {events_data['message']}")
+
+        all_qbs = {}
+        now_utc = datetime.now(ZoneInfo("UTC"))
+
+        for event in events_data:
+            commence_time_str = event.get('commence_time')
+            if commence_time_str:
+                try:
+                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
+                    if commence_time <= now_utc:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            home = event['home_team']
+            away = event['away_team']
+            event_id = event['id']
+            try:
+                props_resp = requests.get(
+                    f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
+                    params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_pass_completions', 'oddsFormat': 'american'},
+                    timeout=15
+                )
+                props_resp.raise_for_status()
+                props_data = props_resp.json()
+                if isinstance(props_data, dict) and props_data.get('message') and 'bookmakers' not in props_data:
+                    continue
+            except Exception:
+                continue
+
+            for bookmaker in props_data.get('bookmakers', []):
+                if bookmaker['key'] in ['fanduel', 'draftkings']:
+                    book_name = bookmaker['title']
+                    for market in bookmaker.get('markets', []):
+                        if market.get('key') == 'player_pass_completions':
+                            for outcome in market.get('outcomes', []):
+                                qb_name = outcome.get('description')
+                                if not qb_name:
+                                    continue
+                                if qb_name not in all_qbs:
+                                    all_qbs[qb_name] = {
+                                        'home': home, 'away': away, 'commence_time': commence_time_str,
+                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Projection': None, 'Edge': None, 'Play': None,
+                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                        'Model Prob': None, 'No Vig Prob': None,
+                                    }
+                                if 'FanDuel' in book_name:
+                                    all_qbs[qb_name]['FanDuel Line'] = outcome.get('point')
+                                    if outcome.get('name') == 'Over':
+                                        all_qbs[qb_name]['FanDuel Over'] = outcome.get('price')
+                                    else:
+                                        all_qbs[qb_name]['FanDuel Under'] = outcome.get('price')
+                                elif 'DraftKings' in book_name:
+                                    all_qbs[qb_name]['DraftKings Line'] = outcome.get('point')
+                                    if outcome.get('name') == 'Over':
+                                        all_qbs[qb_name]['DraftKings Over'] = outcome.get('price')
+                                    else:
+                                        all_qbs[qb_name]['DraftKings Under'] = outcome.get('price')
+        return all_qbs
+    except Exception as e:
+        st.session_state['_nfl_completions_props_load_error'] = str(e)
+        return {}
+
+def evaluate_nfl_completions_quotes(info, proj, cv, confidence_tier):
+    """Completions version of evaluate_nfl_quotes — same real, validated
+    fixes already carried over (requires BOTH real over/under prices,
+    skips near-tied projections rather than defaulting to 'under',
+    never fabricates a missing price). Uses the real
+    'nfl_pass_completions' sport key, which now has its own calibrated
+    get_min_std_dev branch (built alongside this pipeline — previously
+    would have silently fallen through to the generic fallback)."""
+    quotes = []
+    if info.get('FanDuel Line') is not None:
+        quotes.append({'book': 'FanDuel', 'line': info['FanDuel Line'], 'over_odds': info.get('FanDuel Over'), 'under_odds': info.get('FanDuel Under')})
+    if info.get('DraftKings Line') is not None:
+        quotes.append({'book': 'DraftKings', 'line': info['DraftKings Line'], 'over_odds': info.get('DraftKings Over'), 'under_odds': info.get('DraftKings Under')})
+
+    best = None
+    for quote in quotes:
+        line = quote['line']
+        if line is None or abs(proj - line) < 0.05:
+            continue
+        if quote['over_odds'] is None or quote['under_odds'] is None:
+            continue
+        direction = 'over' if proj > line else 'under'
+        selected_odds = quote['over_odds'] if direction == 'over' else quote['under_odds']
+        std_dev = get_min_std_dev(cv, proj, sport='nfl_pass_completions')
+        ev_result = analyze_prop(
+            projection=proj, line=line, std_dev=std_dev, cv=cv,
+            over_odds=quote['over_odds'], under_odds=quote['under_odds'],
+            direction=direction, sport='nfl_pass_completions',
+            workload_tier=None, confidence_tier=confidence_tier,
+        )
+        if ev_result and (best is None or (ev_result.get('ev_pct') or -999) > (best['ev_result'].get('ev_pct') or -999)):
+            best = {'ev_result': ev_result, 'book': quote['book'], 'line': line, 'direction': direction, 'odds': selected_odds}
+    return best
+
+def run_all_nfl_completions_projections(all_qbs, season, progress_callback=None):
+    """Completions version of run_all_nfl_projections — same real week-
+    matching fix (find_upcoming_nfl_week, hard block instead of a
+    silent as_of_week=None fallthrough), calls
+    run_nfl_pass_completions_projection with its validated defaults
+    (attempt_weighted completion weighting, moderate/volatile tier
+    corrections, team_change_prior_retention=0.0, all five real,
+    confirmed Completions corrections)."""
+    results = {}
+    total = len(all_qbs)
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    weekly_all = get_nfl_player_stats([int(season)])
+    for i, (qb_name, info) in enumerate(all_qbs.items()):
+        if progress_callback:
+            progress_callback(i, total, qb_name)
+
+        home_team, away_team = info['home'], info['away']
+        home_abbrev = name_to_abbrev.get(home_team)
+        away_abbrev = name_to_abbrev.get(away_team)
+
+        try:
+            qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+            if qb_recent.empty:
+                continue
+            qb_team_abbrev = qb_recent.iloc[-1]['team']
+            opp_abbrev = away_abbrev if qb_team_abbrev == home_abbrev else (home_abbrev if qb_team_abbrev == away_abbrev else None)
+            if opp_abbrev is None:
+                continue
+        except Exception:
+            continue
+
+        game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time'))
+        if game_week is None:
+            all_qbs[qb_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not match the live event to an NFL week"})
+            continue
+        result = run_nfl_pass_completions_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+
+        if result:
+            proj = result['projection']
+            quote = evaluate_nfl_completions_quotes(info, proj, result['completion_pct_cv'], result.get('confidence_tier'))
+            if quote:
+                ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+                all_qbs[qb_name].update({
+                    'Projection': proj, 'Edge': edge, 'Play': play,
+                    'Tier': result['confidence_tier'],
+                    'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+                    'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                    'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                    'Direction': direction,
+                    'Odds': selected_odds,
+                    'Model Prob': ev_result['model_prob'] if ev_result else None,
+                    'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'Book': best_book,
+                })
+                results[qb_name] = result
+                save_prediction({
+                    'date': date.today().strftime('%Y-%m-%d'),
+                    'pitcher': qb_name, 'opponent': opp_abbrev, 'home_team': home_team,
+                    'projection': proj, 'base': round(result.get('projected_attempts', 0) * result.get('base_completion_pct', 0), 1), 'book_line': best_line,
+                    'edge': edge, 'cv': result['completion_pct_cv'], 'confidence_tier': result['confidence_tier'],
+                    'actual': None, 'sport': 'NFL_COMPLETIONS',
+                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                    'mm_tier': ev_result['tier'] if ev_result else None,
+                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'book': best_book, 'odds': selected_odds, 'direction': direction,
+                    'game_week': game_week, 'commence_time': info.get('commence_time'),
+                })
+    return results
+
 def get_qb_starter_rows(qb_name, season, as_of_week=None):
     """Fetches one season's weekly stats for a QB and filters down to real
     starts, using the starter-ID join with a fallback to the attempts>=15
@@ -6684,6 +6908,232 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
         return None
+
+def load_nfl_receptions_props_data():
+    """Fetches today's live NFL player_receptions props (July 2026) —
+    structurally closer to load_nba_props_data() than to
+    load_nfl_props_data(), since receivers (like NBA players) aren't
+    tied to a single QB-per-team structure the way Attempts/Completions
+    are. Keyed by receiver name; tracks home/away team the same way so
+    the display and downstream lookup can match it to a real team side.
+    Same per-event error isolation and stale-game skip as every other
+    NFL props loader."""
+    try:
+        events_resp = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}, timeout=15)
+        events_resp.raise_for_status()
+        events_data = events_resp.json()
+        if isinstance(events_data, dict) and events_data.get('message'):
+            raise RuntimeError(f"Odds API error: {events_data['message']}")
+
+        all_receivers = {}
+        now_utc = datetime.now(ZoneInfo("UTC"))
+
+        for event in events_data:
+            commence_time_str = event.get('commence_time')
+            if commence_time_str:
+                try:
+                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
+                    if commence_time <= now_utc:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            home = event['home_team']
+            away = event['away_team']
+            event_id = event['id']
+            try:
+                props_resp = requests.get(
+                    f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
+                    params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_receptions', 'oddsFormat': 'american'},
+                    timeout=15
+                )
+                props_resp.raise_for_status()
+                props_data = props_resp.json()
+                if isinstance(props_data, dict) and props_data.get('message') and 'bookmakers' not in props_data:
+                    continue
+            except Exception:
+                continue
+
+            for bookmaker in props_data.get('bookmakers', []):
+                if bookmaker['key'] in ['fanduel', 'draftkings']:
+                    book_name = bookmaker['title']
+                    for market in bookmaker.get('markets', []):
+                        if market.get('key') == 'player_receptions':
+                            for outcome in market.get('outcomes', []):
+                                receiver_name = outcome.get('description')
+                                if not receiver_name:
+                                    continue
+                                if receiver_name not in all_receivers:
+                                    all_receivers[receiver_name] = {
+                                        'home': home, 'away': away, 'commence_time': commence_time_str,
+                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Projection': None, 'Edge': None, 'Play': None,
+                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                        'Model Prob': None, 'No Vig Prob': None,
+                                    }
+                                if 'FanDuel' in book_name:
+                                    all_receivers[receiver_name]['FanDuel Line'] = outcome.get('point')
+                                    if outcome.get('name') == 'Over':
+                                        all_receivers[receiver_name]['FanDuel Over'] = outcome.get('price')
+                                    else:
+                                        all_receivers[receiver_name]['FanDuel Under'] = outcome.get('price')
+                                elif 'DraftKings' in book_name:
+                                    all_receivers[receiver_name]['DraftKings Line'] = outcome.get('point')
+                                    if outcome.get('name') == 'Over':
+                                        all_receivers[receiver_name]['DraftKings Over'] = outcome.get('price')
+                                    else:
+                                        all_receivers[receiver_name]['DraftKings Under'] = outcome.get('price')
+        return all_receivers
+    except Exception as e:
+        st.session_state['_nfl_receptions_props_load_error'] = str(e)
+        return {}
+
+def evaluate_nfl_receptions_quotes(info, proj, cv, confidence_tier):
+    """Receptions version of evaluate_nfl_quotes — same real, validated
+    fixes carried over. Uses the real 'nfl_receptions' sport key, which
+    now has its own calibrated get_min_std_dev branch built alongside
+    this pipeline."""
+    quotes = []
+    if info.get('FanDuel Line') is not None:
+        quotes.append({'book': 'FanDuel', 'line': info['FanDuel Line'], 'over_odds': info.get('FanDuel Over'), 'under_odds': info.get('FanDuel Under')})
+    if info.get('DraftKings Line') is not None:
+        quotes.append({'book': 'DraftKings', 'line': info['DraftKings Line'], 'over_odds': info.get('DraftKings Over'), 'under_odds': info.get('DraftKings Under')})
+
+    best = None
+    for quote in quotes:
+        line = quote['line']
+        if line is None or abs(proj - line) < 0.05:
+            continue
+        if quote['over_odds'] is None or quote['under_odds'] is None:
+            continue
+        direction = 'over' if proj > line else 'under'
+        selected_odds = quote['over_odds'] if direction == 'over' else quote['under_odds']
+        std_dev = get_min_std_dev(cv, proj, sport='nfl_receptions')
+        ev_result = analyze_prop(
+            projection=proj, line=line, std_dev=std_dev, cv=cv,
+            over_odds=quote['over_odds'], under_odds=quote['under_odds'],
+            direction=direction, sport='nfl_receptions',
+            workload_tier=None, confidence_tier=confidence_tier,
+        )
+        if ev_result and (best is None or (ev_result.get('ev_pct') or -999) > (best['ev_result'].get('ev_pct') or -999)):
+            best = {'ev_result': ev_result, 'book': quote['book'], 'line': line, 'direction': direction, 'odds': selected_odds}
+    return best
+
+def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=None):
+    """Receptions version of run_all_nfl_projections — the one genuinely
+    different piece versus Attempts/Completions: Model A requires the
+    team's real starting QB as an explicit input, which Attempts/
+    Completions don't need since they ARE the QB-level stat. Solves
+    this by fetching live Attempts props internally (real, current
+    sportsbook data — books only post QB attempts props for the actual
+    starter) to build a team->QB map for this week's games, falling
+    back to each team's most recent QB from weekly stats if a
+    particular team's QB props haven't been posted yet. Uses
+    Receptions Model A (run_nfl_receptions_projection) with its locked-
+    in, recalibrated defaults — target_weighted weighting, min_targets=0,
+    team_change_prior_retention=0.0, use_opponent_factor=False (tested
+    and found to make things worse), and the real, data-driven
+    0.357/0.812 confidence tier thresholds."""
+    results = {}
+    total = len(all_receivers)
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    weekly_all = get_nfl_player_stats([int(season)])
+
+    # Build the team->starting-QB map from live Attempts props first —
+    # real, current sportsbook data on who's actually starting.
+    team_to_qb = {}
+    try:
+        live_qb_props = load_nfl_props_data()
+        for qb_name, qb_info in live_qb_props.items():
+            qb_recent = weekly_all[(weekly_all['player_display_name'] == qb_name) & (weekly_all['position'] == 'QB')].sort_values('week')
+            if not qb_recent.empty:
+                team_to_qb[qb_recent.iloc[-1]['team']] = qb_name
+    except Exception:
+        pass  # falls through to the per-receiver weekly-stats fallback below
+
+    for i, (receiver_name, info) in enumerate(all_receivers.items()):
+        if progress_callback:
+            progress_callback(i, total, receiver_name)
+
+        home_team, away_team = info['home'], info['away']
+        home_abbrev = name_to_abbrev.get(home_team)
+        away_abbrev = name_to_abbrev.get(away_team)
+
+        try:
+            receiver_recent = weekly_all[(weekly_all['player_display_name'] == receiver_name) & (weekly_all['position'].isin(RECEPTION_POSITIONS))].sort_values('week')
+            if receiver_recent.empty:
+                continue
+            receiver_team_abbrev = receiver_recent.iloc[-1]['team']
+            opp_abbrev = away_abbrev if receiver_team_abbrev == home_abbrev else (home_abbrev if receiver_team_abbrev == away_abbrev else None)
+            if opp_abbrev is None:
+                continue
+        except Exception:
+            continue
+
+        # Real starting-QB lookup — try the live props map first, then
+        # fall back to this team's most recent QB from weekly stats
+        # (e.g. if that team's QB props haven't posted yet, or the QB
+        # market failed to load for any reason).
+        starting_qb = team_to_qb.get(receiver_team_abbrev)
+        if not starting_qb:
+            try:
+                team_qb_recent = weekly_all[(weekly_all['team'] == receiver_team_abbrev) & (weekly_all['position'] == 'QB')].sort_values('week')
+                if not team_qb_recent.empty:
+                    starting_qb = team_qb_recent.iloc[-1]['player_display_name']
+            except Exception:
+                pass
+        if not starting_qb:
+            all_receivers[receiver_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not identify this team's starting QB"})
+            continue
+
+        game_week = find_upcoming_nfl_week(season, home_abbrev, away_abbrev, commence_time_str=info.get('commence_time'))
+        if game_week is None:
+            all_receivers[receiver_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not match the live event to an NFL week"})
+            continue
+        result = run_nfl_receptions_projection(receiver_name, receiver_team_abbrev, opp_abbrev, starting_qb, int(season), as_of_week=game_week)
+
+        if result:
+            proj = result['projection']
+            quote = evaluate_nfl_receptions_quotes(info, proj, result['target_share_cv'], result.get('confidence_tier'))
+            if quote:
+                ev_result, best_book, best_line, direction, selected_odds = quote['ev_result'], quote['book'], quote['line'], quote['direction'], quote['odds']
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+                all_receivers[receiver_name].update({
+                    'Projection': proj, 'Edge': edge, 'Play': play,
+                    'Tier': result['confidence_tier'],
+                    'EV%': ev_result['ev_pct'] if ev_result else None,
+                    'Raw EV%': ev_result['raw_ev_pct'] if ev_result else None,
+                    'MM Tier': ev_result['tier'] if ev_result else None,
+                    'Pass Reason': ev_result['pass_reason'] if ev_result else None,
+                    'Confidence Level': ev_result['confidence_level'] if ev_result else None,
+                    'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                    'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Edge Cents': ev_result['edge_cents'] if ev_result else None,
+                    'Direction': direction,
+                    'Odds': selected_odds,
+                    'Model Prob': ev_result['model_prob'] if ev_result else None,
+                    'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'Book': best_book,
+                })
+                results[receiver_name] = result
+                save_prediction({
+                    'date': date.today().strftime('%Y-%m-%d'),
+                    'pitcher': receiver_name, 'opponent': opp_abbrev, 'home_team': home_team,
+                    'projection': proj, 'base': result.get('base_target_share'), 'book_line': best_line,
+                    'edge': edge, 'cv': result['target_share_cv'], 'confidence_tier': result['confidence_tier'],
+                    'actual': None, 'sport': 'NFL_RECEPTIONS',
+                    'ev_pct': ev_result['ev_pct'] if ev_result else None,
+                    'mm_tier': ev_result['tier'] if ev_result else None,
+                    'model_prob': ev_result['model_prob'] if ev_result else None,
+                    'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
+                    'book': best_book, 'odds': selected_odds, 'direction': direction,
+                    'game_week': game_week, 'commence_time': info.get('commence_time'),
+                })
+    return results
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
