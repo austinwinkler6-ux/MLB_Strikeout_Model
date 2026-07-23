@@ -5145,6 +5145,24 @@ def get_wr_te_rows(player_name, season, as_of_week=None, min_targets=0):
         if 'season_type' in rows_all.columns:
             rows_all = rows_all[rows_all['season_type'] == 'REG']
         if 'targets' in rows_all.columns:
+            # Real diagnostic (July 2026, round 6, per external review,
+            # "targets missing values") — track how many targets values
+            # were genuinely missing BEFORE the fillna(0) below silently
+            # converts them. If this count is effectively zero across
+            # real usage, fillna(0) was never really doing anything
+            # meaningful and there's no issue. If it's a real, non-
+            # trivial number, that's a genuine open question — does
+            # missing mean the player truly had zero targets, or does it
+            # mean the provider simply didn't report a value for that
+            # game — and this diagnostic is what would surface it,
+            # rather than assuming without checking. Stored via
+            # session_state (not a return-signature change) to avoid
+            # rippling through every caller.
+            targets_missing_before_fill = rows_all['targets'].isna().sum()
+            if targets_missing_before_fill > 0:
+                st.session_state.setdefault('_receptions_targets_missing_log', []).append(
+                    {'player': player_name, 'season': season, 'missing_count': int(targets_missing_before_fill), 'total_rows': len(rows_all)}
+                )
             rows_all['targets'] = pd.to_numeric(rows_all['targets'], errors='coerce').fillna(0)
         # Real fix (July 2026, round 5, per external review, item 4) —
         # only 'targets' was being explicitly coerced to numeric, even
@@ -5274,6 +5292,21 @@ def compute_receptions_prior_season_bridge(player_name, season, team, as_of_week
             if prior_team and prior_team != team:
                 team_changed = True
                 prior_weight = prior_weight * team_change_prior_retention
+                # Real bug fix (July 2026, round 6, per external review)
+                # — prior_weight correctly dropped to 0 when
+                # team_change_prior_retention=0.0, but prior_rows itself
+                # was still being returned and later concatenated into
+                # combined_rows by every caller. That meant "discarded"
+                # prior-season games still silently influenced recency
+                # windows, volatility (share_cv), confidence_tier, and
+                # games_used — a real inconsistency between what the
+                # weight said and what the data actually did. Fixed at
+                # the source, inside the bridge, so every caller
+                # automatically receives behavior consistent with the
+                # returned weight, rather than each caller needing to
+                # remember to check this themselves.
+                if prior_weight <= 0:
+                    prior_rows = pd.DataFrame()
 
     return prior_rows, prior_weight, team_changed, prior_filter_used
 
@@ -6094,9 +6127,15 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
     genuinely separate from the QB-specific versions, not shared/
     refactored — same safe-copy pattern used building Completions,
     protecting the already-validated code those other two models depend
-    on). target_share is a real, pre-computed column in the underlying
-    weekly stats (confirmed available), used directly rather than
-    manually computing team-total-targets.
+    on). Target share is computed DIRECTLY as sum(player_targets) /
+    sum(team_targets) via a real team_targets aggregate
+    (get_nfl_team_game_targets) and a derived_target_share column built
+    right after that merge — NOT read from nflverse's precomputed
+    target_share column (an earlier version of this docstring said the
+    opposite; that was stale from round 1 and left uncorrected through
+    rounds 3 and 5, which is when the actual behavior changed — fixed
+    here in round 6). The provider's target_share, if present, is no
+    longer used anywhere in the production path.
 
     target_share_weighting defaults to 'target_weighted' (not 'equal')
     from day one — applying the attempt-weighting lesson validated for
@@ -6235,6 +6274,26 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         # its own explicitly-named, independently-valid history.
         catch_rows = combined_rows.dropna(subset=['targets', 'receptions']) if not combined_rows.empty else combined_rows
 
+        # Real fix (July 2026, round 6, per external review) — even
+        # after the round-6 fix above (clearing prior_rows entirely when
+        # retention is 0.0), a PARTIAL retention (e.g. 0.5) still had an
+        # issue: base_share correctly respected the 50% weighting, but
+        # last5/last10 recency windows still pulled in prior-team games
+        # at their full, unreduced influence whenever the combined
+        # window happened to include them — meaning the retention
+        # parameter only ever controlled the base_share component, not
+        # recency, volatility, or confidence. Per the reviewer: for a
+        # genuine team change, "recent role" should reflect the
+        # player's CURRENT team situation specifically, regardless of
+        # how much prior-team weight the base rate retains — target
+        # share in particular is heavily dependent on scheme, QB,
+        # depth chart, and teammate competition, all of which reset on
+        # a team change. The bridged base_share can still blend
+        # 0.0/0.5/1.0 of prior information; recency now does not, once
+        # a team change has actually happened.
+        recent_share_rows = valid_current_rows if team_changed else valid_combined_rows
+        recent_catch_rows = rows.dropna(subset=['targets', 'receptions']) if team_changed else catch_rows
+
         if len(valid_combined_rows) < 3:
             return None
 
@@ -6269,8 +6328,8 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         if target_share_weighting == 'target_weighted':
             season_share = _weighted_share(rows)
             prior_share = _weighted_share(prior_rows) if not prior_rows.empty else None
-            last5_share = _weighted_share(valid_combined_rows.tail(5))
-            last10_share = _weighted_share(valid_combined_rows.tail(10))
+            last5_share = _weighted_share(recent_share_rows.tail(5))
+            last10_share = _weighted_share(recent_share_rows.tail(10))
         else:
             # Real fix (July 2026, round 5, per external review, item 1)
             # — the 'equal' weighting branch also previously depended on
@@ -6278,8 +6337,8 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
             # derived_target_share here too, for full consistency.
             season_share = rows['derived_target_share'].mean() if not rows.empty else None
             prior_share = prior_rows['derived_target_share'].mean() if not prior_rows.empty else None
-            last5_share = valid_combined_rows['derived_target_share'].tail(5).mean()
-            last10_share = valid_combined_rows['derived_target_share'].tail(10).mean()
+            last5_share = recent_share_rows['derived_target_share'].tail(5).mean()
+            last10_share = recent_share_rows['derived_target_share'].tail(10).mean()
 
         if prior_weight > 0 and prior_share is not None:
             current_weight = 1 - prior_weight
@@ -6306,8 +6365,8 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         # comparing directly once real backtest data exists.
         current_catch_rate = _weighted_catch_rate(rows)
         prior_catch_rate = _weighted_catch_rate(prior_rows) if not prior_rows.empty else None
-        last5_catch_rate = _weighted_catch_rate(catch_rows.tail(5))
-        last10_catch_rate = _weighted_catch_rate(catch_rows.tail(10))
+        last5_catch_rate = _weighted_catch_rate(recent_catch_rows.tail(5))
+        last10_catch_rate = _weighted_catch_rate(recent_catch_rows.tail(10))
 
         if prior_weight > 0 and prior_catch_rate is not None:
             current_weight_cr = 1 - prior_weight
@@ -6351,11 +6410,17 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         projected_catch_rate = max(0.35, min(0.90, base_catch_rate * opp_factor))
         projected_receptions = projected_targets * projected_catch_rate
 
-        share_history = valid_combined_rows['derived_target_share'].tail(10)
+        # Real fix (July 2026, round 6, per external review) — volatility
+        # and confidence now also use recent_share_rows (current-team-
+        # only after a team change), not valid_combined_rows directly —
+        # completing the fix, since the reviewer explicitly flagged
+        # share_cv, confidence_tier, and games_used as also affected by
+        # this same leak, not just the recency windows above.
+        share_history = recent_share_rows['derived_target_share'].tail(10)
         share_cv = (share_history.std() / share_history.mean()) if len(share_history) > 1 and share_history.mean() > 0 else 1.0
-        if len(valid_combined_rows) < 4 or share_cv > 0.35:
+        if len(recent_share_rows) < 4 or share_cv > 0.35:
             confidence_tier = "🔴 Volatile — Consider Pass"
-        elif len(valid_combined_rows) >= 8 and share_cv < 0.20:
+        elif len(recent_share_rows) >= 8 and share_cv < 0.20:
             confidence_tier = "🟢 Reliable"
         else:
             confidence_tier = "🟠 Moderate"
@@ -6373,7 +6438,7 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
             'confidence_tier': confidence_tier,
             'target_share_cv': round(share_cv, 3),
             'merge_match_rate': round(merge_match_rate, 3),
-            'games_used': len(valid_combined_rows), 'games_this_season': games_this_season,
+            'games_used': len(recent_share_rows), 'games_this_season': games_this_season,
             'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
             'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
             'target_share_weighting_used': target_share_weighting, 'bridge_schedule_used': bridge_schedule,
@@ -6486,6 +6551,18 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
         if len(valid_combined_rows) < 3:
             return None
 
+        # Real fix (July 2026, round 6, per external review) — same
+        # issue found and fixed in Model A: even with prior_rows cleared
+        # when retention drops to 0.0 (fixed at the bridge level this
+        # round), a PARTIAL retention (e.g. 0.5) still let prior-team
+        # games influence recency at full, unreduced weight — meaning
+        # the retention parameter only ever controlled base_share, not
+        # recency, volatility, or confidence. For a genuine team change,
+        # "recent role" should reflect the player's CURRENT team
+        # situation specifically, regardless of how much prior-team
+        # weight the base rate retains.
+        recent_share_rows = valid_current_rows if team_changed else valid_combined_rows
+
         def _weighted_comp_share(df):
             if df.empty or 'completion_share' not in df.columns:
                 return None
@@ -6499,8 +6576,8 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
 
         season_share = _weighted_comp_share(rows)
         prior_share = _weighted_comp_share(prior_rows) if not prior_rows.empty else None
-        last5_share = _weighted_comp_share(valid_combined_rows.tail(5))
-        last10_share = _weighted_comp_share(valid_combined_rows.tail(10))
+        last5_share = _weighted_comp_share(recent_share_rows.tail(5))
+        last10_share = _weighted_comp_share(recent_share_rows.tail(10))
 
         if prior_weight > 0 and prior_share is not None:
             current_weight = 1 - prior_weight
@@ -6515,11 +6592,11 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
         projected_completion_share = max(0.02, min(0.45, blended_share))
         projected_receptions = projected_team_completions * projected_completion_share
 
-        share_history = valid_combined_rows['completion_share'].tail(10)
+        share_history = recent_share_rows['completion_share'].tail(10)
         share_cv = (share_history.std() / share_history.mean()) if len(share_history) > 1 and share_history.mean() > 0 else 1.0
-        if len(valid_combined_rows) < 4 or share_cv > 0.35:
+        if len(recent_share_rows) < 4 or share_cv > 0.35:
             confidence_tier = "🔴 Volatile — Consider Pass"
-        elif len(valid_combined_rows) >= 8 and share_cv < 0.20:
+        elif len(recent_share_rows) >= 8 and share_cv < 0.20:
             confidence_tier = "🟢 Reliable"
         else:
             confidence_tier = "🟠 Moderate"
@@ -6532,7 +6609,7 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
             'confidence_tier': confidence_tier,
             'merge_match_rate': round(merge_match_rate, 3),
             'completion_share_cv': round(share_cv, 3),
-            'games_used': len(valid_combined_rows), 'games_this_season': games_this_season,
+            'games_used': len(recent_share_rows), 'games_this_season': games_this_season,
             'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
             'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
             'bridge_schedule_used': bridge_schedule, 'model': 'B_completion_share',
