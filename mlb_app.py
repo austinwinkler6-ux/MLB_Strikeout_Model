@@ -1526,6 +1526,22 @@ def mm_today_str():
     cache date keys since MLB's day rolls over on Eastern time, not UTC."""
     return datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d')
 
+def get_json(url, *, params=None, headers=None, timeout=20):
+    """Real fix (July 2026, per external review) — a shared helper for
+    every HTTP GET across the app, replacing the widespread pattern of
+    bare get_json(url) with no timeout, no raise_for_status,
+    and no protection against a malformed/non-JSON response. A single
+    stalled provider (MLB Stats API, Odds API, umpire data, etc.) could
+    otherwise hang the entire Streamlit run. Raises on a real HTTP
+    error or a genuinely malformed response — callers already wrap
+    their own try/except around external calls (matching the existing,
+    established pattern throughout this app), so this doesn't swallow
+    errors itself, it just makes sure a real one is always raised
+    instead of silently returning something unusable."""
+    response = requests.get(url, params=params, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
 def get_cached_projection(cache_date_str, sport, player_name):
     try:
         res = supabase.table("daily_cache").select("*") \
@@ -2027,8 +2043,11 @@ league_avg_team_score = 112.0
 @st.cache_data(ttl=3600)
 def get_all_pitchers():
     url = "https://statsapi.mlb.com/api/v1/sports/1/players?season=2026&gameType=R"
-    response = requests.get(url)
-    data = response.json()
+    try:
+        data = get_json(url)
+    except Exception as e:
+        st.error(f"Couldn't load the MLB pitcher list — real error: {e}")
+        return []
     pitchers = []
     for player in data['people']:
         if player.get('primaryPosition', {}).get('code') == '1':
@@ -2039,7 +2058,8 @@ def get_all_pitchers():
 def get_batter_k_pcts():
     url = "https://baseballsavant.mlb.com/leaderboard/custom?year=2026&type=batter&filter=&sort=4&sortDir=desc&min=10&selections=k_percent&chart=false&x=k_percent&y=k_percent&r=no&chartType=beeswarm&csv=true"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=20)
+    response.raise_for_status()
     df = pd.read_csv(StringIO(response.text))
     df['full_name'] = df['last_name, first_name'].apply(lambda x: f"{x.split(', ')[1]} {x.split(', ')[0]}")
     df['k_pct'] = df['k_percent'] / 100
@@ -2050,7 +2070,7 @@ def get_pitcher_game_info(pitcher_name, game_date=None):
     try:
         check_date = game_date or mm_today_str()
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=probablePitcher"
-        data = requests.get(url).json()
+        data = get_json(url)
         if not data['dates']:
             return None, None, None
         for game in data['dates'][0]['games']:
@@ -2074,7 +2094,7 @@ def fmt_odds(o):
 def get_starters_for_date(game_date_str):
     try:
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,linescore"
-        data = requests.get(url).json()
+        data = get_json(url)
         starters = []
         for game in data['dates'][0]['games']:
             home = game['teams']['home']['team']['name']
@@ -2094,7 +2114,7 @@ def get_starters_for_date(game_date_str):
 def get_actual_strikeouts(game_pk, pitcher_name):
     try:
         url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
-        data = requests.get(url).json()
+        data = get_json(url)
         for side in ['home', 'away']:
             for pid in data['teams'][side]['pitchers']:
                 player = data['teams'][side]['players'].get(f'ID{pid}', {})
@@ -2114,12 +2134,12 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         league_avg_k_pct_vl = 0.218
         league_avg_favor = 0.43
 
-        search = requests.get(f"https://statsapi.mlb.com/api/v1/people/search?names={pitcher_name}&sportId=1")
-        player_data = search.json()['people'][0]
+        search = get_json(f"https://statsapi.mlb.com/api/v1/people/search?names={pitcher_name}&sportId=1")
+        player_data = search['people'][0]
         player_id = player_data['id']
         pitcher_hand = player_data['pitchHand']['code']
 
-        season_stat = requests.get(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=season&group=pitching&season={season}&sportId=1").json()['stats'][0]['splits'][0]['stat']
+        season_stat = get_json(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=season&group=pitching&season={season}&sportId=1")['stats'][0]['splits'][0]['stat']
 
         season_k = int(season_stat['strikeOuts'])
         season_bf = int(season_stat['battersFaced'])
@@ -2128,7 +2148,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         season_strikes = int(season_stat.get('strikes', 0))
         season_strike_pct = round(season_strikes / season_pitches_total, 3) if season_pitches_total > 0 else 0.65
 
-        splits = requests.get(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=gameLog&group=pitching&season={season}&sportId=1").json()['stats'][0]['splits']
+        splits = get_json(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=gameLog&group=pitching&season={season}&sportId=1")['stats'][0]['splits']
 
         games = []
         for game in splits:
@@ -2233,7 +2253,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         velo_factor = round(1.0 + ((recent_strike_pct - season_strike_pct) * 0.8), 3)
 
         league_avg_k_pct = league_avg_k_pct_vr if pitcher_hand == 'R' else league_avg_k_pct_vl
-        team_data = requests.get(f"https://statsapi.mlb.com/api/v1/teams/stats?stats=season&group=hitting&season={season}&sportId=1").json()
+        team_data = get_json(f"https://statsapi.mlb.com/api/v1/teams/stats?stats=season&group=hitting&season={season}&sportId=1")
 
         opp_k_pct = None
         for split in team_data['stats'][0]['splits']:
@@ -2248,7 +2268,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             try:
                 k_df = get_batter_k_pcts()
                 check_date = before_date or mm_today_str()
-                sched_data = requests.get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=lineups").json()
+                sched_data = get_json(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=lineups")
                 if sched_data.get('dates'):
                     for game in sched_data['dates'][0]['games']:
                         ht = game['teams']['home']['team']['name']
@@ -2279,7 +2299,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         if use_umpire:
             try:
                 check_date = before_date or mm_today_str()
-                sched_data = requests.get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=officials").json()
+                sched_data = get_json(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={check_date}&hydrate=officials")
                 if sched_data.get('dates'):
                     for game in sched_data['dates'][0]['games']:
                         if home_team in game['teams']['home']['team']['name'] or home_team in game['teams']['away']['team']['name']:
@@ -2288,7 +2308,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
                                     umpire_name = official['official']['fullName']
                             break
                 if umpire_name:
-                    ump_data = requests.get("https://umpscorecards.com/api/umpires", headers={'User-Agent': 'Mozilla/5.0'}).json()
+                    ump_data = get_json("https://umpscorecards.com/api/umpires", headers={'User-Agent': 'Mozilla/5.0'})
                     for ump in ump_data['rows']:
                         if ump['umpire'].lower() == umpire_name.lower():
                             umpire_factor = max(0.97, min(1.03, round(1.0 + ((round(ump['favor_abs_mean'], 3) - league_avg_favor) * 0.5), 3)))
@@ -2301,10 +2321,10 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             try:
                 if before_date:
                     params = {'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals', 'oddsFormat': 'american', 'date': f"{before_date}T18:00:00Z"}
-                    games_data = requests.get("https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds", params=params).json().get('data', [])
+                    games_data = get_json("https://api.the-odds-api.com/v4/historical/sports/baseball_mlb/odds", params=params).get('data', [])
                 else:
                     params = {'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals', 'oddsFormat': 'american'}
-                    games_data = requests.get("https://api.the-odds-api.com/v4/sports/baseball_mlb/odds", params=params).json()
+                    games_data = get_json("https://api.the-odds-api.com/v4/sports/baseball_mlb/odds", params=params)
 
                 for game in games_data:
                     if home_team in game.get('home_team', '') or home_team in game.get('away_team', ''):
@@ -2823,8 +2843,8 @@ def get_live_nba_odds():
     review that caught this endpoint being hit unconditionally even during
     backtesting, silently returning irrelevant present-day odds instead of
     historical ones)."""
-    return requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
-        params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'}).json()
+    return get_json("https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
+        params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'totals,spreads', 'oddsFormat': 'american'})
 
 @st.cache_data(ttl=2592000)  # 30 days — historical odds never change, so a re-run never re-costs quota
 def get_historical_nba_events_for_date(date_str):
@@ -2835,10 +2855,10 @@ def get_historical_nba_events_for_date(date_str):
     explicitly asks for it in Backtest — never automatically)."""
     try:
         snapshot = f"{date_str}T12:00:00Z"
-        resp = requests.get(
+        resp = get_json(
             "https://api.the-odds-api.com/v4/historical/sports/basketball_nba/events",
             params={'apiKey': ODDS_API_KEY, 'date': snapshot}
-        ).json()
+        )
         return resp.get('data', [])
     except Exception:
         return []
@@ -2852,10 +2872,10 @@ def get_historical_prop_lines_for_game(event_id, market_key, date_str):
     Returns {player_name: line}."""
     try:
         snapshot = f"{date_str}T23:00:00Z"  # late enough in the day to catch a closing-ish line before tipoff
-        resp = requests.get(
+        resp = get_json(
             f"https://api.the-odds-api.com/v4/historical/sports/basketball_nba/events/{event_id}/odds",
             params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': market_key, 'oddsFormat': 'american', 'date': snapshot}
-        ).json()
+        )
         lines = {}
         game_data = resp.get('data', {})
         for bookmaker in game_data.get('bookmakers', []):
@@ -3914,7 +3934,7 @@ def get_historical_events_cached(api_sport, snapshot_time):
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events",
-            params={'apiKey': ODDS_API_KEY, 'date': snapshot_time}
+            params={'apiKey': ODDS_API_KEY, 'date': snapshot_time}, timeout=20
         )
         r.raise_for_status()
         resp = r.json()
@@ -3938,7 +3958,7 @@ def get_historical_event_odds_cached(api_sport, event_id, market, commence_time)
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events/{event_id}/odds",
-            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': market, 'oddsFormat': 'american', 'date': commence_time}
+            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': market, 'oddsFormat': 'american', 'date': commence_time}, timeout=20
         )
         r.raise_for_status()
         resp = r.json()
@@ -3995,8 +4015,8 @@ def load_mlb_props_data():
     creating genuinely inconsistent-looking props (caught in review, July
     2026)."""
     try:
-        events_data = requests.get("https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
-            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
+        events_data = get_json("https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'})
         all_pitchers = {}
         now_utc = datetime.now(ZoneInfo("UTC"))
 
@@ -4013,10 +4033,10 @@ def load_mlb_props_data():
             home = event['home_team']
             away = event['away_team']
             event_id = event['id']
-            props_data = requests.get(
+            props_data = get_json(
                 f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
                 params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'pitcher_strikeouts', 'oddsFormat': 'american'}
-            ).json()
+            )
 
             for bookmaker in props_data.get('bookmakers', []):
                 if bookmaker['key'] in ['fanduel', 'draftkings']:
@@ -4132,18 +4152,18 @@ def load_nba_props_data(prop_market):
     """Fetches today's NBA player props for the given market
     ('player_points' or 'player_assists'). Returns an all_players dict."""
     try:
-        events_data = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/events",
-            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}).json()
+        events_data = get_json("https://api.the-odds-api.com/v4/sports/basketball_nba/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'})
         all_players = {}
 
         for event in events_data:
             home = event['home_team']
             away = event['away_team']
             event_id = event['id']
-            props_data = requests.get(
+            props_data = get_json(
                 f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds",
                 params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': prop_market, 'oddsFormat': 'american'}
-            ).json()
+            )
 
             for bookmaker in props_data.get('bookmakers', []):
                 if bookmaker['key'] in ['fanduel', 'draftkings']:
