@@ -7905,6 +7905,7 @@ elif nav == "🎯 Today's Card":
 # ---- MLB PAGE ----
 elif nav == "⚾ MLB Models":
     st.title("⚾ MLB Strikeout Model")
+    st.markdown("---")
     bankroll, risk_style = get_bankroll_context()
     already_bet_today = get_already_bet_players_today('MLB')
 
