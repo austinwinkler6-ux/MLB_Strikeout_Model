@@ -6054,7 +6054,7 @@ def run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_w
 
 def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, as_of_week=None,
                                     target_share_weighting='target_weighted', bridge_schedule='attempts',
-                                    team_change_prior_retention=0.0, min_targets=2, use_opponent_factor=True):
+                                    team_change_prior_retention=0.0, min_targets=0, use_opponent_factor=False):
     """v1 Receptions model (July 2026) — genuinely different structure
     from Attempts/Completions: this is a WR/TE stat, not a QB stat.
 
@@ -6110,7 +6110,6 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         if 'targets' not in rows.columns or 'receptions' not in rows.columns or 'target_share' not in rows.columns:
             return None
         rows = rows.sort_values('week')
-        games_this_season = len(rows)
 
         # Real bug fix (July 2026, round 2, per external review): merge
         # in team_targets (the TRUE denominator of target_share) so
@@ -6124,9 +6123,19 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         # volume.
         team_targets_data = get_nfl_team_game_targets([int(season)])
         if not team_targets_data.empty and not rows.empty:
-            rows = rows.merge(team_targets_data[['team', 'week', 'team_targets']], on=['team', 'week'], how='left')
+            rows = rows.merge(team_targets_data[['team', 'season', 'week', 'team_targets']], on=['team', 'season', 'week'], how='left')
         else:
             rows['team_targets'] = pd.NA
+
+        # Real fix (July 2026, round 3, per external review, item 7) —
+        # games_this_season previously counted ALL rows fetched, even
+        # ones where the team_targets merge above would later fail
+        # (missing denominator). That could distort the prior-season
+        # bridge, phasing out prior data based on games that never
+        # actually produced a usable target_share observation. Use the
+        # count of rows with a VALID merge instead.
+        valid_current_rows = rows.dropna(subset=['target_share', 'team_targets'])
+        games_this_season = len(valid_current_rows)
 
         prior_rows, prior_weight, team_changed, prior_filter_used = compute_receptions_prior_season_bridge(
             player_name, season, team, as_of_week, games_this_season,
@@ -6137,34 +6146,52 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         if not prior_rows.empty:
             prior_team_targets_data = get_nfl_team_game_targets([int(season) - 1])
             if not prior_team_targets_data.empty:
-                prior_rows = prior_rows.merge(prior_team_targets_data[['team', 'week', 'team_targets']], on=['team', 'week'], how='left')
+                prior_rows = prior_rows.merge(prior_team_targets_data[['team', 'season', 'week', 'team_targets']], on=['team', 'season', 'week'], how='left')
             else:
                 prior_rows['team_targets'] = pd.NA
 
-        combined_available = games_this_season + len(prior_rows)
-        if combined_available < 3:
-            return None
-
         combined_rows = pd.concat([prior_rows, rows]).reset_index(drop=True) if not prior_rows.empty else rows
 
+        # Real fix (July 2026, round 3, per external review, item 2) —
+        # sample-size checks, last5/last10, confidence tier, and
+        # games_used previously used raw combined_rows, which could
+        # include rows where the team_targets merge failed (missing
+        # target_share denominator) — overstating real sample size and
+        # confidence, the same class of bug already fixed for Model B.
+        # Build the equivalent validated frame here too.
+        valid_combined_rows = combined_rows.dropna(subset=['target_share', 'team_targets']) if not combined_rows.empty else combined_rows
+        merge_match_rate = combined_rows['team_targets'].notna().mean() if not combined_rows.empty and 'team_targets' in combined_rows.columns else 0.0
+
+        if len(valid_combined_rows) < 3:
+            return None
+
         def _weighted_share(df):
-            """Target-share weighted average, weighted by TEAM targets
-            (the true denominator of target_share) — NOT the player's
-            own targets (the numerator), which was a real, confirmed
-            math bug. Same underlying lesson as Completions' attempt-
-            weighted completion%: high-volume games carry more real
-            information, but the weight has to be the right variable."""
-            if df.empty or 'target_share' not in df.columns or 'team_targets' not in df.columns:
+            """Target-share weighted average — real fix (July 2026,
+            round 3, per external review, item 3): computes the
+            aggregate DIRECTLY as sum(player_targets) / sum(team_targets)
+            instead of sum(target_share * team_targets) / sum(team_targets).
+            The two are mathematically equivalent ONLY if nflverse's
+            target_share column uses the exact same team_targets
+            denominator computed here — an assumption never actually
+            verified. Computing directly from targets/team_targets
+            eliminates that dependency entirely; the supplied
+            target_share column is still available separately for
+            diagnostics, just not relied on for the production
+            calculation."""
+            if df.empty or 'targets' not in df.columns or 'team_targets' not in df.columns:
                 return None
-            valid = df.dropna(subset=['target_share', 'team_targets'])
+            valid = df.dropna(subset=['targets', 'team_targets'])
             if valid.empty:
                 return None
-            weights = valid['team_targets'].clip(lower=0.1)  # avoid a literal zero-weight game dominating nothing
-            if weights.sum() <= 0:
-                return valid['target_share'].mean()
-            return (valid['target_share'] * weights).sum() / weights.sum()
+            total_team_targets = valid['team_targets'].sum()
+            if total_team_targets <= 0:
+                return valid['target_share'].mean() if 'target_share' in valid.columns else None
+            return valid['targets'].sum() / total_team_targets
 
         def _weighted_catch_rate(df):
+            # Deliberately does NOT require team_targets — catch rate
+            # only needs the player's own targets and receptions, both
+            # already present directly on these rows without a merge.
             if df.empty:
                 return None
             total_targets = df['targets'].sum()
@@ -6175,13 +6202,13 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         if target_share_weighting == 'target_weighted':
             season_share = _weighted_share(rows)
             prior_share = _weighted_share(prior_rows) if not prior_rows.empty else None
-            last5_share = _weighted_share(combined_rows.tail(5))
-            last10_share = _weighted_share(combined_rows.tail(10))
+            last5_share = _weighted_share(valid_combined_rows.tail(5))
+            last10_share = _weighted_share(valid_combined_rows.tail(10))
         else:
             season_share = rows['target_share'].mean() if not rows.empty else None
             prior_share = prior_rows['target_share'].mean() if not prior_rows.empty else None
-            last5_share = combined_rows['target_share'].tail(5).mean()
-            last10_share = combined_rows['target_share'].tail(10).mean()
+            last5_share = valid_combined_rows['target_share'].tail(5).mean()
+            last10_share = valid_combined_rows['target_share'].tail(10).mean()
 
         if prior_weight > 0 and prior_share is not None:
             current_weight = 1 - prior_weight
@@ -6250,11 +6277,11 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         projected_catch_rate = max(0.35, min(0.90, base_catch_rate * opp_factor))
         projected_receptions = projected_targets * projected_catch_rate
 
-        share_history = combined_rows['target_share'].tail(10)
+        share_history = valid_combined_rows['target_share'].tail(10)
         share_cv = (share_history.std() / share_history.mean()) if len(share_history) > 1 and share_history.mean() > 0 else 1.0
-        if len(combined_rows) < 4 or share_cv > 0.35:
+        if len(valid_combined_rows) < 4 or share_cv > 0.35:
             confidence_tier = "🔴 Volatile — Consider Pass"
-        elif len(combined_rows) >= 8 and share_cv < 0.20:
+        elif len(valid_combined_rows) >= 8 and share_cv < 0.20:
             confidence_tier = "🟢 Reliable"
         else:
             confidence_tier = "🟠 Moderate"
@@ -6271,7 +6298,8 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
             'opp_catch_rate_allowed': round(opp_catch_rate_allowed, 3) if opp_catch_rate_allowed is not None and pd.notna(opp_catch_rate_allowed) else None,
             'confidence_tier': confidence_tier,
             'target_share_cv': round(share_cv, 3),
-            'games_used': len(combined_rows), 'games_this_season': games_this_season,
+            'merge_match_rate': round(merge_match_rate, 3),
+            'games_used': len(valid_combined_rows), 'games_this_season': games_this_season,
             'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
             'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
             'target_share_weighting_used': target_share_weighting, 'bridge_schedule_used': bridge_schedule,
@@ -6281,7 +6309,7 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         return None
 
 def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, season, as_of_week=None,
-                                            bridge_schedule='attempts', team_change_prior_retention=0.0, min_targets=2):
+                                            bridge_schedule='attempts', team_change_prior_retention=0.0, min_targets=0):
     """Receptions Model B (July 2026) — a genuine, separate challenger to
     the Model A architecture above (team attempts x target share x catch
     rate), per external review: instead of building on Attempts, build
@@ -6326,15 +6354,24 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
         if 'receptions' not in rows.columns or 'team' not in rows.columns:
             return None
         rows = rows.sort_values('week')
-        games_this_season = len(rows)
 
         team_completions_data = get_nfl_team_game_completions([int(season)])
         if not team_completions_data.empty and not rows.empty:
-            rows = rows.merge(team_completions_data[['team', 'week', 'team_completions']], on=['team', 'week'], how='left')
+            rows = rows.merge(team_completions_data[['team', 'season', 'week', 'team_completions']], on=['team', 'season', 'week'], how='left')
             rows['completion_share'] = rows['receptions'] / rows['team_completions'].replace(0, pd.NA)
         else:
             rows['team_completions'] = pd.NA
             rows['completion_share'] = pd.NA
+
+        # Real fix (July 2026, round 3, per external review, item 7) —
+        # games_this_season previously counted ALL rows fetched, even
+        # ones where the team_completions merge above would later fail
+        # (missing denominator). That could distort the prior-season
+        # bridge, phasing out prior data based on games that never
+        # actually produced a usable completion_share observation. Use
+        # the count of rows with a VALID merge instead.
+        valid_current_rows = rows.dropna(subset=['completion_share', 'team_completions'])
+        games_this_season = len(valid_current_rows)
 
         prior_rows, prior_weight, team_changed, prior_filter_used = compute_receptions_prior_season_bridge(
             player_name, season, team, as_of_week, games_this_season,
@@ -6343,7 +6380,7 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
         if not prior_rows.empty and 'team' in prior_rows.columns:
             prior_team_completions_data = get_nfl_team_game_completions([int(season) - 1])
             if not prior_team_completions_data.empty:
-                prior_rows = prior_rows.merge(prior_team_completions_data[['team', 'week', 'team_completions']], on=['team', 'week'], how='left')
+                prior_rows = prior_rows.merge(prior_team_completions_data[['team', 'season', 'week', 'team_completions']], on=['team', 'season', 'week'], how='left')
                 prior_rows['completion_share'] = prior_rows['receptions'] / prior_rows['team_completions'].replace(0, pd.NA)
             else:
                 prior_rows = pd.DataFrame()
@@ -9379,7 +9416,7 @@ elif nav == "🧪 Backtest" and is_admin:
             rec_team_mult = st.slider("Team-change prior retention", 0.0, 1.0, 0.0, 0.05, key="rec_team_mult_test", help="Fraction of scheduled prior-season weight RETAINED after a team change. 0.0 = fully discarded.")
             rec_min_targets = st.number_input("Min targets threshold (0 = no filtering, per real fix — was defaulting to 2, which created survivorship bias)", min_value=0, max_value=5, value=0, key="rec_min_targets_test")
 
-        rec_use_opp_factor = st.checkbox("Use opponent factor (Model A only)", value=True, key="rec_use_opp_factor_test", help="For a FAIR first A-vs-B architectural comparison, turn this OFF — Model B has no opponent factor at all, so leaving this on confounds the comparison (architecture + extra feature vs. architecture alone).")
+        rec_use_opp_factor = st.checkbox("Use opponent factor (Model A only)", value=False, key="rec_use_opp_factor_test", help="Defaults to OFF now, per external review — the fair comparison should be the default behavior, not something a tester has to remember. Model B has no opponent factor at all, so turning this on confounds any A-vs-B comparison (architecture + extra feature vs. architecture alone) unless deliberately testing the opponent factor as its own separate experiment.")
 
         accumulate_rec = st.checkbox("➕ Accumulate — add to existing results instead of replacing", key="rec_backtest_accumulate")
         debug_rec = st.checkbox("🔧 Show real errors (debug)", key="rec_backtest_debug")
