@@ -9760,6 +9760,8 @@ elif nav == "🧪 Backtest" and is_admin:
                             'Receptions Error': round(abs(projected_receptions - actual_receptions), 1),
                             'Signed Residual': round(actual_receptions - projected_receptions, 1),
                             'Confidence Tier': result.get('confidence_tier'),
+                            'Share CV': result.get('target_share_cv', result.get('completion_share_cv')),
+                            'Games Used': result.get('games_used'),
                         }
 
                         if rec_model_choice.startswith("Model A"):
@@ -9933,6 +9935,45 @@ elif nav == "🧪 Backtest" and is_admin:
             tier_summary_rec['MAE'] = tier_summary_rec['MAE'].round(2)
             tier_summary_rec['Bias'] = tier_summary_rec['Bias'].round(2)
             st.dataframe(tier_summary_rec, use_container_width=True)
+
+            if 'Share CV' in rec_df.columns and rec_df['Share CV'].notna().any():
+                st.markdown("---")
+                st.subheader("🎯 Confidence Tier Recalibration")
+                st.caption("A real, found problem — the Reliable tier's CV<0.20 threshold was copied directly from QB stats (Attempts/Completions), never validated for receivers specifically. Target share is naturally far more volatile week to week than QB attempt/completion volume (game script, other receivers' health, defensive scheme all move it around), so that threshold turned out to be far too strict — only ~0.75% of predictions were landing in Reliable, versus ~27% for Completions. This shows the REAL distribution of CV from this backtest, so new thresholds can be set based on actual data instead of reused guesses.")
+
+                cv_data = rec_df['Share CV'].dropna()
+                if len(cv_data) > 10:
+                    col_cvd1, col_cvd2, col_cvd3, col_cvd4 = st.columns(4)
+                    col_cvd1.metric("Median CV", round(cv_data.median(), 3))
+                    col_cvd2.metric("25th percentile", round(cv_data.quantile(0.25), 3))
+                    col_cvd3.metric("50th percentile", round(cv_data.quantile(0.50), 3))
+                    col_cvd4.metric("75th percentile", round(cv_data.quantile(0.75), 3))
+
+                    st.write("**Suggested, data-driven thresholds** (33rd/67th percentile split — roughly a third of predictions in each tier, instead of the current wildly lopsided split)")
+                    suggested_reliable_cutoff = round(cv_data.quantile(0.33), 3)
+                    suggested_volatile_cutoff = round(cv_data.quantile(0.67), 3)
+                    col_sug1, col_sug2 = st.columns(2)
+                    col_sug1.metric("Suggested Reliable cutoff (CV <)", suggested_reliable_cutoff, help=f"Currently hardcoded at 0.20 — copied from QB stats, never validated for receivers")
+                    col_sug2.metric("Suggested Volatile cutoff (CV >)", suggested_volatile_cutoff, help=f"Currently hardcoded at 0.35 — copied from QB stats, never validated for receivers")
+
+                    # Show what the tier distribution WOULD look like with these new cutoffs
+                    def _simulated_tier(cv):
+                        if pd.isna(cv):
+                            return None
+                        if cv < suggested_reliable_cutoff:
+                            return "🟢 Reliable (simulated)"
+                        elif cv > suggested_volatile_cutoff:
+                            return "🔴 Volatile (simulated)"
+                        else:
+                            return "🟠 Moderate (simulated)"
+                    rec_df['Simulated Tier'] = rec_df['Share CV'].apply(_simulated_tier)
+                    sim_summary = rec_df.dropna(subset=['Simulated Tier']).groupby('Simulated Tier').agg(Predictions=('Receptions Error', 'count'), MAE=('Receptions Error', 'mean'), Bias=('Signed Residual', 'mean')).reset_index()
+                    sim_summary['MAE'] = sim_summary['MAE'].round(2)
+                    sim_summary['Bias'] = sim_summary['Bias'].round(2)
+                    st.write("**What the tiers would look like with these suggested cutoffs (not yet applied to the actual model — for comparison only)**")
+                    st.dataframe(sim_summary, use_container_width=True)
+                else:
+                    st.warning("Not enough CV data in this result set to compute reliable percentiles — run a larger backtest first.")
 
             st.markdown("---")
             st.subheader("🔍 Data Quality Diagnostics")
