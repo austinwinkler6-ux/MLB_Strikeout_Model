@@ -12,6 +12,23 @@ from supabase import create_client, Client
 from streamlit_cookies_controller import CookieController
 from scipy import stats
 
+# Real fix (July 2026) — nflreadpy's default download timeout is 30
+# seconds, genuinely too tight for a large parquet file (like a full
+# season's weekly player stats) on a slow or congested connection —
+# this was causing real, reproducible ReadTimeoutErrors that killed
+# entire backtest runs partway through. Bumped to 90 seconds, applied
+# once here at startup so every nflreadpy call in the app benefits,
+# rather than needing this set inside each individual function.
+# Wrapped defensively — if this specific nflreadpy version doesn't
+# support this config option, or the import itself fails for any
+# reason, we don't want a config-setting failure to break the whole app
+# before it even starts.
+try:
+    from nflreadpy.config import update_config as _update_nflreadpy_config
+    _update_nflreadpy_config(timeout=90)
+except Exception:
+    pass
+
 st.set_page_config(page_title="Model Metrics", page_icon="⚾", layout="wide")
 
 # ==================== GLOBAL DESIGN SYSTEM ====================
