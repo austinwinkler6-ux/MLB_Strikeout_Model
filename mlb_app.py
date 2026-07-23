@@ -6083,21 +6083,30 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
     about their true target share than a game where they saw 2.
 
     Honest, explicit scope limits for this v1 (flagged, not hidden):
-      - min_targets=2 as the 'meaningful role' threshold is a real,
-        untested design choice — WR/TE don't have a clean starter-ID
-        equivalent the way QBs do, so this hasn't been backtested or
-        validated at all yet.
+      - min_targets now correctly defaults to 0 (fixed round 3) —
+        filtering only happens if explicitly requested for testing.
+        Note this counts real STAT ROWS, not necessarily every game
+        actually played — some weekly player-stat datasets omit
+        players with no recorded stats entirely, so a "0 targets"
+        history may only capture games that produced a stat row, not a
+        true active/game-played denominator. Labeled honestly rather
+        than assumed equivalent (a real, still-open gap per external
+        review).
       - NO bias corrections of any kind — zero backtest history exists
         for this model. Any correction would be a guess, not evidence.
       - Opponent factor requires 'opponent_team' to exist as a real
         column in the underlying data — verified defensively in
         get_nfl_defense_reception_stats, but if it's missing, this
         degrades gracefully to no opponent signal rather than crashing.
-      - No live pipeline, no backtest UI yet — this is the modeling
-        core only, matching exactly how Completions started too.
+        use_opponent_factor now defaults to False (changed round 3) so
+        the fair A-vs-B architectural comparison is the default
+        behavior, not something a tester has to remember to set.
+      - No live pipeline, no odds/props fetching yet (a real backtest
+        UI DOES exist, with position/model/tier tracking — this line
+        was itself stale until this round's docstring cleanup).
       - No rookie/limited-sample tier yet.
-      - TE and WR are treated identically here — no position-specific
-        adjustment for the fact that TEs and WRs are typically covered
+      - TE, WR, RB, and FB are treated identically here — no position-
+        specific adjustment for the fact that they're typically covered
         and used differently. A real, plausible future refinement.
     """
     try:
@@ -6150,7 +6159,15 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
             else:
                 prior_rows['team_targets'] = pd.NA
 
+        # Real fix (July 2026, round 4, per external review) — explicit
+        # sort by season+week after concatenation. Prior rows were
+        # already being concatenated before current rows, so the order
+        # was PROBABLY correct, but relying on that implicitly (rather
+        # than sorting explicitly) is a real, avoidable dependency on
+        # upstream ordering that a future change could silently break.
         combined_rows = pd.concat([prior_rows, rows]).reset_index(drop=True) if not prior_rows.empty else rows
+        if not combined_rows.empty and 'season' in combined_rows.columns and 'week' in combined_rows.columns:
+            combined_rows = combined_rows.sort_values(['season', 'week']).reset_index(drop=True)
 
         # Real fix (July 2026, round 3, per external review, item 2) —
         # sample-size checks, last5/last10, confidence tier, and
@@ -6161,6 +6178,18 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         # Build the equivalent validated frame here too.
         valid_combined_rows = combined_rows.dropna(subset=['target_share', 'team_targets']) if not combined_rows.empty else combined_rows
         merge_match_rate = combined_rows['team_targets'].notna().mean() if not combined_rows.empty and 'team_targets' in combined_rows.columns else 0.0
+
+        # Real fix (July 2026, round 4, per external review) — catch
+        # rate's recency windows previously used combined_rows.tail(n)
+        # directly, which could include rows where the team_targets
+        # merge failed. Catch rate itself doesn't need team_targets (it
+        # only needs targets and receptions, both present without a
+        # merge), so this wasn't mathematically WRONG — but it meant
+        # target-share's "last 5" and catch-rate's "last 5" could
+        # silently refer to different sets of games, an inconsistency
+        # that should be intentional, not accidental. catch_rows is now
+        # its own explicitly-named, independently-valid history.
+        catch_rows = combined_rows.dropna(subset=['targets', 'receptions']) if not combined_rows.empty else combined_rows
 
         if len(valid_combined_rows) < 3:
             return None
@@ -6235,8 +6264,8 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         # comparing directly once real backtest data exists.
         current_catch_rate = _weighted_catch_rate(rows)
         prior_catch_rate = _weighted_catch_rate(prior_rows) if not prior_rows.empty else None
-        last5_catch_rate = _weighted_catch_rate(combined_rows.tail(5))
-        last10_catch_rate = _weighted_catch_rate(combined_rows.tail(10))
+        last5_catch_rate = _weighted_catch_rate(catch_rows.tail(5))
+        last10_catch_rate = _weighted_catch_rate(catch_rows.tail(10))
 
         if prior_weight > 0 and prior_catch_rate is not None:
             current_weight_cr = 1 - prior_weight
@@ -6256,17 +6285,20 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         opp_factor = 1.0
         opp_targets_allowed, opp_catch_rate_allowed = None, None
         if use_opponent_factor:
-            # Real fairness fix (July 2026, round 2, per external
-            # review) — Model A has an opponent factor, Model B doesn't.
-            # An immediate comparison with this always on would answer
-            # "Model A + opponent adjustment vs. Model B without one,"
-            # not the actual architectural question (attempts x target
-            # share x catch rate vs. completions x completion share).
-            # Default stays True (preserves existing behavior for
-            # anyone already using this), but the FIRST real A-vs-B
-            # comparison should explicitly set this False on Model A —
-            # then, once a winning architecture is picked, test the
-            # opponent factor as a separate ablation on the winner alone.
+            # Fairness fix (July 2026, round 2, updated round 3) — Model
+            # A originally had an opponent factor, Model B doesn't. A
+            # comparison with this on would answer "Model A + opponent
+            # adjustment vs. Model B without one," not the actual
+            # architectural question (attempts x target share x catch
+            # rate vs. completions x completion share). Default is now
+            # False (changed in round 3, per external review, since
+            # defaulting to True and relying on a tester to remember to
+            # turn it off was the same class of mistake as an earlier
+            # Completions bug where Streamlit widgets silently overrode
+            # validated defaults) — the fair comparison is now the
+            # default behavior, not something to remember. Once a
+            # winning architecture is picked, test the opponent factor
+            # as a separate ablation on the winner alone.
             opp_targets_allowed, opp_catch_rate_allowed = get_nfl_opponent_reception_factor(season, opponent, as_of_week)
             baselines = get_nfl_league_baselines(season, as_of_week)
             if opp_catch_rate_allowed is not None and pd.notna(opp_catch_rate_allowed):
@@ -6342,8 +6374,10 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
     share calculation and volume source differ between A and B.
 
     Same honest scope limits as Model A: zero backtest history, no
-    corrections attempted, min_targets=2 is an untested guess, no
-    rookie tier, TE/WR treated identically."""
+    corrections attempted, no rookie tier, TE/WR/RB/FB treated
+    identically. min_targets now correctly defaults to 0 (fixed round
+    3) — filtering only happens if a caller explicitly requests it for
+    testing."""
     try:
         completions_result = run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=as_of_week)
         if not completions_result:
@@ -9521,11 +9555,35 @@ elif nav == "🧪 Backtest" and is_admin:
                                 'Oracle Efficiency Error': round(abs(oracle_efficiency_rec - actual_receptions), 1),
                             })
                         else:
-                            # Model B's real, genuinely different decomposition: completions stage vs share stage.
+                            # Model B's own real oracle decomposition
+                            # (per external review — Model B needs the
+                            # same diagnostic power Model A already has,
+                            # not a weaker comparison). Needs the
+                            # ACTUAL team completions for this specific
+                            # game to compute actual_completion_share —
+                            # looked up directly from the QB rows already
+                            # loaded for this backtest, same aggregation
+                            # get_nfl_team_game_completions itself uses.
+                            actual_team_completions_rows = weekly_stats_rec[(weekly_stats_rec['team'] == m['team']) & (weekly_stats_rec['week'] == m['week']) & (weekly_stats_rec['position'] == 'QB')]
+                            actual_team_completions = pd.to_numeric(actual_team_completions_rows['completions'], errors='coerce').sum() if not actual_team_completions_rows.empty else None
+                            projected_team_completions = result.get('projected_team_completions')
+                            projected_completion_share = result.get('projected_completion_share')
                             row_data.update({
-                                'Proj Team Completions': result.get('projected_team_completions'),
-                                'Proj Completion Share': result.get('projected_completion_share'),
+                                'Proj Team Completions': projected_team_completions,
+                                'Actual Team Completions': actual_team_completions,
+                                'Proj Completion Share': round(projected_completion_share, 3) if projected_completion_share is not None else None,
                             })
+                            if actual_team_completions is not None and actual_team_completions > 0:
+                                actual_completion_share = actual_receptions / actual_team_completions
+                                oracle_completions_rec = actual_team_completions * projected_completion_share
+                                oracle_share_rec = projected_team_completions * actual_completion_share
+                                row_data.update({
+                                    'Team Completions Error': round(abs(projected_team_completions - actual_team_completions), 1),
+                                    'Actual Completion Share': round(actual_completion_share, 3),
+                                    'Completion Share Error': round(abs(projected_completion_share - actual_completion_share), 3),
+                                    'Oracle Completions Error': round(abs(oracle_completions_rec - actual_receptions), 1),
+                                    'Oracle Share Error': round(abs(oracle_share_rec - actual_receptions), 1),
+                                })
 
                         results_rec.append(row_data)
                     st.session_state['rec_backtest_results'] = results_rec
@@ -9569,7 +9627,27 @@ elif nav == "🧪 Backtest" and is_admin:
                 else:
                     st.caption(f"**Bottleneck read:** targets-stage error ({oracle_efficiency_mae_rec}) is smaller than catch-rate error ({oracle_volume_mae_rec}) — the CATCH-RATE projection is contributing more to the final error. Worth focusing improvement efforts on catch-rate specifically.")
             else:
-                st.write("**Model B's decomposition** (Completions stage vs. Completion Share stage) — a genuinely different breakdown than Model A's, since the two architectures don't share the same internal stages. No oracle diagnostics for this one yet — those would need a real, separate design since Model B doesn't have a 'targets' concept the same way.")
+                st.write("**Model B's full decomposition** (Team Completions stage vs. Completion Share stage) — its own real oracle diagnostics, per external review, matching the same diagnostic power Model A already has.")
+                if 'Team Completions Error' in rec_df.columns:
+                    team_comp_mae_rec = round(rec_df['Team Completions Error'].mean(), 2)
+                    comp_share_mae_rec = round(rec_df['Completion Share Error'].mean(), 4)
+                    oracle_completions_mae_rec = round(rec_df['Oracle Completions Error'].mean(), 2)
+                    oracle_share_mae_rec = round(rec_df['Oracle Share Error'].mean(), 2)
+
+                    col_rb1, col_rb2, col_rb3 = st.columns(3)
+                    col_rb1.metric("Team Completions MAE", team_comp_mae_rec, help="Error in the projected team completions volume (from the Completions model)")
+                    col_rb2.metric("Completion Share MAE", comp_share_mae_rec, help="Error in the completion-share projection specifically")
+                    col_rb3.metric("Receptions MAE", receptions_mae_rec, help="The real, final, blended error")
+
+                    col_rbo1, col_rbo2 = st.columns(2)
+                    col_rbo1.metric("Oracle: Actual Team Completions x Proj Share", oracle_completions_mae_rec, help="If team completions were known PERFECTLY, this is how good the completion-share model alone would be")
+                    col_rbo2.metric("Oracle: Proj Team Completions x Actual Share", oracle_share_mae_rec, help="If completion share were known PERFECTLY, this shows how much error comes from the upstream Completions model alone")
+                    if oracle_completions_mae_rec < oracle_share_mae_rec:
+                        st.caption(f"**Bottleneck read:** completion-share error ({oracle_completions_mae_rec}) is smaller than team-completions-stage error ({oracle_share_mae_rec}) — the upstream COMPLETIONS projection is contributing more to the final error. Improving Model B further likely means improving the Completions model, not completion-share estimation.")
+                    else:
+                        st.caption(f"**Bottleneck read:** team-completions-stage error ({oracle_share_mae_rec}) is smaller than completion-share error ({oracle_completions_mae_rec}) — the COMPLETION-SHARE projection is contributing more to the final error. Worth focusing improvement efforts on completion-share estimation specifically.")
+                else:
+                    st.caption("Oracle diagnostics unavailable for this result set — actual team completions couldn't be matched for some or all rows (check that weekly QB stats were available for the tested weeks).")
 
             st.markdown("---")
             st.write("**Receptions MAE by Position**")
