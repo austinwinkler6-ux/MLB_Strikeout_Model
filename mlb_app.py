@@ -9949,9 +9949,15 @@ elif nav == "🧪 Backtest" and is_admin:
                     col_cvd3.metric("50th percentile", round(cv_data.quantile(0.50), 3))
                     col_cvd4.metric("75th percentile", round(cv_data.quantile(0.75), 3))
 
-                    st.write("**Suggested, data-driven thresholds** (33rd/67th percentile split — roughly a third of predictions in each tier, instead of the current wildly lopsided split)")
-                    suggested_reliable_cutoff = round(cv_data.quantile(0.33), 3)
-                    suggested_volatile_cutoff = round(cv_data.quantile(0.67), 3)
+                    st.write("**Adjustable percentile split** — the 33rd/67th split gives a statistically even sample, but 'even' isn't necessarily 'correct.' A tighter, more exclusive Reliable tier (e.g. top 20%) may be more honest about which players are genuinely trustworthy, at the cost of a smaller sample. Test different splits directly.")
+                    col_pct1, col_pct2 = st.columns(2)
+                    with col_pct1:
+                        reliable_pctile = st.slider("Reliable = bottom X% CV (most stable)", 10, 50, 33, 1, key="rec_reliable_pctile") / 100
+                    with col_pct2:
+                        volatile_pctile = st.slider("Volatile = top X% CV (least stable)", 10, 50, 33, 1, key="rec_volatile_pctile") / 100
+
+                    suggested_reliable_cutoff = round(cv_data.quantile(reliable_pctile), 3)
+                    suggested_volatile_cutoff = round(cv_data.quantile(1 - volatile_pctile), 3)
                     col_sug1, col_sug2 = st.columns(2)
                     col_sug1.metric("Suggested Reliable cutoff (CV <)", suggested_reliable_cutoff, help=f"Currently hardcoded at 0.20 — copied from QB stats, never validated for receivers")
                     col_sug2.metric("Suggested Volatile cutoff (CV >)", suggested_volatile_cutoff, help=f"Currently hardcoded at 0.35 — copied from QB stats, never validated for receivers")
