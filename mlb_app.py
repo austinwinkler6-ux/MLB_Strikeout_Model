@@ -1797,8 +1797,18 @@ def get_or_generate_ai_insight(cache_date_str, sport, player_name, info, result)
     if cached and cached.get('ai_insight'):
         return cached['ai_insight'], cached.get('thesis_label')
 
-    thesis_label = classify_thesis(info, result, 'mlb_strikeouts' if sport == 'MLB' else ('nba_points' if sport == 'NBA' else 'nba_assists'))
-    insight = generate_ai_insight(player_name, info, result, 'mlb_strikeouts' if sport == 'MLB' else ('nba_points' if sport == 'NBA' else 'nba_assists'), thesis_label)
+    # Real fix (July 2026) — was a hardcoded ternary chain that only
+    # recognized 'MLB' and 'NBA', silently routing anything else
+    # (including all three new NFL models, once they existed) to
+    # 'nba_assists' by default. Would have generated genuinely wrong
+    # insight language for NFL bets without ever raising an error.
+    sport_model_key_map = {
+        'MLB': 'mlb_strikeouts', 'NBA': 'nba_points', 'NBA_AST': 'nba_assists',
+        'NFL': 'nfl_pass_attempts', 'NFL_COMPLETIONS': 'nfl_pass_completions', 'NFL_RECEPTIONS': 'nfl_receptions',
+    }
+    model_key = sport_model_key_map.get(sport, 'mlb_strikeouts')
+    thesis_label = classify_thesis(info, result, model_key)
+    insight = generate_ai_insight(player_name, info, result, model_key, thesis_label)
     if insight:
         store_ai_insight(cache_date_str, sport, player_name, insight, thesis_label)
     return insight, thesis_label
@@ -7318,7 +7328,7 @@ def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=
                 })
     return results
 
-def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session_key, player_label, sport_save_label):
+def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session_key, player_label, sport_save_label, model_sport_key):
     """Generic NFL model display (July 2026) — built to give NFL the
     same dropdown-driven, single-shared-display pattern NBA already has
     via run_nba_display, instead of NFL's three models needing three
@@ -7481,6 +7491,26 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
                 if info.get('Projection') is not None:
                     if st.button("📝 Log", key=f"{session_key}_log_{player_name}"):
                         st.session_state[f'{session_key}_log_modal_{player_name}'] = True
+
+            if info.get('Projection') is not None and player_name in player_results:
+                result = player_results[player_name]
+                direction = info.get('Direction', 'over')
+                why_lines = generate_why(info, result, direction, model_sport_key)
+                if why_lines:
+                    with st.expander(f"💡 Why this bet? — {player_name}"):
+                        for line in why_lines:
+                            st.markdown(line)
+                        if ANTHROPIC_API_KEY:
+                            if st.button("🧠 Generate Model Insight", key=f"{session_key}_insight_btn_{player_name}"):
+                                with st.spinner("🧠 Generating model insight..."):
+                                    insight, thesis_label = get_or_generate_ai_insight(
+                                        mm_today_str(), sport_save_label, player_name, info, result
+                                    )
+                                if insight:
+                                    render_ai_insight_block(insight, thesis_label, result, model_sport_key)
+                                else:
+                                    st.caption("Couldn't generate an insight right now.")
+                    render_mm_stake_block(info, result, bankroll, risk_style)
 
             if st.session_state.get(f'{session_key}_log_modal_{player_name}'):
                 with st.expander(f"📝 Log Bet — {player_name}", expanded=True):
@@ -8142,260 +8172,12 @@ elif nav == "🏈 NFL Models":
     nfl_model_select = st.selectbox("Select Model", ["NFL Pass Attempts", "NFL Pass Completions", "NFL Receptions"])
 
     if nfl_model_select == "NFL Pass Attempts":
-        run_nfl_display('all_qbs', load_nfl_props_data, run_all_nfl_projections, run_single_nfl_attempts, 'nfl_attempts', 'QB', 'NFL')
+        run_nfl_display('all_qbs', load_nfl_props_data, run_all_nfl_projections, run_single_nfl_attempts, 'nfl_attempts', 'QB', 'NFL', 'nfl_pass_attempts')
     elif nfl_model_select == "NFL Pass Completions":
-        run_nfl_display('all_qbs_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections, run_single_nfl_completions, 'nfl_completions', 'QB', 'NFL_COMPLETIONS')
+        run_nfl_display('all_qbs_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections, run_single_nfl_completions, 'nfl_completions', 'QB', 'NFL_COMPLETIONS', 'nfl_pass_completions')
     else:
-        run_nfl_display('all_receivers', load_nfl_receptions_props_data, run_all_nfl_receptions_projections, run_single_nfl_receptions, 'nfl_receptions', 'Player', 'NFL_RECEPTIONS')
+        run_nfl_display('all_receivers', load_nfl_receptions_props_data, run_all_nfl_receptions_projections, run_single_nfl_receptions, 'nfl_receptions', 'Player', 'NFL_RECEPTIONS', 'nfl_receptions')
 
-    st.markdown("---")
-    if is_admin:
-        with st.expander("🔧 Admin: Diagnostics & Backtest Tools", expanded=False):
-            st.info("🔧 **Admin-only build-in-progress view.** NFL data layer uses `nflreadpy` — the actively-maintained nflverse package. We initially tried `nfl_data_py` (a different, older package with a similar name) and hit a 404 — turned out nflverse officially deprecated it in favor of nflreadpy, so its hardcoded data URLs are permanently stale and will never be fixed. Since this can't be tested from the development sandbox (no internet access there), this panel verifies the REAL schema live, in this deployed app, before any projection formulas get built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
-
-            st.subheader("🧪 Live Pipeline Safety Check (Completions & Receptions)")
-            st.caption("Built July 2026, before the season starts — real live NFL props can't be tested until games are actually posted. This can't confirm the pipelines work correctly end to end (that genuinely has to wait for real games), but it CAN confirm they fail gracefully during the off-season instead of crashing — a real, useful check even with zero live data available.")
-            if st.button("Test Completions & Receptions loaders live", key="nfl_live_pipeline_safety_check"):
-                col_sc1, col_sc2 = st.columns(2)
-                with col_sc1:
-                    st.write("**load_nfl_completions_props_data()**")
-                    try:
-                        comp_props = load_nfl_completions_props_data()
-                        if comp_props:
-                            st.success(f"✅ Got {len(comp_props)} QB(s) with real posted lines")
-                            st.write(list(comp_props.keys())[:10])
-                        else:
-                            real_error = st.session_state.get('_nfl_completions_props_load_error')
-                            if real_error:
-                                st.warning(f"Returned empty with a real error captured: {real_error}")
-                            else:
-                                st.info("Returned empty, no exception — expected during the off-season (no games posted, so nothing to find). No crash.")
-                    except Exception as e:
-                        st.error(f"❌ Real, unhandled exception — this is a genuine bug, not expected off-season behavior: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
-                with col_sc2:
-                    st.write("**load_nfl_receptions_props_data()**")
-                    try:
-                        rec_props = load_nfl_receptions_props_data()
-                        if rec_props:
-                            st.success(f"✅ Got {len(rec_props)} player(s) with real posted lines")
-                            st.write(list(rec_props.keys())[:10])
-                        else:
-                            real_error = st.session_state.get('_nfl_receptions_props_load_error')
-                            if real_error:
-                                st.warning(f"Returned empty with a real error captured: {real_error}")
-                            else:
-                                st.info("Returned empty, no exception — expected during the off-season (no games posted, so nothing to find). No crash.")
-                    except Exception as e:
-                        st.error(f"❌ Real, unhandled exception — this is a genuine bug, not expected off-season behavior: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
-                st.caption("⚠️ Reminder: an empty result here is expected and fine right now. The real test — confirming a genuine posted line loads correctly, projects correctly, and logs correctly — has to wait until the season actually starts and real props exist to run against.")
-
-            st.subheader("🔍 Schema Verification (do this before anything else)")
-            nfl_test_year = st.number_input("Season to test", value=2025, key="nfl_schema_test_year")
-
-            if st.button("Check load_player_stats() Schema"):
-                try:
-                    import nflreadpy as nfl
-                    weekly_df = nfl.load_player_stats([int(nfl_test_year)]).to_pandas()
-                    st.success(f"✅ Got {len(weekly_df)} rows back")
-                    st.write("Columns:", weekly_df.columns.tolist())
-                    st.dataframe(weekly_df.head(5))
-                except ImportError as e:
-                    st.error(f"❌ Real ImportError: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-            if st.button("Check load_pbp() Schema (for PROE/pace — this is a bigger, slower download)"):
-                try:
-                    import nflreadpy as nfl
-                    pbp_df = nfl.load_pbp([int(nfl_test_year)]).to_pandas()
-                    st.success(f"✅ Got {len(pbp_df)} rows back")
-                    st.write(f"Total columns: {len(pbp_df.columns)}")
-                    relevant_cols = [c for c in pbp_df.columns if any(k in c.lower() for k in ['pass', 'xpass', 'epa', 'wp', 'down', 'qtr', 'score_differential'])]
-                    st.write("Columns relevant to Opportunity/PROE specifically:", relevant_cols)
-                    st.dataframe(pbp_df[relevant_cols].head(5) if relevant_cols else pbp_df.head(5))
-                except ImportError:
-                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-            st.caption("Schedules and injuries function names weren't explicitly confirmed in research (only load_player_stats/load_pbp/load_team_stats were) — these two buttons try the most likely name matching nflreadpy's established 'load_' convention, and will show a clear error if the real name is different.")
-            if st.button("Check load_schedules() Schema (for spread, dome/outdoor, weather)"):
-                try:
-                    import nflreadpy as nfl
-                    sched_df = nfl.load_schedules([int(nfl_test_year)]).to_pandas()
-                    st.success(f"✅ Got {len(sched_df)} rows back")
-                    st.write("Columns:", sched_df.columns.tolist())
-                    st.dataframe(sched_df.head(5))
-                except ImportError:
-                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-                except AttributeError as e:
-                    st.error(f"❌ Function name guess was wrong: {e}. Run `import nflreadpy as nfl; print([f for f in dir(nfl) if f.startswith('load_')])` somewhere to see the real function list.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-            if st.button("Check load_injuries() Schema"):
-                try:
-                    import nflreadpy as nfl
-                    inj_df = nfl.load_injuries([int(nfl_test_year)]).to_pandas()
-                    st.success(f"✅ Got {len(inj_df)} rows back")
-                    st.write("Columns:", inj_df.columns.tolist())
-                    st.dataframe(inj_df.head(5))
-                except ImportError:
-                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-                except AttributeError as e:
-                    st.error(f"❌ Function name guess was wrong: {e}. Run the dir() check above to see the real function list.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-            if st.button("📋 List EVERY real load_ function available (use this instead of guessing)"):
-                try:
-                    import nflreadpy as nfl
-                    real_functions = [f for f in dir(nfl) if f.startswith('load_')]
-                    st.success(f"✅ Found {len(real_functions)} real functions")
-                    st.write(real_functions)
-                except ImportError:
-                    st.error("❌ nflreadpy isn't installed yet — add `nflreadpy` to requirements.txt and redeploy.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-
-            if st.button("🔍 Verify Starter-ID Join (checks the weekly-stats vs schedules ID match)"):
-                try:
-                    test_season = int(nfl_test_year)
-                    weekly_sample = get_nfl_player_stats([test_season])
-                    weekly_sample = weekly_sample[weekly_sample['position'] == 'QB'].head(3)
-                    schedules_sample = get_nfl_schedules([test_season]).head(3)
-                    st.write("Sample weekly stats player_id + game_id values:")
-                    st.dataframe(weekly_sample[['player_display_name', 'player_id', 'game_id', 'week']])
-                    st.write("Sample schedules home_qb_id/away_qb_id + game_id values:")
-                    st.dataframe(schedules_sample[['game_id', 'home_qb_id', 'away_qb_id', 'week']])
-                    starter_ids = get_nfl_starter_game_ids(test_season)
-                    st.write(f"Built {len(starter_ids)} (game_id, qb_id) starter pairs from schedules")
-                    all_qb_rows = get_nfl_player_stats([test_season])
-                    all_qb_rows = all_qb_rows[all_qb_rows['position'] == 'QB']
-                    matched = all_qb_rows.apply(lambda r: (r['game_id'], r['player_id']) in starter_ids, axis=1).sum()
-                    st.write(f"Of {len(all_qb_rows)} total QB weekly rows, {matched} matched a real starter pair.")
-                    if matched == 0:
-                        st.error("❌ Zero matches — the ID spaces genuinely don't line up. The model will correctly fall back to the attempts>=15 threshold, but the real starter-ID join isn't usable as-is.")
-                    elif matched < len(all_qb_rows) * 0.5:
-                        st.warning(f"⚠️ Only {round(matched/len(all_qb_rows)*100, 1)}% matched — worth a closer look, though this could also just be a small early-season sample.")
-                    else:
-                        st.success(f"✅ {round(matched/len(all_qb_rows)*100, 1)}% matched — the join looks like it's genuinely working.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-            st.markdown("---")
-            st.subheader("📏 Theoretical Accuracy Floor")
-            st.caption("What's the best possible MAE, even with a 'perfect hindsight' predictor that already knows each QB's TRUE full-season attempts distribution (something no real, pre-game model could ever have)? This tells us how much of our real model's error is genuinely irreducible game-to-game variance versus real room a better model could still close. Shows both mean and median — median is the mathematically correct constant benchmark for MAE specifically (MAE is minimized by the median, not the mean, which is only optimal for squared error) — a real correction caught via external review, since the original version only computed the mean-based floor.")
-            floor_season = st.selectbox("Season", ["2024", "2025"], key="nfl_floor_season")
-            floor_week_start = st.number_input("Week range - start", min_value=1, max_value=18, value=1, key="nfl_floor_week_start")
-            floor_week_end = st.number_input("Week range - end", min_value=1, max_value=18, value=18, key="nfl_floor_week_end")
-
-            if st.button("📐 Compute Theoretical Floor"):
-                try:
-                    weekly_floor = get_nfl_player_stats([int(floor_season)])
-                    qb_floor = weekly_floor[weekly_floor['position'] == 'QB'].copy()
-                    qb_floor['attempts'] = pd.to_numeric(qb_floor['attempts'], errors='coerce').fillna(0)
-                    if 'season_type' in qb_floor.columns:
-                        qb_floor = qb_floor[qb_floor['season_type'] == 'REG']
-                    qb_floor = qb_floor[qb_floor['attempts'] >= 15]  # real starts only
-                    qb_floor = qb_floor[(qb_floor['week'] >= int(floor_week_start)) & (qb_floor['week'] <= int(floor_week_end))]
-
-                    floor_errors_mean = []
-                    floor_errors_median = []
-                    week_excluded_errors = []
-                    for qb_name, group in qb_floor.groupby('player_display_name'):
-                        if len(group) < 3:
-                            continue
-                        true_season_avg = group['attempts'].mean()  # deliberate hindsight — optimal for squared error, NOT MAE
-                        true_season_median = group['attempts'].median()  # deliberate hindsight — the MATHEMATICALLY CORRECT constant benchmark for MAE
-                        for _, row in group.iterrows():
-                            floor_errors_mean.append(abs(true_season_avg - row['attempts']))
-                            floor_errors_median.append(abs(true_season_median - row['attempts']))
-                        # Leak-free version: for each game, use the median of all OTHER games only
-                        # (excluding the one being "predicted") — a more honest, still-hindsight-based
-                        # but slightly more realistic constant baseline than using the full season
-                        # including the game itself.
-                        for idx, row in group.iterrows():
-                            other_games = group.drop(idx)
-                            if len(other_games) >= 2:
-                                week_excluded_errors.append(abs(other_games['attempts'].median() - row['attempts']))
-
-                    if floor_errors_mean:
-                        floor_mae_mean = round(sum(floor_errors_mean) / len(floor_errors_mean), 2)
-                        floor_mae_median = round(sum(floor_errors_median) / len(floor_errors_median), 2)
-                        floor_mae_excluded = round(sum(week_excluded_errors) / len(week_excluded_errors), 2) if week_excluded_errors else None
-                        col_f1, col_f2, col_f3 = st.columns(3)
-                        col_f1.metric("Full-season MEAN floor", floor_mae_mean, help="Hindsight, optimal for squared error — NOT the right benchmark for MAE")
-                        col_f2.metric("Full-season MEDIAN floor", floor_mae_median, help=f"Hindsight, the mathematically correct constant benchmark for MAE. Based on {len(floor_errors_median)} real QB-games")
-                        col_f3.metric("Week-excluded MEDIAN floor", floor_mae_excluded, help="Same as median floor, but excludes the game itself from its own baseline — a more honest constant benchmark")
-                        st.caption(f"Our real model's actual MAE this season was roughly ~7. Compare against the MEDIAN floor specifically (not mean) to see how much genuine room is left versus irreducible variance.")
-                    else:
-                        st.warning("Not enough real starts found in this range to compute a floor.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-
-            st.subheader("🏈 Pass Attempts Model (v1) — Live Test")
-            st.caption("v1 = QB's own recency-blended attempts x team pace factor x opponent pass-funnel factor. Deliberately excludes completion% and any accuracy-related variable — this model answers ONE question: how many times will this team throw. Test this before we build Completions/Receptions on top of it.")
-
-            nfl_qb_name = st.text_input("QB full name (must match nflverse's player_display_name exactly)", value="Patrick Mahomes", key="nfl_qb_test_name")
-            nfl_qb_team = st.text_input("QB's team abbreviation", value="KC", key="nfl_qb_test_team")
-            nfl_qb_opponent = st.text_input("Opponent abbreviation", value="BUF", key="nfl_qb_test_opp")
-            nfl_test_season = st.number_input("Season", value=2025, key="nfl_pa_test_season")
-            nfl_test_as_of_week = st.number_input("as_of_week (leave 0 for 'use all available data, live mode')", value=0, min_value=0, max_value=22, key="nfl_pa_test_week")
-            nfl_debug_check = st.checkbox("Show real errors instead of generic None (debug)", key="nfl_debug_checkbox")
-
-            if st.button("Run Pass Attempts Projection"):
-                st.session_state['_nfl_debug_mode'] = nfl_debug_check
-                try:
-                    week_arg = int(nfl_test_as_of_week) if nfl_test_as_of_week > 0 else None
-                    pa_result = run_nfl_pass_attempts_projection(nfl_qb_name, nfl_qb_team, nfl_qb_opponent, int(nfl_test_season), as_of_week=week_arg)
-                    if pa_result:
-                        st.success(f"✅ Worked! Projected attempts: {pa_result['projection']}")
-
-                        st.write("**Prediction Breakdown** — Base, then each ACTIVE factor's real % impact (pace/PROE/QB-rush shown separately below as informational-only, since they're not applied to avoid double-counting)")
-                        base = pa_result['base_attempts']
-                        opp_pct = round((pa_result['opp_factor'] - 1) * 100, 1)
-                        vegas_pct = round((pa_result['vegas_factor'] - 1) * 100, 1)
-                        rest_pct = round(pa_result['rest_adj'] * 100, 1)
-                        weather_pct = round(pa_result['weather_adj'] * 100, 1)
-                        breakdown_rows = [
-                            {"Step": "Base (QB history)", "Value": base},
-                            {"Step": "Opponent", "Value": f"{'+' if opp_pct >= 0 else ''}{opp_pct}%"},
-                            {"Step": "Vegas (spread + total)", "Value": f"{'+' if vegas_pct >= 0 else ''}{vegas_pct}%"},
-                            {"Step": "Rest", "Value": f"{'+' if rest_pct >= 0 else ''}{rest_pct}%"},
-                            {"Step": "Weather", "Value": f"{'+' if weather_pct >= 0 else ''}{weather_pct}%"},
-                            {"Step": "Final Projection", "Value": pa_result['projection']},
-                        ]
-                        st.dataframe(pd.DataFrame(breakdown_rows), use_container_width=True, hide_index=True)
-                        st.caption(f"Informational only, NOT applied (avoids double-counting the QB's own established identity): pace_factor={pa_result['pace_factor']}, proe_factor={pa_result['proe_factor']}, qb_rush_factor={pa_result['qb_rush_factor']}")
-
-                        st.json(pa_result)
-                    else:
-                        st.warning("Returned None — either fewer than 3 games of history found for this QB/season/week combo, or the name didn't match exactly. Check debug mode + the schema buttons above to confirm the exact player_display_name spelling.")
-                except Exception as e:
-                    st.error(f"Real error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
-                finally:
-                    st.session_state['_nfl_debug_mode'] = False
 elif nav == "🏀 NBA Models":
     st.title("🏀 NBA Models")
     st.markdown("---")
