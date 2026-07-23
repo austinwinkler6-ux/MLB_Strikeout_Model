@@ -8153,6 +8153,46 @@ elif nav == "🏈 NFL Models":
         with st.expander("🔧 Admin: Diagnostics & Backtest Tools", expanded=False):
             st.info("🔧 **Admin-only build-in-progress view.** NFL data layer uses `nflreadpy` — the actively-maintained nflverse package. We initially tried `nfl_data_py` (a different, older package with a similar name) and hit a 404 — turned out nflverse officially deprecated it in favor of nflreadpy, so its hardcoded data URLs are permanently stale and will never be fixed. Since this can't be tested from the development sandbox (no internet access there), this panel verifies the REAL schema live, in this deployed app, before any projection formulas get built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
 
+            st.subheader("🧪 Live Pipeline Safety Check (Completions & Receptions)")
+            st.caption("Built July 2026, before the season starts — real live NFL props can't be tested until games are actually posted. This can't confirm the pipelines work correctly end to end (that genuinely has to wait for real games), but it CAN confirm they fail gracefully during the off-season instead of crashing — a real, useful check even with zero live data available.")
+            if st.button("Test Completions & Receptions loaders live", key="nfl_live_pipeline_safety_check"):
+                col_sc1, col_sc2 = st.columns(2)
+                with col_sc1:
+                    st.write("**load_nfl_completions_props_data()**")
+                    try:
+                        comp_props = load_nfl_completions_props_data()
+                        if comp_props:
+                            st.success(f"✅ Got {len(comp_props)} QB(s) with real posted lines")
+                            st.write(list(comp_props.keys())[:10])
+                        else:
+                            real_error = st.session_state.get('_nfl_completions_props_load_error')
+                            if real_error:
+                                st.warning(f"Returned empty with a real error captured: {real_error}")
+                            else:
+                                st.info("Returned empty, no exception — expected during the off-season (no games posted, so nothing to find). No crash.")
+                    except Exception as e:
+                        st.error(f"❌ Real, unhandled exception — this is a genuine bug, not expected off-season behavior: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+                with col_sc2:
+                    st.write("**load_nfl_receptions_props_data()**")
+                    try:
+                        rec_props = load_nfl_receptions_props_data()
+                        if rec_props:
+                            st.success(f"✅ Got {len(rec_props)} player(s) with real posted lines")
+                            st.write(list(rec_props.keys())[:10])
+                        else:
+                            real_error = st.session_state.get('_nfl_receptions_props_load_error')
+                            if real_error:
+                                st.warning(f"Returned empty with a real error captured: {real_error}")
+                            else:
+                                st.info("Returned empty, no exception — expected during the off-season (no games posted, so nothing to find). No crash.")
+                    except Exception as e:
+                        st.error(f"❌ Real, unhandled exception — this is a genuine bug, not expected off-season behavior: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+                st.caption("⚠️ Reminder: an empty result here is expected and fine right now. The real test — confirming a genuine posted line loads correctly, projects correctly, and logs correctly — has to wait until the season actually starts and real props exist to run against.")
+
             st.subheader("🔍 Schema Verification (do this before anything else)")
             nfl_test_year = st.number_input("Season to test", value=2025, key="nfl_schema_test_year")
 
