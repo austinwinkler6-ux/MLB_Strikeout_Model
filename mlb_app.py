@@ -4629,6 +4629,38 @@ def get_nfl_team_game_targets(seasons):
     return grouped
 
 @st.cache_data(ttl=86400)
+def get_team_targets_vs_attempts_diagnostic(seasons):
+    """Real validation diagnostic (July 2026) — team_targets (the
+    denominator used for Model A's derived_target_share, built by
+    summing every real pass-catcher's targets per team-game) is a
+    genuinely different aggregate than official team pass attempts
+    (from get_nfl_team_game_pace_proe's pass_attempts_official, built
+    from play-by-play). They should generally track closely — every
+    real target should correspond to a real attempt — but throwaways,
+    spikes, penalties, or provider definitional differences could cause
+    them to diverge. Per external review, this doesn't need to block
+    the first A-vs-B backtest (a validation tool, not a modeling bug),
+    but should exist before drawing strong conclusions from Model A
+    specifically. Returns a DataFrame with target_attempt_gap (targets
+    minus attempts) and target_attempt_ratio (targets / attempts) per
+    team-game, for direct inspection — a consistently small gap means
+    the denominator is trustworthy; a large or inconsistent one means
+    something about the aggregation needs a closer look."""
+    targets_data = get_nfl_team_game_targets(seasons)
+    attempts_data = get_nfl_team_game_pace_proe(seasons)
+    if targets_data.empty or attempts_data.empty:
+        return pd.DataFrame()
+    merged = targets_data.merge(
+        attempts_data[['team', 'season', 'week', 'pass_attempts_official']],
+        on=['team', 'season', 'week'], how='inner',
+    )
+    if merged.empty:
+        return merged
+    merged['target_attempt_gap'] = merged['team_targets'] - merged['pass_attempts_official']
+    merged['target_attempt_ratio'] = merged['team_targets'] / merged['pass_attempts_official'].replace(0, pd.NA)
+    return merged
+
+@st.cache_data(ttl=86400)
 def get_nfl_defense_reception_stats(seasons):
     """Defense-side reception stats for Receptions (July 2026) — built
     from weekly WR/TE box scores (NOT play-by-play, avoiding a position
@@ -9588,6 +9620,7 @@ elif nav == "🧪 Backtest" and is_admin:
             if st.button("🗑️ Clear All", key="rec_clear_all", use_container_width=True):
                 st.session_state['rec_backtest_results'] = []
                 st.session_state['rec_common_sample_results'] = []
+                st.session_state['_receptions_targets_missing_log'] = []
                 st.rerun()
         with col_run_rec:
             run_rec_clicked = st.button("🔍 Load Week(s) & Run Projections", key="rec_run_button", use_container_width=True)
@@ -9883,6 +9916,36 @@ elif nav == "🧪 Backtest" and is_admin:
             tier_summary_rec['MAE'] = tier_summary_rec['MAE'].round(2)
             tier_summary_rec['Bias'] = tier_summary_rec['Bias'].round(2)
             st.dataframe(tier_summary_rec, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("🔍 Data Quality Diagnostics")
+
+            # Missing-targets log (per external review — "just
+            # transparency"). Logged via session_state during
+            # get_wr_te_rows calls throughout this backtest run.
+            missing_log = st.session_state.get('_receptions_targets_missing_log', [])
+            total_missing = sum(entry['missing_count'] for entry in missing_log)
+            st.write(f"**Targets originally missing:** {total_missing if total_missing else 0} row(s)" + (f" across {len(missing_log)} player-season(s)" if missing_log else ""))
+            if missing_log:
+                st.caption("If this number is effectively zero, the fillna(0) in get_wr_te_rows was never really doing anything meaningful. If it's a real, non-trivial count, that's worth a closer look — does missing genuinely mean zero targets, or did the provider just not report a value for that game?")
+                st.dataframe(pd.DataFrame(missing_log), use_container_width=True)
+
+            # team_targets_vs_attempts_difference — a validation tool,
+            # not a modeling bug per external review, but worth checking
+            # before drawing strong conclusions from Model A specifically.
+            st.write("**team_targets vs. official team pass attempts**")
+            st.caption("team_targets (summed from every real pass-catcher's targets per team-game) should generally track closely with official pass attempts (from play-by-play) — they're conceptually the same volume, just aggregated two different ways. A consistently small gap means the denominator used for Model A's target_share is trustworthy; a large or inconsistent one means the aggregation needs a closer look.")
+            if st.button("Check team_targets vs. attempts", key="rec_targets_diagnostic_btn"):
+                with st.spinner("Comparing team_targets against official attempts..."):
+                    diag_df = get_team_targets_vs_attempts_diagnostic([int(backtest_season_rec)])
+                    if diag_df.empty:
+                        st.warning("Couldn't compute this diagnostic — one of the underlying aggregates came back empty.")
+                    else:
+                        col_d1, col_d2, col_d3 = st.columns(3)
+                        col_d1.metric("Average gap", round(diag_df['target_attempt_gap'].mean(), 2))
+                        col_d2.metric("Median gap", round(diag_df['target_attempt_gap'].median(), 2))
+                        col_d3.metric("Max gap", round(diag_df['target_attempt_gap'].abs().max(), 2))
+                        st.dataframe(diag_df.sort_values('target_attempt_gap', key=abs, ascending=False).head(20), use_container_width=True)
 
         if 'rec_backtest_skipped' in st.session_state and st.session_state['rec_backtest_skipped']:
             with st.expander(f"Skipped ({len(st.session_state['rec_backtest_skipped'])})"):
