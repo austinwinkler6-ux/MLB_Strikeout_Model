@@ -4586,6 +4586,25 @@ def get_nfl_opponent_completion_pct_allowed(season, opponent, as_of_week=None):
     return _compute(int(season) - 1, None)
 
 @st.cache_data(ttl=86400)
+def get_nfl_team_game_completions(seasons):
+    """Team-level completions per game (July 2026) — built for Receptions
+    Model B (completion-share challenger), aggregating QB weekly stats
+    by team+game rather than building a new PBP-based aggregate, since
+    this data is already cached and available. Used to compute a
+    receiver's real 'share of team completions' per game, the input
+    Model B needs that Model A (target share) doesn't."""
+    weekly = get_nfl_player_stats(seasons)
+    qb_rows = weekly[weekly['position'] == 'QB'].copy()
+    if qb_rows.empty:
+        return pd.DataFrame()
+    if 'season_type' in qb_rows.columns:
+        qb_rows = qb_rows[qb_rows['season_type'] == 'REG']
+    if 'completions' in qb_rows.columns:
+        qb_rows['completions'] = pd.to_numeric(qb_rows['completions'], errors='coerce').fillna(0)
+    grouped = qb_rows.groupby(['team', 'season', 'week'], as_index=False).agg(team_completions=('completions', 'sum'))
+    return grouped
+
+@st.cache_data(ttl=86400)
 def get_nfl_defense_reception_stats(seasons):
     """Defense-side reception stats for Receptions (July 2026) — built
     from weekly WR/TE box scores (NOT play-by-play, avoiding a position
@@ -6130,6 +6149,134 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
             'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
             'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
             'target_share_weighting_used': target_share_weighting, 'bridge_schedule_used': bridge_schedule,
+        }
+    except Exception as e:
+        if st.session_state.get("_nfl_debug_mode"): raise
+        return None
+
+def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, season, as_of_week=None,
+                                            bridge_schedule='attempts', team_change_multiplier=0.0, min_targets=2):
+    """Receptions Model B (July 2026) — a genuine, separate challenger to
+    the Model A architecture above (team attempts x target share x catch
+    rate), per external review: instead of building on Attempts, build
+    on Completions (the more-validated of the two upstream models, with
+    5 real, confirmed corrections vs. Attempts' own separate set) and
+    use a receiver's share of TEAM COMPLETIONS directly, instead of the
+    two-stage target-share x catch-rate structure.
+
+    projected_receptions = projected_team_completions x completion_share
+
+    completion_share = player's receptions / team's total completions,
+    for each game — computed via get_nfl_team_game_completions (a real,
+    new team-level aggregate, since this wasn't needed for Model A).
+    Weighted by team_completions per game (a game where the team
+    completed 30 passes carries more real information about the
+    player's true share than a 15-completion game) — same attempt-
+    weighting lesson applied consistently across every model this
+    session, not just the first one it was validated on.
+
+    Deliberately does NOT replace Model A — both exist side by side and
+    should be backtested against each other on real data before
+    deciding anything, same discipline as every other genuine
+    architectural question resolved this session (CPOE, structural
+    blend, schedule-adjustment). 'The data will tell you,' not either
+    of us guessing which one sounds more elegant.
+
+    Reuses get_wr_te_rows and compute_receptions_prior_season_bridge
+    from Model A directly (the row-fetching and bridge logic don't
+    actually depend on which volume model sits upstream) — only the
+    share calculation and volume source differ between A and B.
+
+    Same honest scope limits as Model A: zero backtest history, no
+    corrections attempted, min_targets=2 is an untested guess, no
+    rookie tier, TE/WR treated identically."""
+    try:
+        completions_result = run_nfl_pass_completions_projection(qb_name, team, opponent, season, as_of_week=as_of_week)
+        if not completions_result:
+            return None
+        projected_team_completions = completions_result['projection']
+
+        rows, filter_used = get_wr_te_rows(player_name, season, as_of_week, min_targets=min_targets)
+        if 'receptions' not in rows.columns or 'team' not in rows.columns:
+            return None
+        rows = rows.sort_values('week')
+        games_this_season = len(rows)
+
+        team_completions_data = get_nfl_team_game_completions([int(season)])
+        if not team_completions_data.empty and not rows.empty:
+            rows = rows.merge(team_completions_data[['team', 'week', 'team_completions']], on=['team', 'week'], how='left')
+            rows['completion_share'] = rows['receptions'] / rows['team_completions'].replace(0, pd.NA)
+        else:
+            rows['team_completions'] = pd.NA
+            rows['completion_share'] = pd.NA
+
+        prior_rows, prior_weight, team_changed, prior_filter_used = compute_receptions_prior_season_bridge(
+            player_name, season, team, as_of_week, games_this_season,
+            bridge_schedule=bridge_schedule, team_change_multiplier=team_change_multiplier,
+        )
+        if not prior_rows.empty and 'team' in prior_rows.columns:
+            prior_team_completions_data = get_nfl_team_game_completions([int(season) - 1])
+            if not prior_team_completions_data.empty:
+                prior_rows = prior_rows.merge(prior_team_completions_data[['team', 'week', 'team_completions']], on=['team', 'week'], how='left')
+                prior_rows['completion_share'] = prior_rows['receptions'] / prior_rows['team_completions'].replace(0, pd.NA)
+            else:
+                prior_rows = pd.DataFrame()
+
+        combined_available = games_this_season + len(prior_rows)
+        if combined_available < 3:
+            return None
+
+        combined_rows = pd.concat([prior_rows, rows]).reset_index(drop=True) if not prior_rows.empty else rows
+
+        def _weighted_comp_share(df):
+            if df.empty or 'completion_share' not in df.columns:
+                return None
+            valid = df.dropna(subset=['completion_share', 'team_completions'])
+            if valid.empty:
+                return None
+            weights = valid['team_completions'].clip(lower=0.1)
+            if weights.sum() <= 0:
+                return valid['completion_share'].mean()
+            return (valid['completion_share'] * weights).sum() / weights.sum()
+
+        season_share = _weighted_comp_share(rows)
+        prior_share = _weighted_comp_share(prior_rows) if not prior_rows.empty else None
+        last5_share = _weighted_comp_share(combined_rows.tail(5))
+        last10_share = _weighted_comp_share(combined_rows.tail(10))
+
+        if prior_weight > 0 and prior_share is not None:
+            current_weight = 1 - prior_weight
+            base_share = (prior_share * prior_weight) + (season_share * current_weight) if season_share is not None else prior_share
+        else:
+            base_share = season_share
+
+        if base_share is None:
+            return None
+
+        blended_share = (base_share * 0.45) + (last5_share * 0.35) + (last10_share * 0.20) if last5_share is not None and last10_share is not None else base_share
+        projected_completion_share = max(0.02, min(0.45, blended_share))
+        projected_receptions = projected_team_completions * projected_completion_share
+
+        share_history = combined_rows['completion_share'].dropna().tail(10)
+        share_cv = (share_history.std() / share_history.mean()) if len(share_history) > 1 and share_history.mean() > 0 else 1.0
+        if len(combined_rows) < 4 or share_cv > 0.35:
+            confidence_tier = "🔴 Volatile — Consider Pass"
+        elif len(combined_rows) >= 8 and share_cv < 0.20:
+            confidence_tier = "🟢 Reliable"
+        else:
+            confidence_tier = "🟠 Moderate"
+
+        return {
+            'projection': round(projected_receptions, 1),
+            'projected_team_completions': round(projected_team_completions, 1),
+            'projected_completion_share': round(projected_completion_share, 3),
+            'base_completion_share': round(base_share, 3) if base_share is not None else None,
+            'confidence_tier': confidence_tier,
+            'completion_share_cv': round(share_cv, 3),
+            'games_used': len(combined_rows), 'games_this_season': games_this_season,
+            'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
+            'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
+            'bridge_schedule_used': bridge_schedule, 'model': 'B_completion_share',
         }
     except Exception as e:
         if st.session_state.get("_nfl_debug_mode"): raise
@@ -9071,7 +9218,14 @@ elif nav == "🧪 Backtest" and is_admin:
                         st.code(traceback.format_exc())
 
     elif backtest_sport == "NFL Receptions":
-        st.caption("Full error decomposition, same discipline as Completions — Targets MAE, Catch Rate MAE, and final Receptions MAE tracked separately, plus oracle diagnostics isolating how much error comes from the volume/share stage vs. the catch-rate stage. This model has ZERO backtest history until you run this for the first time — no corrections have been attempted yet, everything below is genuinely untested.")
+        st.caption("Full error decomposition, same discipline as Completions. This model has ZERO backtest history until you run this for the first time — no corrections have been attempted yet, everything below is genuinely untested.")
+        rec_model_choice = st.radio(
+            "Which architecture to test",
+            ["Model A — Attempts → Target Share → Catch Rate", "Model B — Completions → Completion Share"],
+            key="rec_model_choice",
+            help="A genuine, unresolved architectural question per external review — neither is assumed correct. Run both on the same weeks and compare their MAE directly."
+        )
+        st.caption("Model A uses target_share x catch_rate as two separate stages, built on the raw Attempts model. Model B uses a receiver's direct share of team COMPLETIONS, built on the more-validated Completions model. Run each separately with the same season/weeks, then compare their Receptions MAE side by side — 'the data will tell you,' not either of us guessing which sounds more elegant.")
         backtest_season_rec = st.selectbox("Season", ["2025", "2024", "2023"], key="backtest_season_rec")
         col_rwk1, col_rwk2 = st.columns(2)
         with col_rwk1:
@@ -9082,7 +9236,7 @@ elif nav == "🧪 Backtest" and is_admin:
         st.write("**Testable parameters** (all genuinely untested — this is the model's first real backtest)")
         col_rp1, col_rp2 = st.columns(2)
         with col_rp1:
-            rec_weighting = st.selectbox("Target share weighting", ["target_weighted", "equal"], key="rec_weighting_test")
+            rec_weighting = st.selectbox("Target share weighting (Model A only)", ["target_weighted", "equal"], key="rec_weighting_test")
             rec_bridge = st.selectbox("Bridge schedule", ["attempts", "slow_fade", "medium_fade"], key="rec_bridge_test")
         with col_rp2:
             rec_team_mult = st.slider("Team-change multiplier", 0.0, 1.0, 0.0, 0.05, key="rec_team_mult_test")
@@ -9140,11 +9294,17 @@ elif nav == "🧪 Backtest" and is_admin:
                         status_text_rec.text(f"Week {m['week']}: {m['player']} ({i+1} of {len(matchups_rec)})")
                         progress_bar_rec.progress((i+1) / len(matchups_rec))
                         try:
-                            result = run_nfl_receptions_projection(
-                                m['player'], m['team'], m['opponent'], m['qb'], int(backtest_season_rec), as_of_week=m['week'],
-                                target_share_weighting=rec_weighting, bridge_schedule=rec_bridge,
-                                team_change_multiplier=rec_team_mult, min_targets=rec_min_targets,
-                            )
+                            if rec_model_choice.startswith("Model A"):
+                                result = run_nfl_receptions_projection(
+                                    m['player'], m['team'], m['opponent'], m['qb'], int(backtest_season_rec), as_of_week=m['week'],
+                                    target_share_weighting=rec_weighting, bridge_schedule=rec_bridge,
+                                    team_change_multiplier=rec_team_mult, min_targets=rec_min_targets,
+                                )
+                            else:
+                                result = run_nfl_receptions_model_b_projection(
+                                    m['player'], m['team'], m['opponent'], m['qb'], int(backtest_season_rec), as_of_week=m['week'],
+                                    bridge_schedule=rec_bridge, team_change_multiplier=rec_team_mult, min_targets=rec_min_targets,
+                                )
                         except Exception as e:
                             skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': f'Exception: {e}'})
                             continue
@@ -9157,28 +9317,40 @@ elif nav == "🧪 Backtest" and is_admin:
                         if not result or pd.isna(actual_targets) or actual_targets <= 0:
                             skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "Insufficient history or zero actual targets"})
                             continue
-                        actual_catch_rate = actual_receptions / actual_targets
 
-                        projected_targets = result['projected_targets']
-                        projected_catch_rate = result['projected_catch_rate']
                         projected_receptions = result['projection']
-
-                        oracle_volume_rec = actual_targets * projected_catch_rate
-                        oracle_efficiency_rec = projected_targets * actual_catch_rate
-
-                        results_rec.append({
+                        row_data = {
                             'Player': m['player'], 'Week': m['week'], 'Matchup': f"{m['opponent']} @ {m['team']}",
-                            'Proj Targets': projected_targets, 'Actual Targets': actual_targets,
-                            'Targets Error': round(abs(projected_targets - actual_targets), 1),
-                            'Proj Catch Rate': round(projected_catch_rate, 3), 'Actual Catch Rate': round(actual_catch_rate, 3),
-                            'Catch Rate Error': round(abs(projected_catch_rate - actual_catch_rate), 3),
+                            'Model': result.get('model', 'A_target_share'),
                             'Proj Receptions': projected_receptions, 'Actual Receptions': actual_receptions,
                             'Receptions Error': round(abs(projected_receptions - actual_receptions), 1),
                             'Signed Residual': round(actual_receptions - projected_receptions, 1),
-                            'Oracle Volume Error': round(abs(oracle_volume_rec - actual_receptions), 1),
-                            'Oracle Efficiency Error': round(abs(oracle_efficiency_rec - actual_receptions), 1),
                             'Confidence Tier': result.get('confidence_tier'),
-                        })
+                        }
+
+                        if rec_model_choice.startswith("Model A"):
+                            # Model A's real decomposition: targets stage vs catch-rate stage.
+                            actual_catch_rate = actual_receptions / actual_targets
+                            projected_targets = result['projected_targets']
+                            projected_catch_rate = result['projected_catch_rate']
+                            oracle_volume_rec = actual_targets * projected_catch_rate
+                            oracle_efficiency_rec = projected_targets * actual_catch_rate
+                            row_data.update({
+                                'Proj Targets': projected_targets, 'Actual Targets': actual_targets,
+                                'Targets Error': round(abs(projected_targets - actual_targets), 1),
+                                'Proj Catch Rate': round(projected_catch_rate, 3), 'Actual Catch Rate': round(actual_catch_rate, 3),
+                                'Catch Rate Error': round(abs(projected_catch_rate - actual_catch_rate), 3),
+                                'Oracle Volume Error': round(abs(oracle_volume_rec - actual_receptions), 1),
+                                'Oracle Efficiency Error': round(abs(oracle_efficiency_rec - actual_receptions), 1),
+                            })
+                        else:
+                            # Model B's real, genuinely different decomposition: completions stage vs share stage.
+                            row_data.update({
+                                'Proj Team Completions': result.get('projected_team_completions'),
+                                'Proj Completion Share': result.get('projected_completion_share'),
+                            })
+
+                        results_rec.append(row_data)
                     st.session_state['rec_backtest_results'] = results_rec
                     st.session_state['rec_backtest_skipped'] = skipped_rec
                     status_text_rec.text(f"✅ Done! {len(results_rec)} total projections, {len(skipped_rec)} skipped.")
@@ -9195,25 +9367,32 @@ elif nav == "🧪 Backtest" and is_admin:
             st.dataframe(rec_df, use_container_width=True)
 
             st.markdown("---")
-            st.subheader("📊 Error Decomposition")
-            targets_mae_rec = round(rec_df['Targets Error'].mean(), 2)
-            catch_rate_mae_rec = round(rec_df['Catch Rate Error'].mean(), 4)
             receptions_mae_rec = round(rec_df['Receptions Error'].mean(), 2)
-            oracle_volume_mae_rec = round(rec_df['Oracle Volume Error'].mean(), 2)
-            oracle_efficiency_mae_rec = round(rec_df['Oracle Efficiency Error'].mean(), 2)
+            model_used_rec = rec_df['Model'].iloc[0] if 'Model' in rec_df.columns and not rec_df.empty else 'unknown'
+            st.subheader(f"📊 Receptions MAE — {model_used_rec} — {receptions_mae_rec}")
+            st.caption("Run the OTHER model on the same season/weeks and compare this number directly — that's the real test of which architecture actually predicts better, not which one sounds more elegant.")
 
-            col_re1, col_re2, col_re3 = st.columns(3)
-            col_re1.metric("Targets MAE", targets_mae_rec, help="Error in the projected target volume (team attempts x target share)")
-            col_re2.metric("Catch Rate MAE", catch_rate_mae_rec, help="Error in the catch-rate projection specifically")
-            col_re3.metric("Receptions MAE", receptions_mae_rec, help="The real, final, blended error")
+            if 'Targets Error' in rec_df.columns:
+                st.write("**Model A's full decomposition** (Targets stage vs. Catch Rate stage)")
+                targets_mae_rec = round(rec_df['Targets Error'].mean(), 2)
+                catch_rate_mae_rec = round(rec_df['Catch Rate Error'].mean(), 4)
+                oracle_volume_mae_rec = round(rec_df['Oracle Volume Error'].mean(), 2)
+                oracle_efficiency_mae_rec = round(rec_df['Oracle Efficiency Error'].mean(), 2)
 
-            col_ro1, col_ro2 = st.columns(2)
-            col_ro1.metric("Oracle: Actual Targets x Proj Catch Rate", oracle_volume_mae_rec, help="If targets were known PERFECTLY, this is how good the catch-rate model alone would be")
-            col_ro2.metric("Oracle: Proj Targets x Actual Catch Rate", oracle_efficiency_mae_rec, help="If catch rate were known PERFECTLY, this shows how much error comes from the targets/share stage alone")
-            if oracle_volume_mae_rec < oracle_efficiency_mae_rec:
-                st.caption(f"**Bottleneck read:** catch-rate error ({oracle_volume_mae_rec}) is smaller than targets-stage error ({oracle_efficiency_mae_rec}) — the TARGET SHARE / VOLUME projection is contributing more to the final error. Improving Receptions further likely means improving target-share estimation, not catch-rate logic.")
+                col_re1, col_re2, col_re3 = st.columns(3)
+                col_re1.metric("Targets MAE", targets_mae_rec, help="Error in the projected target volume (team attempts x target share)")
+                col_re2.metric("Catch Rate MAE", catch_rate_mae_rec, help="Error in the catch-rate projection specifically")
+                col_re3.metric("Receptions MAE", receptions_mae_rec, help="The real, final, blended error")
+
+                col_ro1, col_ro2 = st.columns(2)
+                col_ro1.metric("Oracle: Actual Targets x Proj Catch Rate", oracle_volume_mae_rec, help="If targets were known PERFECTLY, this is how good the catch-rate model alone would be")
+                col_ro2.metric("Oracle: Proj Targets x Actual Catch Rate", oracle_efficiency_mae_rec, help="If catch rate were known PERFECTLY, this shows how much error comes from the targets/share stage alone")
+                if oracle_volume_mae_rec < oracle_efficiency_mae_rec:
+                    st.caption(f"**Bottleneck read:** catch-rate error ({oracle_volume_mae_rec}) is smaller than targets-stage error ({oracle_efficiency_mae_rec}) — the TARGET SHARE / VOLUME projection is contributing more to the final error. Improving Receptions further likely means improving target-share estimation, not catch-rate logic.")
+                else:
+                    st.caption(f"**Bottleneck read:** targets-stage error ({oracle_efficiency_mae_rec}) is smaller than catch-rate error ({oracle_volume_mae_rec}) — the CATCH-RATE projection is contributing more to the final error. Worth focusing improvement efforts on catch-rate specifically.")
             else:
-                st.caption(f"**Bottleneck read:** targets-stage error ({oracle_efficiency_mae_rec}) is smaller than catch-rate error ({oracle_volume_mae_rec}) — the CATCH-RATE projection is contributing more to the final error. Worth focusing improvement efforts on catch-rate specifically.")
+                st.write("**Model B's decomposition** (Completions stage vs. Completion Share stage) — a genuinely different breakdown than Model A's, since the two architectures don't share the same internal stages. No oracle diagnostics for this one yet — those would need a real, separate design since Model B doesn't have a 'targets' concept the same way.")
 
             st.markdown("---")
             st.write("**Receptions MAE + Bias by Confidence Tier**")
