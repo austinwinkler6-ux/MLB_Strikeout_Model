@@ -6192,9 +6192,37 @@ def run_nfl_receptions_projection(player_name, team, opponent, qb_name, season, 
         if base_share is None:
             return None
 
-        base_catch_rate = _weighted_catch_rate(combined_rows.tail(10))
-        if base_catch_rate is None:
+        # Real fix (July 2026, round 2, per external review) — catch
+        # rate previously just used combined_rows.tail(10) regardless of
+        # the prior-season bridge weight, meaning early in a season it
+        # silently mixed prior and current games together WITHOUT the
+        # same explicit weighting logic target_share gets. Now bridged
+        # the same way: current and prior catch rates computed
+        # separately, blended by the real prior_weight, then combined
+        # with last5/last10 — using the reviewer's suggested starting
+        # weights (60/25/15, not target_share's 45/35/20), since catch
+        # rate is generally noisier at the receiver level than QB
+        # completion% (especially for low-target players), so leaning
+        # more on the full bridged season average makes sense as a
+        # starting hypothesis. These weights are untested and worth
+        # comparing directly once real backtest data exists.
+        current_catch_rate = _weighted_catch_rate(rows)
+        prior_catch_rate = _weighted_catch_rate(prior_rows) if not prior_rows.empty else None
+        last5_catch_rate = _weighted_catch_rate(combined_rows.tail(5))
+        last10_catch_rate = _weighted_catch_rate(combined_rows.tail(10))
+
+        if prior_weight > 0 and prior_catch_rate is not None:
+            current_weight_cr = 1 - prior_weight
+            bridged_catch_rate = (prior_catch_rate * prior_weight) + (current_catch_rate * current_weight_cr) if current_catch_rate is not None else prior_catch_rate
+        else:
+            bridged_catch_rate = current_catch_rate
+
+        if bridged_catch_rate is None:
+            bridged_catch_rate = last10_catch_rate  # fallback if the bridged version genuinely has nothing
+        if bridged_catch_rate is None:
             return None
+
+        base_catch_rate = (bridged_catch_rate * 0.60) + (last5_catch_rate * 0.25) + (last10_catch_rate * 0.15) if last5_catch_rate is not None and last10_catch_rate is not None else bridged_catch_rate
 
         blended_share = (base_share * 0.45) + (last5_share * 0.35) + (last10_share * 0.20) if last5_share is not None and last10_share is not None else base_share
 
@@ -6320,11 +6348,21 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
             else:
                 prior_rows = pd.DataFrame()
 
-        combined_available = games_this_season + len(prior_rows)
-        if combined_available < 3:
-            return None
-
         combined_rows = pd.concat([prior_rows, rows]).reset_index(drop=True) if not prior_rows.empty else rows
+
+        # Real fix (July 2026, round 2, per external review) — the
+        # minimum-sample check, last5/last10, confidence tier, and
+        # games_used were all previously computed against combined_rows
+        # BEFORE removing rows where the team_completions merge actually
+        # failed (missing completion_share). That could overstate real
+        # sample size and confidence — a row that never got a valid
+        # completion_share shouldn't count as real evidence. Filter to
+        # valid rows FIRST, then use that consistently everywhere below.
+        valid_combined_rows = combined_rows.dropna(subset=['completion_share', 'team_completions']) if not combined_rows.empty else combined_rows
+        merge_match_rate = combined_rows['team_completions'].notna().mean() if not combined_rows.empty and 'team_completions' in combined_rows.columns else 0.0
+
+        if len(valid_combined_rows) < 3:
+            return None
 
         def _weighted_comp_share(df):
             if df.empty or 'completion_share' not in df.columns:
@@ -6339,8 +6377,8 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
 
         season_share = _weighted_comp_share(rows)
         prior_share = _weighted_comp_share(prior_rows) if not prior_rows.empty else None
-        last5_share = _weighted_comp_share(combined_rows.tail(5))
-        last10_share = _weighted_comp_share(combined_rows.tail(10))
+        last5_share = _weighted_comp_share(valid_combined_rows.tail(5))
+        last10_share = _weighted_comp_share(valid_combined_rows.tail(10))
 
         if prior_weight > 0 and prior_share is not None:
             current_weight = 1 - prior_weight
@@ -6355,11 +6393,11 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
         projected_completion_share = max(0.02, min(0.45, blended_share))
         projected_receptions = projected_team_completions * projected_completion_share
 
-        share_history = combined_rows['completion_share'].dropna().tail(10)
+        share_history = valid_combined_rows['completion_share'].tail(10)
         share_cv = (share_history.std() / share_history.mean()) if len(share_history) > 1 and share_history.mean() > 0 else 1.0
-        if len(combined_rows) < 4 or share_cv > 0.35:
+        if len(valid_combined_rows) < 4 or share_cv > 0.35:
             confidence_tier = "🔴 Volatile — Consider Pass"
-        elif len(combined_rows) >= 8 and share_cv < 0.20:
+        elif len(valid_combined_rows) >= 8 and share_cv < 0.20:
             confidence_tier = "🟢 Reliable"
         else:
             confidence_tier = "🟠 Moderate"
@@ -6370,8 +6408,9 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
             'projected_completion_share': round(projected_completion_share, 3),
             'base_completion_share': round(base_share, 3) if base_share is not None else None,
             'confidence_tier': confidence_tier,
+            'merge_match_rate': round(merge_match_rate, 3),
             'completion_share_cv': round(share_cv, 3),
-            'games_used': len(combined_rows), 'games_this_season': games_this_season,
+            'games_used': len(valid_combined_rows), 'games_this_season': games_this_season,
             'prior_season_weight': round(prior_weight, 2), 'team_changed': team_changed,
             'filter_used': filter_used, 'prior_filter_used': prior_filter_used,
             'bridge_schedule_used': bridge_schedule, 'model': 'B_completion_share',
