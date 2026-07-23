@@ -9429,11 +9429,11 @@ elif nav == "🧪 Backtest" and is_admin:
         st.caption("Full error decomposition, same discipline as Completions. This model has ZERO backtest history until you run this for the first time — no corrections have been attempted yet, everything below is genuinely untested.")
         rec_model_choice = st.radio(
             "Which architecture to test",
-            ["Model A — Attempts → Target Share → Catch Rate", "Model B — Completions → Completion Share"],
+            ["Model A — Attempts → Target Share → Catch Rate", "Model B — Completions → Completion Share", "Both — common-sample comparison"],
             key="rec_model_choice",
-            help="A genuine, unresolved architectural question per external review — neither is assumed correct. Run both on the same weeks and compare their MAE directly."
+            help="A genuine, unresolved architectural question per external review — neither is assumed correct. 'Both' runs A and B on the EXACT same player-games in one pass and reports common-sample MAE — the fairest real comparison, since neither model can improve its MAE just by skipping harder cases the other model handled."
         )
-        st.caption("Model A uses target_share x catch_rate as two separate stages, built on the raw Attempts model. Model B uses a receiver's direct share of team COMPLETIONS, built on the more-validated Completions model. Run each separately with the same season/weeks, then compare their Receptions MAE side by side — 'the data will tell you,' not either of us guessing which sounds more elegant.")
+        st.caption("Model A uses target_share x catch_rate as two separate stages, built on the raw Attempts model. Model B uses a receiver's direct share of team COMPLETIONS, built on the more-validated Completions model. Per external review: don't compare each model only on the rows it successfully projects — use 'Both' for the fair, common-sample test.")
         backtest_season_rec = st.selectbox("Season", ["2025", "2024", "2023"], key="backtest_season_rec")
         col_rwk1, col_rwk2 = st.columns(2)
         with col_rwk1:
@@ -9459,6 +9459,7 @@ elif nav == "🧪 Backtest" and is_admin:
         with col_clear_rec:
             if st.button("🗑️ Clear All", key="rec_clear_all", use_container_width=True):
                 st.session_state['rec_backtest_results'] = []
+                st.session_state['rec_common_sample_results'] = []
                 st.rerun()
         with col_run_rec:
             run_rec_clicked = st.button("🔍 Load Week(s) & Run Projections", key="rec_run_button", use_container_width=True)
@@ -9500,9 +9501,59 @@ elif nav == "🧪 Backtest" and is_admin:
                                         'qb': g[qb_col], 'week': wk, 'position': prow.get('position'),
                                     })
 
+                    common_results_rec = []
                     for i, m in enumerate(matchups_rec):
                         status_text_rec.text(f"Week {m['week']}: {m['player']} ({i+1} of {len(matchups_rec)})")
                         progress_bar_rec.progress((i+1) / len(matchups_rec))
+
+                        actual_row = weekly_stats_rec[(weekly_stats_rec['player_display_name'] == m['player']) & (weekly_stats_rec['week'] == m['week']) & (weekly_stats_rec['position'].isin(RECEPTION_POSITIONS))]
+                        if actual_row.empty:
+                            skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "No stats row found"})
+                            continue
+                        actual_targets = pd.to_numeric(actual_row['targets'].iloc[0], errors='coerce')
+                        actual_receptions = pd.to_numeric(actual_row['receptions'].iloc[0], errors='coerce')
+                        if pd.isna(actual_targets) or actual_targets <= 0:
+                            skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "Zero actual targets"})
+                            continue
+
+                        if rec_model_choice.startswith("Both"):
+                            # Real fix (per external review) — do NOT
+                            # compare each model only on the rows it
+                            # successfully projects, since one model
+                            # could improve its MAE simply by skipping
+                            # harder cases. Run BOTH on the exact same
+                            # matchup, track each model's own result
+                            # (or None) separately, then compute
+                            # common-sample MAE only on rows where BOTH
+                            # succeeded — the fairest real comparison.
+                            try:
+                                result_a = run_nfl_receptions_projection(
+                                    m['player'], m['team'], m['opponent'], m['qb'], int(backtest_season_rec), as_of_week=m['week'],
+                                    target_share_weighting=rec_weighting, bridge_schedule=rec_bridge,
+                                    team_change_prior_retention=rec_team_mult, min_targets=rec_min_targets,
+                                    use_opponent_factor=rec_use_opp_factor,
+                                )
+                            except Exception:
+                                result_a = None
+                            try:
+                                result_b = run_nfl_receptions_model_b_projection(
+                                    m['player'], m['team'], m['opponent'], m['qb'], int(backtest_season_rec), as_of_week=m['week'],
+                                    bridge_schedule=rec_bridge, team_change_prior_retention=rec_team_mult, min_targets=rec_min_targets,
+                                )
+                            except Exception:
+                                result_b = None
+
+                            common_results_rec.append({
+                                'Player': m['player'], 'Week': m['week'], 'Matchup': f"{m['opponent']} @ {m['team']}",
+                                'Position': m.get('position'), 'Actual Receptions': actual_receptions,
+                                'A Projection': result_a['projection'] if result_a else None,
+                                'A Error': round(abs(result_a['projection'] - actual_receptions), 1) if result_a else None,
+                                'B Projection': result_b['projection'] if result_b else None,
+                                'B Error': round(abs(result_b['projection'] - actual_receptions), 1) if result_b else None,
+                                'Both Succeeded': result_a is not None and result_b is not None,
+                            })
+                            continue
+
                         try:
                             if rec_model_choice.startswith("Model A"):
                                 result = run_nfl_receptions_projection(
@@ -9519,13 +9570,7 @@ elif nav == "🧪 Backtest" and is_admin:
                         except Exception as e:
                             skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': f'Exception: {e}'})
                             continue
-                        actual_row = weekly_stats_rec[(weekly_stats_rec['player_display_name'] == m['player']) & (weekly_stats_rec['week'] == m['week']) & (weekly_stats_rec['position'].isin(RECEPTION_POSITIONS))]
-                        if actual_row.empty:
-                            skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "No stats row found"})
-                            continue
-                        actual_targets = pd.to_numeric(actual_row['targets'].iloc[0], errors='coerce')
-                        actual_receptions = pd.to_numeric(actual_row['receptions'].iloc[0], errors='coerce')
-                        if not result or pd.isna(actual_targets) or actual_targets <= 0:
+                        if not result:
                             skipped_rec.append({'Player': m['player'], 'Week': m['week'], 'Reason': "Insufficient history or zero actual targets"})
                             continue
 
@@ -9587,8 +9632,9 @@ elif nav == "🧪 Backtest" and is_admin:
 
                         results_rec.append(row_data)
                     st.session_state['rec_backtest_results'] = results_rec
+                    st.session_state['rec_common_sample_results'] = common_results_rec
                     st.session_state['rec_backtest_skipped'] = skipped_rec
-                    status_text_rec.text(f"✅ Done! {len(results_rec)} total projections, {len(skipped_rec)} skipped.")
+                    status_text_rec.text(f"✅ Done! {len(results_rec)} total projections, {len(common_results_rec)} common-sample rows, {len(skipped_rec)} skipped.")
                     progress_bar_rec.progress(1.0)
                 except Exception as e:
                     st.error(f"Real error: {e}")
@@ -9596,6 +9642,51 @@ elif nav == "🧪 Backtest" and is_admin:
                     st.code(traceback.format_exc())
                 finally:
                     st.session_state['_nfl_debug_mode'] = False
+
+        if 'rec_common_sample_results' in st.session_state and st.session_state['rec_common_sample_results']:
+            common_df = pd.DataFrame(st.session_state['rec_common_sample_results'])
+            st.markdown("---")
+            st.subheader("⚖️ Common-Sample A vs. B Comparison")
+            st.caption("The fairest real comparison, per external review — neither model can improve its MAE just by skipping harder cases the other model handled. Coverage and each model's own MAE are shown too, since a model that projects fewer players isn't automatically better just because its own MAE looks smaller.")
+            st.dataframe(common_df, use_container_width=True)
+
+            total_rows = len(common_df)
+            a_covered = common_df['A Projection'].notna().sum()
+            b_covered = common_df['B Projection'].notna().sum()
+            both_covered = common_df['Both Succeeded'].sum()
+
+            col_cov1, col_cov2, col_cov3 = st.columns(3)
+            col_cov1.metric("Model A coverage", f"{a_covered}/{total_rows}", help="How many player-games Model A successfully projected")
+            col_cov2.metric("Model B coverage", f"{b_covered}/{total_rows}", help="How many player-games Model B successfully projected")
+            col_cov3.metric("Common sample", f"{both_covered}/{total_rows}", help="Rows where BOTH models succeeded — this is the fair comparison set")
+
+            col_mae1, col_mae2 = st.columns(2)
+            a_own_mae = round(common_df['A Error'].mean(), 2) if a_covered > 0 else None
+            b_own_mae = round(common_df['B Error'].mean(), 2) if b_covered > 0 else None
+            col_mae1.metric("Model A MAE (its own coverage)", a_own_mae)
+            col_mae2.metric("Model B MAE (its own coverage)", b_own_mae)
+
+            common_only = common_df[common_df['Both Succeeded']]
+            if not common_only.empty:
+                a_common_mae = round(common_only['A Error'].mean(), 2)
+                b_common_mae = round(common_only['B Error'].mean(), 2)
+                st.write(f"**Common-sample MAE ({len(common_only)} rows both models projected):**")
+                col_cmae1, col_cmae2 = st.columns(2)
+                col_cmae1.metric("Model A", a_common_mae)
+                col_cmae2.metric("Model B", b_common_mae)
+                if a_common_mae < b_common_mae:
+                    st.success(f"On the fair, common sample, Model A wins ({a_common_mae} vs {b_common_mae}).")
+                elif b_common_mae < a_common_mae:
+                    st.success(f"On the fair, common sample, Model B wins ({b_common_mae} vs {a_common_mae}).")
+                else:
+                    st.info("Dead even on the common sample.")
+
+                if 'Position' in common_only.columns:
+                    st.write("**Common-sample MAE by Position**")
+                    pos_compare = common_only.groupby('Position').apply(lambda g: pd.Series({'A MAE': round(g['A Error'].mean(), 2), 'B MAE': round(g['B Error'].mean(), 2), 'N': len(g)})).reset_index()
+                    st.dataframe(pos_compare, use_container_width=True)
+            else:
+                st.warning("No rows where both models succeeded — can't compute a common-sample MAE. Check coverage above for why.")
 
         if 'rec_backtest_results' in st.session_state and st.session_state['rec_backtest_results']:
             rec_df = pd.DataFrame(st.session_state['rec_backtest_results'])
