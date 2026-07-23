@@ -1108,17 +1108,32 @@ def load_predictions(sport=None):
 def save_prediction(pred):
     try:
         payload = {**pred, "user_id": user_id}
-        # Avoid duplicate rows for the same pitcher/date/sport — the shared
-        # cache means projections are cheap to re-serve, but that shouldn't
-        # mean a fresh prediction row gets saved every time some session's
-        # auto-run happens to re-process a pitcher already logged today.
-        existing = supabase.table("predictions").select("id") \
-            .eq("user_id", user_id).eq("pitcher", payload.get("pitcher")) \
-            .eq("date", payload.get("date")).eq("sport", payload.get("sport")) \
-            .execute()
-        if existing.data:
-            return
-        supabase.table("predictions").insert(payload).execute()
+        # Real fix (July 2026, per external review) — the previous
+        # check-then-insert pattern (query for an existing row, insert
+        # only if none found) had a genuine race condition: two
+        # simultaneous sessions could both check, both see nothing, and
+        # both insert a duplicate row. A pre-insert query alone isn't a
+        # real guarantee. Now uses a real upsert against a database-
+        # level unique constraint on (user_id, sport, date, pitcher) —
+        # see the SQL migration provided alongside this fix. If the
+        # constraint doesn't exist yet in the actual database, this
+        # falls back to a plain insert further below rather than
+        # silently failing.
+        try:
+            supabase.table("predictions").upsert(payload, on_conflict="user_id,sport,date,pitcher").execute()
+        except Exception as upsert_error:
+            # Falls back to the old check-then-insert behavior if the
+            # unique constraint hasn't been added to the database yet —
+            # keeps this working (with the old, real-but-smaller race
+            # window) rather than breaking prediction-saving entirely
+            # until the SQL migration is run.
+            existing = supabase.table("predictions").select("id") \
+                .eq("user_id", user_id).eq("pitcher", payload.get("pitcher")) \
+                .eq("date", payload.get("date")).eq("sport", payload.get("sport")) \
+                .execute()
+            if existing.data:
+                return
+            supabase.table("predictions").insert(payload).execute()
     except Exception as e:
         st.error(f"Error saving prediction: {e}")
 
