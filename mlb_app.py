@@ -7474,7 +7474,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
 
     match_markets = extract_match_winner_markets(events)
     if not match_markets:
-        return []  # genuinely no real matchup markets live right now — not an error
+        return {"debug": "No real match-winner markets found in the Polymarket fetch itself — 0 events had a groupItemTitle of 'Match Winner'.", "results": []}
 
     try:
         # Real fix (July 2026) — switched from schedule/today (only
@@ -7491,18 +7491,32 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     # so we know exactly which teams' histories we actually need —
     # avoids wasting real API calls on teams that don't resolve.
     resolved_matchups = []
+    unresolved_team_names = []
     for market in match_markets:
         outcomes = market.get("outcomes_parsed", [])
         if len(outcomes) != 2:
             continue
         slug1 = match_polymarket_name_to_slug(outcomes[0], name_to_slug)
         slug2 = match_polymarket_name_to_slug(outcomes[1], name_to_slug)
+        if not slug1:
+            unresolved_team_names.append(outcomes[0])
+        if not slug2:
+            unresolved_team_names.append(outcomes[1])
         if not slug1 or not slug2:
             continue  # a real, unmatched team — skip rather than guess
         resolved_matchups.append({
             "market": market, "team1_name": outcomes[0], "team2_name": outcomes[1],
             "team1_slug": slug1, "team2_slug": slug2,
         })
+
+    debug_info = {
+        "real_match_winner_markets_found": len(match_markets),
+        "name_to_slug_map_size": len(name_to_slug),
+        "resolved_matchups": len(resolved_matchups),
+        "unresolved_team_names": sorted(set(unresolved_team_names)),
+    }
+    if not resolved_matchups:
+        return {"debug": debug_info, "results": []}
 
     unique_slugs = set()
     for m in resolved_matchups:
@@ -7570,7 +7584,8 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
         })
 
-    return results
+    debug_info["final_result_count"] = len(results)
+    return {"debug": debug_info, "results": results}
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
@@ -9115,35 +9130,40 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
     else:
         if st.button("🚀 Run LoL Matchup Projections", key="run_lol_projections"):
             with st.spinner("Running the full live pipeline — fetching Polymarket, matching teams, pulling Cito history, building ratings..."):
-                lol_results = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
+                pipeline_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
 
-            if isinstance(lol_results, dict) and lol_results.get("error"):
-                st.error(f"❌ Pipeline failed: {lol_results['error']}")
-            elif not lol_results:
-                st.warning("Pipeline ran successfully but found 0 usable matchups — could mean no real match-winner markets are live right now, or none of the team names resolved to a real Cito slug. Check the safety checks above for what's actually live right now.")
+            if isinstance(pipeline_output, dict) and pipeline_output.get("error"):
+                st.error(f"❌ Pipeline failed: {pipeline_output['error']}")
             else:
-                st.success(f"✅ Pipeline succeeded — {len(lol_results)} real matchup(s) with model predictions")
-                st.success("✅ **Real bug found and fixed**: the sub-market issue flagged here previously (Game 1/2 Winner, Game Handicap, First Blood all incorrectly matching the same filter as the real Match Winner market) is now fixed — extract_match_winner_markets() filters on Polymarket's real 'groupItemTitle' field, confirmed via live diagnostic data to reliably isolate just the actual overall-series market. The question/slug fields below are kept visible as an ongoing sanity check, not because the bug is still open.")
-                for r in lol_results:
-                    if r.get("fetch_errors"):
-                        st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
-                    if r.get("no_real_data"):
-                        st.warning(f"⚠️ Neither team has any real completed-game history in this dataset — the 50% shown below is a data-free default, not a real model prediction. Treat this matchup as unrated, not as a real edge.")
-                    col1, col2, col3 = st.columns([2, 1, 1])
-                    with col1:
-                        st.write(f"**{r['team1_name']}** ({r['team1_rating']}) vs **{r['team2_name']}** ({r['team2_rating']})")
-                        st.caption(f"{r['event_title']} — Bo{r['best_of']}")
-                        st.caption(f"Q: {r.get('question')}")
-                        st.caption(f"Market slug: {r.get('market_slug')} | Group item: {r.get('group_item_title')}")
-                        st.caption(f"Real Cito slugs (use these in the diagnostic below): **{r.get('team1_slug')}** / **{r.get('team2_slug')}**")
-                    with col2:
-                        st.write(f"Model: {r['model_prob_team1']*100:.1f}%")
-                        st.write(f"Market: {r['market_prob_team1']*100:.1f}%")
-                    with col3:
-                        edge_color = "🟢" if r["edge_pct"] > 0 else "🔴"
-                        st.write(f"{edge_color} Edge: {r['edge_pct']:+.1f}%")
-                        st.write(f"Odds: {r['market_odds_team1']}")
-                    st.divider()
+                debug = pipeline_output.get("debug")
+                lol_results = pipeline_output.get("results", [])
+                if debug:
+                    with st.expander("🔍 Pipeline diagnostics (why matchups did/didn't resolve)", expanded=not lol_results):
+                        st.json(debug)
+                if not lol_results:
+                    st.warning("Pipeline ran successfully but found 0 usable matchups this time — expand the diagnostics above to see exactly why (0 real markets found, 0 teams in the name map, or specific team names that failed to resolve).")
+                else:
+                    st.success(f"✅ Pipeline succeeded — {len(lol_results)} real matchup(s) with model predictions")
+                    for r in lol_results:
+                        if r.get("fetch_errors"):
+                            st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
+                        if r.get("no_real_data"):
+                            st.warning(f"⚠️ Neither team has any real completed-game history in this dataset — the 50% shown below is a data-free default, not a real model prediction. Treat this matchup as unrated, not as a real edge.")
+                        col1, col2, col3 = st.columns([2, 1, 1])
+                        with col1:
+                            st.write(f"**{r['team1_name']}** ({r['team1_rating']}) vs **{r['team2_name']}** ({r['team2_rating']})")
+                            st.caption(f"{r['event_title']} — Bo{r['best_of']}")
+                            st.caption(f"Q: {r.get('question')}")
+                            st.caption(f"Market slug: {r.get('market_slug')} | Group item: {r.get('group_item_title')}")
+                            st.caption(f"Real Cito slugs (use these in the diagnostic below): **{r.get('team1_slug')}** / **{r.get('team2_slug')}**")
+                        with col2:
+                            st.write(f"Model: {r['model_prob_team1']*100:.1f}%")
+                            st.write(f"Market: {r['market_prob_team1']*100:.1f}%")
+                        with col3:
+                            edge_color = "🟢" if r["edge_pct"] > 0 else "🔴"
+                            st.write(f"{edge_color} Edge: {r['edge_pct']:+.1f}%")
+                            st.write(f"Odds: {r['market_odds_team1']}")
+                        st.divider()
 
     st.markdown("---")
     st.subheader("🔍 Team Match Coverage Diagnostic")
