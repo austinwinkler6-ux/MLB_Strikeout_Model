@@ -884,7 +884,10 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'low_confidence': low_confidence,
             'tier': get_tier(model_edge, ev_pct, cv, sport, workload_tier),
             'pass_reason': get_pass_reason(model_edge, ev_pct, cv, workload_tier),
-            'confidence_level': get_confidence_level(cv, workload_tier)
+            'confidence_level': get_confidence_level(cv, workload_tier),
+            'effective_std': round(effective_std, 3),
+            'adjusted_projection': round(adjusted_projection, 3),
+            'opposite_odds': under_odds if direction == 'over' else over_odds,
         }
     except:
         return None
@@ -1541,6 +1544,44 @@ def mm_today_str():
     cache date keys since MLB's day rolls over on Eastern time, not UTC."""
     return datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d')
 
+# Real addition (July 2026, per external review) — version stamps for
+# every saved prediction/bet, so it's possible to reproduce why the
+# site recommended a specific bet even after the underlying formulas
+# change later. Bump these whenever a real, meaningful change lands in
+# the projection models or the EV/probability engine (analyze_prop) —
+# not for every tiny tweak, but for anything that could change what a
+# past bet's numbers actually meant.
+MODEL_VERSION = "2026-07-23"
+EV_ENGINE_VERSION = "v2"
+
+# Real addition (July 2026, per external review, item 11) — the app
+# mixes two genuinely different kinds of sport strings throughout:
+# SAVE LABELS (used as the 'sport' column value in bets/predictions —
+# 'MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS')
+# and MODEL KEYS (used internally by analyze_prop/get_min_std_dev/
+# EDGE_THRESHOLDS — 'mlb_strikeouts', 'nba_points', 'nba_assists',
+# 'nfl_pass_attempts', 'nfl_pass_completions', 'nfl_receptions'). A
+# typo in either, in any one of the ~100+ places these get typed
+# throughout the file, could silently make tracker filters or
+# analytics miss real records with no error at all — exactly what
+# happened with get_odds_api_sport_and_market() above, which was
+# missing all three NFL branches entirely until this same review round.
+# This dict is the canonical reference going forward — not a full,
+# risky retrofit of every existing string literal (many of those are
+# safe, validated, and working; rewriting ~100+ call sites for a
+# cosmetic win wasn't worth the real risk of introducing a new mistake
+# while doing it), but new code (including esports) should use these
+# constants directly instead of retyping the strings.
+SAVE_LABEL_TO_MODEL_KEY = {
+    'MLB': 'mlb_strikeouts',
+    'NBA': 'nba_points',
+    'NBA_AST': 'nba_assists',
+    'NFL': 'nfl_pass_attempts',
+    'NFL_COMPLETIONS': 'nfl_pass_completions',
+    'NFL_RECEPTIONS': 'nfl_receptions',
+}
+MODEL_KEY_TO_SAVE_LABEL = {v: k for k, v in SAVE_LABEL_TO_MODEL_KEY.items()}
+
 def get_json(url, *, params=None, headers=None, timeout=20):
     """Real fix (July 2026, per external review) — a shared helper for
     every HTTP GET across the app, replacing the widespread pattern of
@@ -1828,16 +1869,13 @@ def get_or_generate_ai_insight(cache_date_str, sport, player_name, info, result)
     if cached and cached.get('ai_insight'):
         return cached['ai_insight'], cached.get('thesis_label')
 
-    # Real fix (July 2026) — was a hardcoded ternary chain that only
-    # recognized 'MLB' and 'NBA', silently routing anything else
-    # (including all three new NFL models, once they existed) to
-    # 'nba_assists' by default. Would have generated genuinely wrong
-    # insight language for NFL bets without ever raising an error.
-    sport_model_key_map = {
-        'MLB': 'mlb_strikeouts', 'NBA': 'nba_points', 'NBA_AST': 'nba_assists',
-        'NFL': 'nfl_pass_attempts', 'NFL_COMPLETIONS': 'nfl_pass_completions', 'NFL_RECEPTIONS': 'nfl_receptions',
-    }
-    model_key = sport_model_key_map.get(sport, 'mlb_strikeouts')
+    # Real fix (July 2026) — was originally a hardcoded ternary chain
+    # that only recognized 'MLB' and 'NBA', silently routing anything
+    # else (including all three NFL models, once they existed) to
+    # 'nba_assists' by default. Now uses the centralized
+    # SAVE_LABEL_TO_MODEL_KEY constant (item 11) instead of its own
+    # separate, hand-typed copy of the same mapping.
+    model_key = SAVE_LABEL_TO_MODEL_KEY.get(sport, 'mlb_strikeouts')
     thesis_label = classify_thesis(info, result, model_key)
     insight = generate_ai_insight(player_name, info, result, model_key, thesis_label)
     if insight:
@@ -3936,12 +3974,26 @@ def get_schedule_adjusted_opponent_factor(season, opponent, as_of_week=None):
 
 # ---- CLOSING LINE / CLV TRACKING ----
 def get_odds_api_sport_and_market(sport):
+    # Real bug fix (July 2026, per external review) — this function had
+    # NO branches at all for any NFL sport label, meaning the Closing
+    # Line Tracker silently failed for every NFL bet (Attempts,
+    # Completions, Receptions) — always falling through to (None, None)
+    # with no error, no warning, nothing. Exactly the kind of silent
+    # miss the reviewer's point about centralizing sport labels was
+    # warning against, just found here as a genuinely missing branch
+    # rather than a typo in an existing one.
     if sport == 'MLB':
         return 'baseball_mlb', 'pitcher_strikeouts'
     elif sport == 'NBA':
         return 'basketball_nba', 'player_points'
     elif sport == 'NBA_AST':
         return 'basketball_nba', 'player_assists'
+    elif sport == 'NFL':
+        return 'americanfootball_nfl', 'player_pass_attempts'
+    elif sport == 'NFL_COMPLETIONS':
+        return 'americanfootball_nfl', 'player_pass_completions'
+    elif sport == 'NFL_RECEPTIONS':
+        return 'americanfootball_nfl', 'player_receptions'
     return None, None
 
 @st.cache_data(ttl=604800)
@@ -4139,6 +4191,9 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'Odds': over_odds if direction == 'over' else under_odds,
                     'Direction': direction,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Effective Std': ev_result['effective_std'] if ev_result else None,
+                    'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                    'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                 })
@@ -4275,6 +4330,9 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                     'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Effective Std': ev_result['effective_std'] if ev_result else None,
+                    'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                    'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Direction': direction,
                     'Odds': over_odds if direction == 'over' else under_odds,
@@ -5117,6 +5175,9 @@ def run_single_nfl_attempts(qb_name, info, season):
         'Confidence Level': ev_result['confidence_level'] if ev_result else None,
         'Low Confidence': ev_result['low_confidence'] if ev_result else None,
         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+        'Effective Std': ev_result['effective_std'] if ev_result else None,
+        'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+        'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
         'Direction': direction, 'Odds': selected_odds,
         'Model Prob': ev_result['model_prob'] if ev_result else None,
@@ -5169,6 +5230,9 @@ def run_single_nfl_completions(qb_name, info, season):
         'Confidence Level': ev_result['confidence_level'] if ev_result else None,
         'Low Confidence': ev_result['low_confidence'] if ev_result else None,
         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+        'Effective Std': ev_result['effective_std'] if ev_result else None,
+        'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+        'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
         'Direction': direction, 'Odds': selected_odds,
         'Model Prob': ev_result['model_prob'] if ev_result else None,
@@ -5241,6 +5305,9 @@ def run_single_nfl_receptions(receiver_name, info, season):
         'Confidence Level': ev_result['confidence_level'] if ev_result else None,
         'Low Confidence': ev_result['low_confidence'] if ev_result else None,
         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+        'Effective Std': ev_result['effective_std'] if ev_result else None,
+        'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+        'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
         'Direction': direction, 'Odds': selected_odds,
         'Model Prob': ev_result['model_prob'] if ev_result else None,
@@ -5333,6 +5400,9 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                     'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Effective Std': ev_result['effective_std'] if ev_result else None,
+                    'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                    'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Direction': direction,
                     'Odds': selected_odds,
@@ -5531,6 +5601,9 @@ def run_all_nfl_completions_projections(all_qbs, season, progress_callback=None)
                     'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Effective Std': ev_result['effective_std'] if ev_result else None,
+                    'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                    'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Direction': direction,
                     'Odds': selected_odds,
@@ -7340,6 +7413,9 @@ def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=
                     'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                    'Effective Std': ev_result['effective_std'] if ev_result else None,
+                    'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                    'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Direction': direction,
                     'Odds': selected_odds,
@@ -7576,6 +7652,12 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
                                 'mm_tier': info.get('MM Tier'),
                                 'no_vig_prob': info.get('No Vig Prob'),
                                 'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
+                                'sportsbook': info.get('Book'), 'raw_ev_pct': info.get('Raw EV%'),
+                                'opposite_odds': info.get('Opposite Odds'),
+                                'adjusted_projection': info.get('Adjusted Projection'),
+                                'effective_std': info.get('Effective Std'),
+                                'model_version': MODEL_VERSION, 'ev_engine_version': EV_ENGINE_VERSION,
+                                'logged_at': datetime.now(ZoneInfo("UTC")).isoformat(),
                             })
                             st.session_state[f'{session_key}_log_modal_{player_name}'] = False
                             st.success(f"✅ Bet logged for {player_name}!")
@@ -8105,6 +8187,9 @@ elif nav == "⚾ MLB Models":
                                     'Odds': over_odds if direction == 'over' else under_odds,
                                     'Direction': direction,
                                     'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                    'Effective Std': ev_result['effective_std'] if ev_result else None,
+                                    'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                                    'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                                 })
@@ -8197,6 +8282,12 @@ elif nav == "⚾ MLB Models":
                                 'model_edge': info.get('Model Edge'), 'no_vig_prob': info.get('No Vig Prob'),
                                 'model_prob': info.get('Model Prob'), 'confidence_tier': info.get('Tier'),
                                 'mm_stake_recommended': log_mm_stake_dollars,
+                                'sportsbook': info.get('Book'), 'raw_ev_pct': info.get('Raw EV%'),
+                                'opposite_odds': info.get('Opposite Odds'),
+                                'adjusted_projection': info.get('Adjusted Projection'),
+                                'effective_std': info.get('Effective Std'),
+                                'model_version': MODEL_VERSION, 'ev_engine_version': EV_ENGINE_VERSION,
+                                'logged_at': datetime.now(ZoneInfo("UTC")).isoformat(),
                             })
                             st.session_state[f'log_modal_{pitcher}'] = False
                             st.success(f"✅ Bet logged for {pitcher}!")
@@ -8383,6 +8474,9 @@ elif nav == "🏀 NBA Models":
                                         'Confidence Level': ev_result['confidence_level'] if ev_result else None,
                                         'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                                         'Fair Odds': ev_result['fair_odds'] if ev_result else None,
+                                        'Effective Std': ev_result['effective_std'] if ev_result else None,
+                                        'Adjusted Projection': ev_result['adjusted_projection'] if ev_result else None,
+                                        'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                                         'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                                         'Direction': direction,
                                         'Odds': over_odds if direction == 'over' else under_odds,
@@ -8463,6 +8557,12 @@ elif nav == "🏀 NBA Models":
                                     'model_edge': info.get('Edge'), 'confidence_tier': info.get('Tier'),
                                     'model_prob': info.get('Model Prob'), 'no_vig_prob': info.get('No Vig Prob'),
                                     'mm_stake_recommended': log_mm_stake_dollars,
+                                    'sportsbook': info.get('Book'), 'raw_ev_pct': info.get('Raw EV%'),
+                                    'opposite_odds': info.get('Opposite Odds'),
+                                    'adjusted_projection': info.get('Adjusted Projection'),
+                                    'effective_std': info.get('Effective Std'),
+                                    'model_version': MODEL_VERSION, 'ev_engine_version': EV_ENGINE_VERSION,
+                                    'logged_at': datetime.now(ZoneInfo("UTC")).isoformat(),
                                 })
                                 st.session_state[f'{session_key}_log_modal_{player}'] = False
                                 st.success(f"✅ Bet logged for {player}!")
