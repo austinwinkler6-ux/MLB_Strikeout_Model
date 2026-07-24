@@ -97,6 +97,37 @@ def extract_player_prop_markets(events):
     return player_prop_markets
 
 
+def extract_match_winner_markets(events):
+    """Given a list of raw Polymarket event dicts, returns a flat list
+    of real match/series-winner markets — the market type CONFIRMED to
+    actually exist for LoL (unlike player props, which were checked
+    and confirmed absent). A real, more reliable signal than the
+    keyword heuristic used for player props: a genuine match-winner
+    market has real TEAM NAMES as its two outcomes, not the generic
+    "Yes"/"No" pair used by simpler binary markets. This isn't a
+    perfect filter either (a market titled 'Will Team X reach playoffs'
+    could theoretically also list team-name-like outcomes), but
+    checking for exactly 2 outcomes that both look like real team names
+    (present in the event's own team1/team2-style title, when parseable)
+    is meaningfully more targeted than a bare keyword match."""
+    match_winner_markets = []
+    for event in events:
+        for market in event.get("markets", []):
+            outcomes = _parse_stringified_json_field(market.get("outcomes"))
+            if len(outcomes) != 2:
+                continue
+            if outcomes[0].strip().lower() == "yes" and outcomes[1].strip().lower() == "no":
+                continue  # a plain Yes/No market, not a real team-vs-team one
+            parsed_market = dict(market)
+            parsed_market["outcomes_parsed"] = outcomes
+            parsed_market["outcomePrices_parsed"] = _parse_stringified_json_field(market.get("outcomePrices"))
+            parsed_market["clobTokenIds_parsed"] = _parse_stringified_json_field(market.get("clobTokenIds"))
+            parsed_market["event_title"] = event.get("title")
+            parsed_market["event_slug"] = event.get("slug")
+            match_winner_markets.append(parsed_market)
+    return match_winner_markets
+
+
 def polymarket_price_to_american_odds(prob):
     """Converts a Polymarket implied-probability price (0 to 1) into
     American odds, so this can plug directly into the exact same
@@ -124,16 +155,21 @@ def get_polymarket_safety_check():
     result (or a real error with traceback), since the query-parameter
     filtering behavior could not be independently verified from the
     development environment. Meant to be called from an admin-only
-    diagnostics panel, same pattern as NFL's."""
+    diagnostics panel, same pattern as NFL's. Updated to report on
+    match-winner markets (the confirmed-real market type) rather than
+    player props (confirmed absent, per real live-data investigation)."""
     results = {}
     try:
         events = get_polymarket_events(tag_slug="league-of-legends", closed=False, limit=20)
         results["fetch_ok"] = True
         results["event_count"] = len(events)
         results["sample_titles"] = [e.get("title") for e in events[:5]]
-        prop_markets = extract_player_prop_markets(events)
-        results["player_prop_market_count"] = len(prop_markets)
-        results["sample_prop_questions"] = [m.get("question") for m in prop_markets[:5]]
+        match_markets = extract_match_winner_markets(events)
+        results["match_winner_market_count"] = len(match_markets)
+        results["sample_match_markets"] = [
+            {"event": m.get("event_title"), "outcomes": m.get("outcomes_parsed"), "prices": m.get("outcomePrices_parsed")}
+            for m in match_markets[:5]
+        ]
     except Exception as e:
         results["fetch_ok"] = False
         results["error"] = str(e)
