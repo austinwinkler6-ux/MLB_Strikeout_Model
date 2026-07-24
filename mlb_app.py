@@ -8940,6 +8940,30 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
             else:
                 st.error(f"❌ Real fetch error: {result.get('error')}")
 
+    st.markdown("---")
+    st.subheader("🧪 Live Cito API Safety Check")
+    st.caption("Cito's exact response schema for team match history/results was never independently confirmed from documentation research alone — only a single example response for a LIVE in-game match was found (kills/gold/towers), not what's needed here (completed results: who played, who won). This calls the real, live API and shows the genuine response for each endpoint, including one deliberately-flagged unconfirmed guess at the team-match-history path, so the real schema can finally be inspected before anything gets built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
+    if "CITO_API_KEY" not in st.secrets:
+        st.warning("⚠️ CITO_API_KEY not found in secrets. Add it to your Railway environment variables (same way ODDS_API_KEY and BDL_API_KEY are set) before this check can run.")
+    else:
+        if st.button("Test Cito API endpoints", key="cito_safety_check"):
+            with st.spinner("Fetching live Cito data..."):
+                try:
+                    from cito_api import get_cito_safety_check
+                    cito_result = get_cito_safety_check(st.secrets["CITO_API_KEY"])
+                except ImportError:
+                    st.error("❌ Couldn't import cito_api — make sure cito_api.py is deployed alongside mlb_app.py in the same directory.")
+                    cito_result = None
+
+            if cito_result:
+                for label, res in cito_result.items():
+                    st.write(f"**{label}**")
+                    if res.get("ok"):
+                        st.success(f"✅ Real response received — type: {res['type']}" + (f", count: {res['count']}" if res.get('count') is not None else ""))
+                        st.json(res["sample"])
+                    else:
+                        st.error(f"❌ Real error: {res.get('error')}")
+                    st.markdown("---")
 
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
