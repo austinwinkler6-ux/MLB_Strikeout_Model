@@ -107,27 +107,24 @@ def build_team_name_to_slug_map(teams_list_response):
     Cito: Polymarket identifies teams by full display name ('G2
     Esports', 'Movistar KOI') inside market outcome strings, while
     Cito identifies teams by slug ('g2', 'mkoi'). Built against the
-    real, documented GET /api/v1/lol/teams endpoint ('List Teams: 
+    real, documented GET /api/v1/lol/teams endpoint ('List Teams:
     Professional LoL teams') — the authoritative full team list,
     rather than the earlier approach of only building this map from
     whichever teams happened to appear on one specific day's schedule
     (a real, meaningful gap: a team not playing that exact day would
     never resolve, even though it's genuinely covered by Cito).
 
-    HONEST, NAMED UNCERTAINTY: the exact response shape for this
-    specific endpoint has not yet been seen from a real, live call —
-    only its existence and one-line description were confirmed from
-    documentation. Built defensively to handle a plain list, a
-    {"data": [...]} wrapper, or a {"teams": [...]} wrapper, and to try
-    several plausible field-name variants per team (slug/teamSlug,
-    name/teamName, code/teamCode) since the schedule endpoint's nested
-    team objects used one naming convention but this top-level teams
-    endpoint might use another. Needs real verification against a live
-    response — see get_cito_safety_check(), which now calls this
-    endpoint directly and reports its genuine shape."""
+    CONFIRMED real schema (verified against a live response, July
+    2026): {"teams": [{"slug", "name", "shortName", "region",
+    "logoUrl", "isActive", "leagues", "rosterCount", "rosterStatus"},
+    ...]}. An earlier version of this function guessed the short-name
+    field would be called 'code'/'teamCode' (matching the schedule
+    endpoint's nested team objects) — real data confirmed it's
+    actually 'shortName' here. Fixed after seeing the real response
+    rather than continuing to guess."""
     name_to_slug = {}
     if isinstance(teams_list_response, dict):
-        teams = teams_list_response.get("data") or teams_list_response.get("teams") or []
+        teams = teams_list_response.get("teams") or teams_list_response.get("data") or []
     elif isinstance(teams_list_response, list):
         teams = teams_list_response
     else:
@@ -136,13 +133,13 @@ def build_team_name_to_slug_map(teams_list_response):
     for team in teams:
         if not isinstance(team, dict):
             continue
-        slug = team.get("slug") or team.get("teamSlug")
-        name = team.get("name") or team.get("teamName")
-        code = team.get("code") or team.get("teamCode")
+        slug = team.get("slug")
+        name = team.get("name")
+        short_name = team.get("shortName")
         if slug and name:
             name_to_slug[name.strip().lower()] = slug
-        if slug and code:
-            name_to_slug[code.strip().lower()] = slug
+        if slug and short_name:
+            name_to_slug[short_name.strip().lower()] = slug
     return name_to_slug
 
 
