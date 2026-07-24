@@ -7534,6 +7534,18 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         except (ValueError, TypeError):
             continue
 
+        # Real fix (July 2026) — a price at or extremely near 0%/100%
+        # generally means the market has little to no real trading
+        # activity yet (a fresh listing, or a market nobody's touched),
+        # not a genuine, liquid consensus price. Computing an "edge"
+        # against a stale placeholder like this is misleading, not a
+        # real signal — confirmed via live data showing "Odds: None"
+        # (this app's own odds converter correctly refusing to convert
+        # an invalid probability) paired with suspiciously round 0%/100%
+        # market prices across multiple real matchups.
+        if market_prob_team1 <= 0.01 or market_prob_team1 >= 0.99:
+            continue
+
         question = (market.get("question") or "").lower()
         best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
 
@@ -7555,6 +7567,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             "best_of": best_of,
             "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
             "fetch_errors": fetch_errors,
+            "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
         })
 
     return results
@@ -9114,6 +9127,8 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                 for r in lol_results:
                     if r.get("fetch_errors"):
                         st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
+                    if r.get("no_real_data"):
+                        st.warning(f"⚠️ Neither team has any real completed-game history in this dataset — the 50% shown below is a data-free default, not a real model prediction. Treat this matchup as unrated, not as a real edge.")
                     col1, col2, col3 = st.columns([2, 1, 1])
                     with col1:
                         st.write(f"**{r['team1_name']}** ({r['team1_rating']}) vs **{r['team2_name']}** ({r['team2_rating']})")
