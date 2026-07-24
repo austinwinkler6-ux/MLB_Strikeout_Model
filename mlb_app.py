@@ -889,7 +889,8 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'adjusted_projection': round(adjusted_projection, 3),
             'opposite_odds': under_odds if direction == 'over' else over_odds,
         }
-    except:
+    except Exception as e:
+        log_failure_reason('MALFORMED_RESPONSE', f"analyze_prop({sport}, proj={projection}, line={line}): {e}")
         return None
 
 # ---- SUPABASE CONNECTION ----
@@ -1585,7 +1586,7 @@ MODEL_KEY_TO_SAVE_LABEL = {v: k for k, v in SAVE_LABEL_TO_MODEL_KEY.items()}
 def get_json(url, *, params=None, headers=None, timeout=20):
     """Real fix (July 2026, per external review) — a shared helper for
     every HTTP GET across the app, replacing the widespread pattern of
-    bare get_json(url) with no timeout, no raise_for_status,
+    bare requests.get(url).json() with no timeout, no raise_for_status,
     and no protection against a malformed/non-JSON response. A single
     stalled provider (MLB Stats API, Odds API, umpire data, etc.) could
     otherwise hang the entire Streamlit run. Raises on a real HTTP
@@ -1597,6 +1598,26 @@ def get_json(url, *, params=None, headers=None, timeout=20):
     response = requests.get(url, params=params, headers=headers, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+def log_failure_reason(category, detail=""):
+    """Real addition (July 2026, per external review, item 9) — a
+    shared, lightweight counter for genuinely structured failure
+    tracking, extending the same session_state-log pattern already used
+    in a few places (e.g. Receptions' missing-targets log) to a
+    consistent, app-wide convention. Not a replacement for the existing
+    try/except blocks — those correctly protect users from crashes —
+    but a way to record WHY something failed instead of a bare except
+    silently reducing a real, specific problem (an upstream timeout, a
+    missing player match, a malformed response) down to an
+    indistinguishable None or an empty result. Call this from inside
+    an except block right before falling back to None/empty/skip.
+    Categories worth using consistently: 'UPSTREAM_TIMEOUT',
+    'MISSING_PLAYER_MATCH', 'INSUFFICIENT_SAMPLE', 'MISSING_TEAM_MERGE',
+    'MISSING_LINEUP', 'UNAVAILABLE_ODDS', 'MALFORMED_RESPONSE'."""
+    st.session_state.setdefault('_failure_log', []).append({
+        'category': category, 'detail': str(detail)[:300],
+        'timestamp': datetime.now(ZoneInfo("UTC")).isoformat(),
+    })
 
 def get_cached_projection(cache_date_str, sport, player_name):
     try:
@@ -2135,8 +2156,8 @@ def get_pitcher_game_info(pitcher_name, game_date=None):
                 return home, away, home
             elif pitcher_name.lower() == away_pitcher.lower():
                 return away, home, home
-    except:
-        pass
+    except Exception as e:
+        log_failure_reason('MISSING_PLAYER_MATCH', f"get_pitcher_game_info({pitcher_name}): {e}")
     return None, None, None
 
 def fmt_odds(o):
@@ -2160,7 +2181,8 @@ def get_starters_for_date(game_date_str):
             if away_pitcher:
                 starters.append({'pitcher': away_pitcher, 'team': away, 'opponent': home, 'home_team': home, 'game_pk': game_pk})
         return starters
-    except:
+    except Exception as e:
+        log_failure_reason('MISSING_PLAYER_MATCH', f"get_starters_for_date({game_date_str}): {e}")
         return []
 
 
@@ -2174,8 +2196,8 @@ def get_actual_strikeouts(game_pk, pitcher_name):
                 name = player.get('person', {}).get('fullName', '')
                 if name.lower() == pitcher_name.lower():
                     return player.get('stats', {}).get('pitching', {}).get('strikeOuts', None)
-    except:
-        pass
+    except Exception as e:
+        log_failure_reason('MISSING_PLAYER_MATCH', f"get_actual_strikeouts({pitcher_name}, game {game_pk}): {e}")
     return None
 
 
@@ -2341,8 +2363,8 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
                             break
                 if lineup_k_pct and lineup_k_pct > 0:
                     final_opp_k_pct = round((lineup_k_pct * 0.60) + (final_opp_k_pct * 0.40), 3)
-            except:
-                pass
+            except Exception as e:
+                log_failure_reason('MISSING_LINEUP', f"{pitcher_name}: {e}")
 
         opp_factor = round(final_opp_k_pct / league_avg_k_pct, 3)
         park_factor = park_factors.get(home_team, 1.0) if use_park else 1.0
@@ -2366,8 +2388,8 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
                         if ump['umpire'].lower() == umpire_name.lower():
                             umpire_factor = max(0.97, min(1.03, round(1.0 + ((round(ump['favor_abs_mean'], 3) - league_avg_favor) * 0.5), 3)))
                             break
-            except:
-                pass
+            except Exception as e:
+                log_failure_reason('UNAVAILABLE_ODDS' if 'the-odds-api' in str(e).lower() else 'UPSTREAM_TIMEOUT', f"umpire data: {e}")
 
         total_factor = 1.0
         if use_total:
@@ -2388,8 +2410,8 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
                                     total_factor = max(0.95, min(1.05, round(1 - ((game_total - 8.5) * 0.02), 3)))
                             break
                         break
-            except:
-                pass
+            except Exception as e:
+                log_failure_reason('UNAVAILABLE_ODDS', f"game total: {e}")
 
         base = expected_bf * pitcher_skill
         combined_factor = max(0.90, min(1.10, opp_factor * park_factor * umpire_factor * velo_factor * weather_adj * total_factor))
@@ -3266,8 +3288,8 @@ def run_nba_points_projection(player_name, opponent_abbrev, home_team, away_team
             try:                # endpoint being hit unconditionally even during
                 games_data = get_live_nba_odds()  # backtests, silently pulling
                 game_total, spread = find_game_odds(games_data, home_team, away_team)  # today's real odds instead of historical ones
-            except:
-                pass
+            except Exception as e:
+                log_failure_reason('UNAVAILABLE_ODDS', f"NBA points live odds ({home_team} vs {away_team}): {e}")
 
         implied_team_total = None
         # Blowout minutes impact scales with role, rather than a flat -4 for
@@ -3636,8 +3658,8 @@ def run_nba_assists_projection(player_name, opponent_abbrev, home_team, away_tea
             try:
                 games_data = get_live_nba_odds()
                 game_total, spread = find_game_odds(games_data, home_team, away_team)
-            except:
-                pass
+            except Exception as e:
+                log_failure_reason('UNAVAILABLE_ODDS', f"NBA assists live odds ({home_team} vs {away_team}): {e}")
 
         # Blowout minutes impact now scales with role, matching the Points
         # engine — a flat -4 for everyone regardless of role didn't account
@@ -4070,7 +4092,8 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
                 avg_odds = prob_to_american_odds(avg_prob)
                 return consensus_line, avg_odds
         return None, None
-    except:
+    except Exception as e:
+        log_failure_reason('MALFORMED_RESPONSE', f"closing line for {player_name}: {e}")
         return None, None
 
 def load_mlb_props_data():
@@ -4295,7 +4318,8 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
             team_info = last_row.get('team') or {}
             home_or_away = 'home' if game_info.get('home_team_id') == team_info.get('id') else 'away'
             opp_abbrev = away_abbrev if home_or_away == 'home' else home_abbrev
-        except:
+        except Exception as e:
+            log_failure_reason('MISSING_TEAM_MERGE', f"home/away detection for {player}: {e}")
             home_or_away = 'home'
             opp_abbrev = away_abbrev
 
@@ -8441,7 +8465,8 @@ elif nav == "🏀 NBA Models":
                                 else:
                                     home_or_away = 'home'
                                     opp_abbrev = away_abbrev
-                            except:
+                            except Exception as e:
+                                log_failure_reason('MISSING_TEAM_MERGE', f"home/away detection for {player}: {e}")
                                 home_or_away = 'home'
                                 opp_abbrev = away_abbrev
                             result = force_run_and_cache_nba(
@@ -9017,6 +9042,21 @@ elif nav == "📒 Bet Tracker":
 # ---- MODEL LAB (ADMIN ONLY) ----
 elif nav == "🔬 Model Lab" and is_admin:
     st.title("🔬 Model Lab")
+
+    with st.expander("🔍 Structured Failure Log (this session)", expanded=False):
+        st.caption("Real, categorized failure reasons from optional/fallback signals across the app (per external review, item 9) — a lineup fetch failing, an umpire lookup missing, a player match not found, etc. These are all cases that were ALREADY caught and gracefully handled (no crash), but previously reduced to a silent None/empty result with no record of why. This only covers the current session — it resets on app restart, since it's session_state-based, not a database table.")
+        failure_log = st.session_state.get('_failure_log', [])
+        if not failure_log:
+            st.info("No failures logged yet this session.")
+        else:
+            failure_df = pd.DataFrame(failure_log)
+            st.write(f"**{len(failure_df)} total, by category:**")
+            st.dataframe(failure_df['category'].value_counts().reset_index().rename(columns={'index': 'Category', 'category': 'Count'}), use_container_width=True)
+            st.write("**Full log (most recent first)**")
+            st.dataframe(failure_df.iloc[::-1], use_container_width=True)
+            if st.button("Clear failure log"):
+                st.session_state['_failure_log'] = []
+                st.rerun()
 
     lab_sport = st.selectbox("Sport", ["MLB", "NBA Points", "NBA Assists"], key="lab_sport")
     sport_key = 'MLB' if lab_sport == 'MLB' else ('NBA' if lab_sport == 'NBA Points' else 'NBA_AST')
