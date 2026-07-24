@@ -84,22 +84,51 @@ def get_lol_team_matches(api_key, team_slug, timeout=20):
     return response.json()
 
 
-def get_lol_teams_list(api_key, timeout=20):
+def get_lol_teams_list(api_key, timeout=20, max_pages=20):
     """Real, documented endpoint (found via Cito's own full docs page,
     July 2026): GET /api/v1/lol/teams — 'List Teams: Professional LoL
     teams'. This is the real, authoritative source for team slugs,
     replacing the earlier approach of deriving a name-to-slug map only
-    from whichever teams happened to appear on a single day's schedule
-    (today/schedule) — a real, meaningful gap, since a team not playing
-    on that specific day would never appear in that map at all, even
-    though it's a real, covered team. This endpoint should return every
-    professional team Cito tracks, regardless of what's scheduled today."""
-    response = requests.get(
-        f"{CITO_BASE_URL}/api/v1/lol/teams",
-        headers=_cito_headers(api_key), timeout=timeout,
-    )
-    response.raise_for_status()
-    return response.json()
+    from whichever teams happened to appear on a single day's schedule.
+
+    Real bug found and fixed (July 2026): a first version of this
+    function made a single, unpaginated call and used whatever came
+    back directly. Real live data showed the response is sorted
+    alphabetically/numerically (100t, 19-esports, 2-massive, 300,
+    3bl-esports, ...) and total team count across all regions/tiers is
+    almost certainly larger than one page — meaning teams that sort
+    later in the alphabet (G2 Esports, Karmine Corp, Movistar KOI,
+    Team Vitality — exactly the real LEC teams this pipeline needs)
+    were silently never reached, causing every matchup to fail to
+    resolve. This now pages through using limit/offset (the general
+    pagination pattern the docs describe for this API) until the
+    response reports no more results or max_pages is hit, then
+    combines every page's teams into one full list. Handles a few
+    plausible 'more data available' signals defensively (hasMore,
+    or a returned page smaller than the requested limit), since the
+    exact field name for this specific endpoint hasn't been directly
+    confirmed."""
+    all_teams = []
+    limit = 100
+    offset = 0
+    for _ in range(max_pages):
+        response = requests.get(
+            f"{CITO_BASE_URL}/api/v1/lol/teams",
+            headers=_cito_headers(api_key), params={"limit": limit, "offset": offset}, timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        page_teams = data.get("teams") or data.get("data") or (data if isinstance(data, list) else [])
+        if not page_teams:
+            break
+        all_teams.extend(page_teams)
+        has_more = data.get("hasMore") if isinstance(data, dict) else None
+        if has_more is False:
+            break
+        if has_more is None and len(page_teams) < limit:
+            break  # a page smaller than requested strongly implies this was the last one
+        offset += limit
+    return {"teams": all_teams, "total_fetched": len(all_teams)}
 
 
 def build_team_name_to_slug_map(teams_list_response):
@@ -266,12 +295,21 @@ def get_cito_safety_check(api_key):
     ]:
         try:
             data = fn(api_key)
-            results[label] = {
-                "ok": True,
-                "type": type(data).__name__,
-                "sample": data if not isinstance(data, list) else data[:2],
-                "count": len(data) if isinstance(data, list) else data.get("count"),
-            }
+            if label == "teams_list":
+                teams = data.get("teams", [])
+                results[label] = {
+                    "ok": True, "type": "dict",
+                    "total_fetched": data.get("total_fetched"),
+                    "sample_first_5": teams[:5],
+                    "sample_last_5": teams[-5:] if len(teams) >= 5 else teams,
+                }
+            else:
+                results[label] = {
+                    "ok": True,
+                    "type": type(data).__name__,
+                    "sample": data if not isinstance(data, list) else data[:2],
+                    "count": len(data) if isinstance(data, list) else data.get("count"),
+                }
         except Exception as e:
             results[label] = {"ok": False, "error": str(e)}
 
