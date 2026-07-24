@@ -7537,6 +7537,9 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
 
         results.append({
             "event_title": market.get("event_title"),
+            "question": market.get("question"),
+            "market_slug": market.get("slug"),
+            "group_item_title": market.get("groupItemTitle"),
             "team1_name": m["team1_name"], "team2_name": m["team2_name"],
             "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
             "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
@@ -9096,6 +9099,7 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                 st.warning("Pipeline ran successfully but found 0 usable matchups — could mean no real match-winner markets are live right now, or none of the team names resolved to a real Cito slug. Check the safety checks above for what's actually live right now.")
             else:
                 st.success(f"✅ Pipeline succeeded — {len(lol_results)} real matchup(s) with model predictions")
+                st.warning("⚠️ **Known, unverified issue**: the same team matchup may appear multiple times with different market prices — likely because Polymarket splits one event into several real sub-markets (Map 1 winner, Map 2 winner, overall series winner, etc.), and the current filter doesn't yet distinguish which is which. The 'question' and 'market slug' fields below are shown specifically to diagnose this before trusting any edge number.")
                 for r in lol_results:
                     if r.get("fetch_errors"):
                         st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
@@ -9103,6 +9107,8 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                     with col1:
                         st.write(f"**{r['team1_name']}** ({r['team1_rating']}) vs **{r['team2_name']}** ({r['team2_rating']})")
                         st.caption(f"{r['event_title']} — Bo{r['best_of']}")
+                        st.caption(f"Q: {r.get('question')}")
+                        st.caption(f"Market slug: {r.get('market_slug')} | Group item: {r.get('group_item_title')}")
                     with col2:
                         st.write(f"Model: {r['model_prob_team1']*100:.1f}%")
                         st.write(f"Market: {r['market_prob_team1']*100:.1f}%")
