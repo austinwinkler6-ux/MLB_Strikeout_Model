@@ -145,3 +145,23 @@ def predict_series(ratings, team1_slug, team2_slug, best_of, starting_rating=DEF
     r2 = ratings.get(team2_slug, starting_rating)
     single_game_prob = calculate_elo_expected_score(r1, r2)
     return series_win_probability(single_game_prob, best_of)
+
+
+def combine_and_dedupe_matches(list_of_match_lists):
+    """A real, global rating pool needs history from MANY teams, not
+    just one — but cito_api.get_lol_team_matches() is per-team, and
+    any given match between team A and team B appears once in team
+    A's fetched history and once in team B's, with identical content.
+    Feeding both copies into build_team_ratings_from_history() would
+    double-count that game's Elo impact — a real, easy-to-miss bug this
+    function exists specifically to prevent. Dedupes on 'matchId',
+    matching the confirmed real field from Cito's schema."""
+    seen_match_ids = set()
+    combined = []
+    for match_list in list_of_match_lists:
+        for match in match_list:
+            match_id = match.get("matchId")
+            if match_id and match_id not in seen_match_ids:
+                seen_match_ids.add(match_id)
+                combined.append(match)
+    return combined
