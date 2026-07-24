@@ -60,6 +60,34 @@ def get_lol_schedule_today(api_key, timeout=20):
     return response.json()
 
 
+def get_lol_schedule_upcoming(api_key, timeout=20):
+    """Real, documented endpoint (found via Cito's own full docs page,
+    July 2026): GET /api/v1/lol/schedule/upcoming — a wider window of
+    upcoming matches than schedule/today, not limited to just the
+    current day. Same real response shape as schedule/today (each
+    match includes nested team1/team2 objects with slug/name/code),
+    confirmed from live data earlier in this build.
+
+    Real fix (July 2026): replaces fetching the ENTIRE global team
+    database (GET /lol/teams, paginated) as the source for the
+    name-to-slug map. That approach was technically more complete, but
+    real live testing showed the global database is genuinely huge
+    (pagination hit a rate limit at offset=1800, meaning 1800+ teams
+    across every minor/amateur region worldwide) — burning through the
+    free tier's monthly call quota in a single pipeline run just to
+    resolve a handful of real, currently-relevant teams. Since
+    Polymarket only lists markets for real, currently live/upcoming
+    matches anyway, the set of teams that actually need to resolve is
+    naturally small and already covered by a real upcoming-schedule
+    fetch — a single call instead of dozens."""
+    response = requests.get(
+        f"{CITO_BASE_URL}/api/v1/lol/schedule/upcoming",
+        headers=_cito_headers(api_key), timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def get_lol_live_matches(api_key, timeout=20):
     """Confirmed endpoint. Returns currently active LoL esports
     matches and live state."""
@@ -131,65 +159,63 @@ def get_lol_teams_list(api_key, timeout=20, max_pages=20):
     return {"teams": all_teams, "total_fetched": len(all_teams)}
 
 
-def build_team_name_to_slug_map(teams_list_response):
+def build_team_name_to_slug_map(*schedule_responses):
     """Solves a real, necessary problem for connecting Polymarket to
     Cito: Polymarket identifies teams by full display name ('G2
     Esports', 'Movistar KOI') inside market outcome strings, while
-    Cito identifies teams by slug ('g2', 'mkoi'). Built against the
-    real, documented GET /api/v1/lol/teams endpoint ('List Teams:
-    Professional LoL teams') — the authoritative full team list,
-    rather than the earlier approach of only building this map from
-    whichever teams happened to appear on one specific day's schedule.
+    Cito identifies teams by slug ('g2', 'mkoi'). Accepts one or more
+    real schedule responses (schedule/today, schedule/upcoming) and
+    builds the map from their nested team1/team2 objects.
 
-    CONFIRMED real schema (verified against a live response, July
-    2026): {"teams": [{"slug", "name", "shortName", "region",
-    "logoUrl", "isActive", "leagues", "rosterCount", "rosterStatus"},
-    ...]}.
+    Real fix (July 2026): an earlier version fetched Cito's ENTIRE
+    global team database (GET /lol/teams, paginated) for
+    completeness. Real live testing showed that database is genuinely
+    huge — pagination hit a real rate limit at offset=1800, meaning
+    1800+ teams across every minor/amateur region worldwide, burning
+    through the free tier's monthly quota in a single pipeline run
+    just to resolve a handful of currently-relevant teams. Since
+    Polymarket only lists markets for real, live/upcoming matches, the
+    set of teams that actually need to resolve is naturally covered by
+    real schedule data (schedule/today + schedule/upcoming combined)
+    at a fraction of the API cost.
 
-    Real bug found and fixed (July 2026), separate from the earlier
-    substring-fallback removal: 'name' and 'shortName' both feed into
-    the same dict key space here. Real live data showed T1's main
-    roster still resolving to 't1-rookies' even after removing the
-    fuzzy substring match — because T1's academy/rookie squad
-    apparently ALSO uses 'T1' as its shortName, so one team's entry was
-    silently overwriting the other's regardless of processing order,
-    with exact-match lookups powerless to detect it (both sides of the
-    lookup were "exact"). Now tracks every distinct slug seen per key;
-    if a key (name or shortName) ever maps to more than one real,
-    different slug, that key is excluded from the final map entirely
-    rather than letting whichever team was processed last silently
-    win. An excluded/ambiguous team will fail to resolve and get
-    skipped upstream — the correct, honest outcome when genuine
-    ambiguity exists, consistent with this project's standing
-    principle that an unmatched team should block a prediction, not
-    silently produce a wrong one."""
-    name_to_slug = {}
-    if isinstance(teams_list_response, dict):
-        teams = teams_list_response.get("teams") or teams_list_response.get("data") or []
-    elif isinstance(teams_list_response, list):
-        teams = teams_list_response
-    else:
-        teams = []
-
-    # First pass: collect every distinct slug seen for each key
+    Real, separate bug also fixed here (kept from the previous
+    version): 'name' and 'code' (this schedule shape's short-name
+    field — NOT 'shortName', that was the global-teams-endpoint's
+    naming) both feed into the same key space, and two different teams
+    (e.g. a main roster and its academy squad) can genuinely share a
+    short code. Tracks every distinct slug seen per key; any key
+    mapping to more than one real, different slug is excluded from the
+    final map entirely, rather than letting whichever team was
+    processed last silently win — an unmatched team should block a
+    prediction, not silently produce a wrong one."""
     key_to_slugs = {}
-    for team in teams:
-        if not isinstance(team, dict):
-            continue
-        slug = team.get("slug")
-        name = team.get("name")
-        short_name = team.get("shortName")
-        if slug and name:
-            key_to_slugs.setdefault(name.strip().lower(), set()).add(slug)
-        if slug and short_name:
-            key_to_slugs.setdefault(short_name.strip().lower(), set()).add(slug)
+    for schedule_response in schedule_responses:
+        if isinstance(schedule_response, dict):
+            matches = schedule_response.get("data", [])
+        elif isinstance(schedule_response, list):
+            matches = schedule_response
+        else:
+            matches = []
 
-    # Second pass: only keep keys with exactly one, unambiguous slug
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            for team_key in ("team1", "team2"):
+                team = match.get(team_key) or {}
+                slug = team.get("slug")
+                name = team.get("name")
+                code = team.get("code")
+                if slug and name:
+                    key_to_slugs.setdefault(name.strip().lower(), set()).add(slug)
+                if slug and code:
+                    key_to_slugs.setdefault(code.strip().lower(), set()).add(slug)
+
+    name_to_slug = {}
     for key, slugs in key_to_slugs.items():
         if len(slugs) == 1:
             name_to_slug[key] = next(iter(slugs))
         # len(slugs) > 1 means genuine ambiguity — deliberately excluded
-
     return name_to_slug
 
 
