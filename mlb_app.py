@@ -8959,8 +8959,13 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                 for label, res in cito_result.items():
                     st.write(f"**{label}**")
                     if res.get("ok"):
-                        st.success(f"✅ Real response received — type: {res['type']}" + (f", count: {res['count']}" if res.get('count') is not None else ""))
-                        st.json(res["sample"])
+                        if label == "team_matches_t1":
+                            st.success(f"✅ Real response received — {res.get('total_entries')} total entries, {res.get('completed_match_count')} completed matches extracted")
+                            st.write("Sample completed matches (real Elo/rating training data):")
+                            st.json(res.get("sample_completed"))
+                        else:
+                            st.success(f"✅ Real response received — type: {res['type']}" + (f", count: {res['count']}" if res.get('count') is not None else ""))
+                            st.json(res["sample"])
                     else:
                         st.error(f"❌ Real error: {res.get('error')}")
                     st.markdown("---")
