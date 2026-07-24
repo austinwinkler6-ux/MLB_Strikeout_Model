@@ -7442,6 +7442,115 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
 
             st.divider()
 
+# ---- LoL LIVE PROJECTION PIPELINE ----
+def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
+    """The real, full pipeline tying together every piece built today:
+    1. Fetch real, live LoL events from Polymarket, extract match-
+       winner markets (the confirmed-real market type).
+    2. Fetch a real schedule snapshot from Cito to build a team
+       name-to-slug map, since Polymarket uses names and Cito uses
+       slugs.
+    3. For every unique team appearing in the Polymarket matchups,
+       fetch its real match history from Cito.
+    4. Combine and dedupe all fetched history, build one real, global
+       Elo ratings table from it.
+    5. For each Polymarket matchup, predict the series win probability
+       from the real ratings, compare to Polymarket's real market
+       price, compute a real edge.
+    Returns a list of dicts, one per matchup, with everything needed
+    to display and log a bet — or an 'error' key if something failed,
+    following the same honest-failure pattern used throughout this
+    project rather than silently returning an empty result."""
+    from polymarket_api import get_polymarket_events, extract_match_winner_markets, polymarket_price_to_american_odds
+    from cito_api import get_lol_schedule_today, get_lol_team_matches, build_team_name_to_slug_map, match_polymarket_name_to_slug, extract_completed_matches, sort_matches_chronologically
+    from lol_elo import combine_and_dedupe_matches, build_team_ratings_from_history, predict_series
+
+    results = []
+
+    try:
+        events = get_polymarket_events(tag_slug=tag_slug, closed=False, limit=50)
+    except Exception as e:
+        return {"error": f"Polymarket fetch failed: {e}"}
+
+    match_markets = extract_match_winner_markets(events)
+    if not match_markets:
+        return []  # genuinely no real matchup markets live right now — not an error
+
+    try:
+        schedule = get_lol_schedule_today(api_key)
+        name_to_slug = build_team_name_to_slug_map(schedule)
+    except Exception as e:
+        return {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
+
+    # Resolve every matchup's two team names to real slugs up front,
+    # so we know exactly which teams' histories we actually need —
+    # avoids wasting real API calls on teams that don't resolve.
+    resolved_matchups = []
+    for market in match_markets:
+        outcomes = market.get("outcomes_parsed", [])
+        if len(outcomes) != 2:
+            continue
+        slug1 = match_polymarket_name_to_slug(outcomes[0], name_to_slug)
+        slug2 = match_polymarket_name_to_slug(outcomes[1], name_to_slug)
+        if not slug1 or not slug2:
+            continue  # a real, unmatched team — skip rather than guess
+        resolved_matchups.append({
+            "market": market, "team1_name": outcomes[0], "team2_name": outcomes[1],
+            "team1_slug": slug1, "team2_slug": slug2,
+        })
+
+    unique_slugs = set()
+    for m in resolved_matchups:
+        unique_slugs.add(m["team1_slug"])
+        unique_slugs.add(m["team2_slug"])
+
+    all_team_histories = []
+    fetch_errors = []
+    for slug in unique_slugs:
+        try:
+            team_matches = get_lol_team_matches(api_key, slug)
+            completed = extract_completed_matches(team_matches)
+            all_team_histories.append(completed)
+        except Exception as e:
+            fetch_errors.append(f"{slug}: {e}")
+
+    combined_history = combine_and_dedupe_matches(all_team_histories)
+    sorted_history = sort_matches_chronologically(combined_history)
+    ratings = build_team_ratings_from_history(sorted_history)
+
+    for m in resolved_matchups:
+        market = m["market"]
+        outcomes = market.get("outcomes_parsed", [])
+        prices = market.get("outcomePrices_parsed", [])
+        if len(prices) != 2:
+            continue
+        try:
+            market_prob_team1 = float(prices[0])
+        except (ValueError, TypeError):
+            continue
+
+        question = (market.get("question") or "").lower()
+        best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
+
+        model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
+        edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
+
+        results.append({
+            "event_title": market.get("event_title"),
+            "team1_name": m["team1_name"], "team2_name": m["team2_name"],
+            "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
+            "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
+            "team2_rating": round(ratings.get(m["team2_slug"], 1500), 1),
+            "model_prob_team1": round(model_prob_team1, 3),
+            "market_prob_team1": round(market_prob_team1, 3),
+            "edge_pct": edge,
+            "best_of": best_of,
+            "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
+            "fetch_errors": fetch_errors,
+        })
+
+    return results
+
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
     _bankroll_settings = get_user_settings()
@@ -8907,7 +9016,7 @@ elif nav == "🔬 Model Lab" and is_admin:
 elif nav == "🎮 Esports (LoL)" and is_admin:
     st.title("🎮 Esports — League of Legends")
     st.markdown("---")
-    st.info("🔧 **Admin-only, early build.** Real market side confirmed (Polymarket has genuine player-prop markets for LoL — kills/assists/deaths, resolving on official box scores). Real, purpose-built stats data source (for building actual projections) not yet verified — this page currently only confirms the market/odds side is real and reachable.")
+    st.info("🔧 **Admin-only, early build.** Real, confirmed data foundation: Polymarket has real match/series-winner markets for LoL (confirmed live — player props were checked directly and confirmed NOT to exist for this game, despite initial marketing copy suggesting otherwise). Cito API confirmed working for real team match history with real winners/scores. Full live pipeline below connects both into real Elo-based win probabilities.")
 
     st.subheader("🧪 Live Polymarket Safety Check")
     st.caption("Built the same way as NFL's live pipeline safety check — does NOT assume the fetch/filtering logic works correctly, actually calls it and reports the real result. One real, known gap flagged honestly: query-parameter filtering (tag_slug, closed status) could not be independently verified as working from the development sandbox — two test fetches with different parameters returned identical, old results, which points at a caching layer in that environment's fetch tool rather than a confirmed problem with the real API. This is the actual, live test of that.")
@@ -8928,13 +9037,13 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                     st.write("**Sample event titles:**")
                     for title in result["sample_titles"]:
                         st.write(f"- {title}")
-                    st.write(f"**Player-prop-style markets found (via the current heuristic filter):** {result['player_prop_market_count']}")
-                    if result["sample_prop_questions"]:
-                        st.write("**Sample questions matched:**")
-                        for q in result["sample_prop_questions"]:
-                            st.write(f"- {q}")
+                    st.write(f"**Real match-winner markets found (confirmed market type):** {result['match_winner_market_count']}")
+                    if result["sample_match_markets"]:
+                        st.write("**Sample match-winner markets:**")
+                        for m in result["sample_match_markets"]:
+                            st.write(f"- {m['event']}: {m['outcomes']} @ {m['prices']}")
                     else:
-                        st.warning("No player-prop-style questions matched — either there genuinely aren't any live right now, or the keyword heuristic in extract_player_prop_markets() needs adjusting once real questions can be inspected.")
+                        st.warning("No match-winner-style markets matched in this batch — could mean the current events are mostly futures/other market types rather than head-to-head matches right now.")
                 else:
                     st.warning("Fetch succeeded but returned 0 events — could mean no LoL events are live right now (plausible, real esports schedules are gappy), or that tag_slug='league-of-legends' isn't the correct real tag slug (never independently confirmed from this environment). Worth checking Polymarket's site directly for the current LoL tag slug if this stays at 0 with real matches known to be scheduled.")
             else:
@@ -8969,6 +9078,39 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                     else:
                         st.error(f"❌ Real error: {res.get('error')}")
                     st.markdown("---")
+
+    st.markdown("---")
+    st.subheader("🚀 Run Live LoL Projections")
+    st.caption("The real, full pipeline: fetches live Polymarket LoL matchups, matches team names to Cito slugs, pulls real match history for every team involved, builds a real Elo ratings table, and compares the model's win probability against Polymarket's real market price. Genuinely new — has not been run end-to-end before, so treat the first real run here the same way NFL's first live Receptions run was treated: watch it closely, don't assume success.")
+
+    if "CITO_API_KEY" not in st.secrets:
+        st.warning("⚠️ CITO_API_KEY not found in secrets — required for this pipeline to run.")
+    else:
+        if st.button("🚀 Run LoL Matchup Projections", key="run_lol_projections"):
+            with st.spinner("Running the full live pipeline — fetching Polymarket, matching teams, pulling Cito history, building ratings..."):
+                lol_results = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
+
+            if isinstance(lol_results, dict) and lol_results.get("error"):
+                st.error(f"❌ Pipeline failed: {lol_results['error']}")
+            elif not lol_results:
+                st.warning("Pipeline ran successfully but found 0 usable matchups — could mean no real match-winner markets are live right now, or none of the team names resolved to a real Cito slug. Check the safety checks above for what's actually live right now.")
+            else:
+                st.success(f"✅ Pipeline succeeded — {len(lol_results)} real matchup(s) with model predictions")
+                for r in lol_results:
+                    if r.get("fetch_errors"):
+                        st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    with col1:
+                        st.write(f"**{r['team1_name']}** ({r['team1_rating']}) vs **{r['team2_name']}** ({r['team2_rating']})")
+                        st.caption(f"{r['event_title']} — Bo{r['best_of']}")
+                    with col2:
+                        st.write(f"Model: {r['model_prob_team1']*100:.1f}%")
+                        st.write(f"Market: {r['market_prob_team1']*100:.1f}%")
+                    with col3:
+                        edge_color = "🟢" if r["edge_pct"] > 0 else "🔴"
+                        st.write(f"{edge_color} Edge: {r['edge_pct']:+.1f}%")
+                        st.write(f"Odds: {r['market_odds_team1']}")
+                    st.divider()
 
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
