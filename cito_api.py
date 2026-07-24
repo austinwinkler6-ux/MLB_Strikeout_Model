@@ -84,6 +84,52 @@ def get_lol_team_matches(api_key, team_slug, timeout=20):
     return response.json()
 
 
+def build_team_name_to_slug_map(schedule_response):
+    """Solves a real, necessary problem for connecting Polymarket to
+    Cito: Polymarket identifies teams by full display name ('G2
+    Esports', 'Movistar KOI') inside market outcome strings, while
+    Cito identifies teams by slug ('g2', 'mkoi') for its match-history
+    endpoint. Confirmed real schedule/today response includes both
+    together on every team object (team1/team2: {slug, name, code}),
+    so this builds a real, current mapping FROM this live data rather
+    than a hardcoded, staleness-prone table that would need manual
+    maintenance every time a team rebrands or a new team appears.
+    Maps both the full name AND the short code (both lowercased) to
+    the slug, to maximize real matches against however Polymarket's
+    market text happens to phrase a given team."""
+    name_to_slug = {}
+    data = schedule_response.get("data", []) if isinstance(schedule_response, dict) else schedule_response
+    for match in data:
+        for team_key in ("team1", "team2"):
+            team = match.get(team_key, {})
+            slug = team.get("slug")
+            name = team.get("name")
+            code = team.get("code")
+            if slug and name:
+                name_to_slug[name.strip().lower()] = slug
+            if slug and code:
+                name_to_slug[code.strip().lower()] = slug
+    return name_to_slug
+
+
+def match_polymarket_name_to_slug(polymarket_team_name, name_to_slug_map):
+    """Looks up a real slug for a Polymarket outcome team name against
+    the map built by build_team_name_to_slug_map(). Tries an exact
+    (case-insensitive) match first; falls back to a real but honestly
+    imperfect substring check (does the map's team name appear inside,
+    or contain, the Polymarket name) for cases where phrasing differs
+    slightly (e.g. 'G2' vs 'G2 Esports'). Returns None, not a guessed
+    slug, if nothing reasonably matches — an unmatched team should
+    block a prediction, not silently produce a wrong one."""
+    normalized = polymarket_team_name.strip().lower()
+    if normalized in name_to_slug_map:
+        return name_to_slug_map[normalized]
+    for known_name, slug in name_to_slug_map.items():
+        if known_name in normalized or normalized in known_name:
+            return slug
+    return None
+
+
 def extract_completed_matches(team_matches_response):
     """Given the raw response from get_lol_team_matches(), returns
     only the real, completed matches (state == 'completed', winner is
