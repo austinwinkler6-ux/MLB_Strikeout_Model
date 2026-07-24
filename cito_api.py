@@ -139,18 +139,30 @@ def build_team_name_to_slug_map(teams_list_response):
     real, documented GET /api/v1/lol/teams endpoint ('List Teams:
     Professional LoL teams') — the authoritative full team list,
     rather than the earlier approach of only building this map from
-    whichever teams happened to appear on one specific day's schedule
-    (a real, meaningful gap: a team not playing that exact day would
-    never resolve, even though it's genuinely covered by Cito).
+    whichever teams happened to appear on one specific day's schedule.
 
     CONFIRMED real schema (verified against a live response, July
     2026): {"teams": [{"slug", "name", "shortName", "region",
     "logoUrl", "isActive", "leagues", "rosterCount", "rosterStatus"},
-    ...]}. An earlier version of this function guessed the short-name
-    field would be called 'code'/'teamCode' (matching the schedule
-    endpoint's nested team objects) — real data confirmed it's
-    actually 'shortName' here. Fixed after seeing the real response
-    rather than continuing to guess."""
+    ...]}.
+
+    Real bug found and fixed (July 2026), separate from the earlier
+    substring-fallback removal: 'name' and 'shortName' both feed into
+    the same dict key space here. Real live data showed T1's main
+    roster still resolving to 't1-rookies' even after removing the
+    fuzzy substring match — because T1's academy/rookie squad
+    apparently ALSO uses 'T1' as its shortName, so one team's entry was
+    silently overwriting the other's regardless of processing order,
+    with exact-match lookups powerless to detect it (both sides of the
+    lookup were "exact"). Now tracks every distinct slug seen per key;
+    if a key (name or shortName) ever maps to more than one real,
+    different slug, that key is excluded from the final map entirely
+    rather than letting whichever team was processed last silently
+    win. An excluded/ambiguous team will fail to resolve and get
+    skipped upstream — the correct, honest outcome when genuine
+    ambiguity exists, consistent with this project's standing
+    principle that an unmatched team should block a prediction, not
+    silently produce a wrong one."""
     name_to_slug = {}
     if isinstance(teams_list_response, dict):
         teams = teams_list_response.get("teams") or teams_list_response.get("data") or []
@@ -159,6 +171,8 @@ def build_team_name_to_slug_map(teams_list_response):
     else:
         teams = []
 
+    # First pass: collect every distinct slug seen for each key
+    key_to_slugs = {}
     for team in teams:
         if not isinstance(team, dict):
             continue
@@ -166,9 +180,16 @@ def build_team_name_to_slug_map(teams_list_response):
         name = team.get("name")
         short_name = team.get("shortName")
         if slug and name:
-            name_to_slug[name.strip().lower()] = slug
+            key_to_slugs.setdefault(name.strip().lower(), set()).add(slug)
         if slug and short_name:
-            name_to_slug[short_name.strip().lower()] = slug
+            key_to_slugs.setdefault(short_name.strip().lower(), set()).add(slug)
+
+    # Second pass: only keep keys with exactly one, unambiguous slug
+    for key, slugs in key_to_slugs.items():
+        if len(slugs) == 1:
+            name_to_slug[key] = next(iter(slugs))
+        # len(slugs) > 1 means genuine ambiguity — deliberately excluded
+
     return name_to_slug
 
 
