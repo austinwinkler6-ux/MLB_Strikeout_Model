@@ -7462,7 +7462,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     following the same honest-failure pattern used throughout this
     project rather than silently returning an empty result."""
     from polymarket_api import get_polymarket_events, extract_match_winner_markets, polymarket_price_to_american_odds
-    from cito_api import get_lol_schedule_today, get_lol_team_matches, build_team_name_to_slug_map, match_polymarket_name_to_slug, extract_completed_matches, sort_matches_chronologically
+    from cito_api import get_lol_teams_list, get_lol_team_matches, build_team_name_to_slug_map, match_polymarket_name_to_slug, extract_completed_matches, sort_matches_chronologically
     from lol_elo import combine_and_dedupe_matches, build_team_ratings_from_history, predict_series
 
     results = []
@@ -7477,10 +7477,15 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         return []  # genuinely no real matchup markets live right now — not an error
 
     try:
-        schedule = get_lol_schedule_today(api_key)
-        name_to_slug = build_team_name_to_slug_map(schedule)
+        # Real fix (July 2026) — switched from schedule/today (only
+        # covers teams playing that exact day) to the real, documented
+        # /lol/teams endpoint (the full, authoritative team list),
+        # after this exact gap caused real teams (G2, KOI, Vitality,
+        # Karmine Corp) to fail to resolve during live testing.
+        teams_list = get_lol_teams_list(api_key)
+        name_to_slug = build_team_name_to_slug_map(teams_list)
     except Exception as e:
-        return {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
+        return {"error": f"Cito teams list fetch failed (needed for team name matching): {e}"}
 
     # Resolve every matchup's two team names to real slugs up front,
     # so we know exactly which teams' histories we actually need —
