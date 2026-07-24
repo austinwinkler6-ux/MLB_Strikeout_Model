@@ -39,7 +39,7 @@ future version wants game-level rather than series-level ratings.
 """
 
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 CITO_BASE_URL = "https://api.citoapi.com"
 
@@ -165,7 +165,15 @@ def sort_matches_chronologically(matches):
         try:
             return datetime.fromisoformat(m.get("startTime", "").replace("Z", "+00:00"))
         except (ValueError, AttributeError):
-            return datetime.min
+            # Real bug fix (July 2026) — datetime.min is timezone-naive,
+            # but successfully-parsed real timestamps above are
+            # timezone-aware (they carry a +00:00 offset). Python
+            # cannot compare naive and aware datetimes directly, so
+            # sorted() threw a real TypeError the moment any match had
+            # a missing/malformed startTime alongside real ones. The
+            # fallback must be timezone-aware too, to sort consistently
+            # with the real values rather than crashing on comparison.
+            return datetime.min.replace(tzinfo=timezone.utc)
 
     return sorted(matches, key=_parse_time)
 
