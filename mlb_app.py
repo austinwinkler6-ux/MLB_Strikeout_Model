@@ -9080,6 +9080,12 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                             st.success(f"✅ Real response received — {res.get('total_entries')} total entries, {res.get('completed_match_count')} completed matches extracted")
                             st.write("Sample completed matches (real Elo/rating training data):")
                             st.json(res.get("sample_completed"))
+                        elif label == "teams_list":
+                            st.success(f"✅ Real response received — {res.get('total_fetched')} total teams fetched across all pages")
+                            st.write("First 5 (alphabetically earliest):")
+                            st.json(res.get("sample_first_5"))
+                            st.write("Last 5 (alphabetically latest — should include real later-alphabet teams like G2/Karmine Corp if pagination actually worked):")
+                            st.json(res.get("sample_last_5"))
                         else:
                             st.success(f"✅ Real response received — type: {res['type']}" + (f", count: {res['count']}" if res.get('count') is not None else ""))
                             st.json(res["sample"])
