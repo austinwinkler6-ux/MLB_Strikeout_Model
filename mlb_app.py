@@ -4257,7 +4257,7 @@ with st.sidebar:
         """, unsafe_allow_html=True)
 
     st.markdown("---")
-    admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
+    admin_nav = ["🔬 Model Lab", "🧪 Backtest", "🎮 Esports (LoL)"] if is_admin else []
     nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
     if st.session_state.get('nav_redirect') in nav_options:
         st.session_state['main_nav_radio'] = st.session_state['nav_redirect']
@@ -8903,7 +8903,44 @@ elif nav == "🔬 Model Lab" and is_admin:
             if publish_model_performance(sport_key):
                 st.success(f"✅ Published {lab_sport} stats to the public Model Performance page.")
 
-# ---- BACKTEST (ADMIN ONLY) ----
+# ---- ESPORTS (LoL) — ADMIN ONLY, BRAND NEW, UNPROVEN ----
+elif nav == "🎮 Esports (LoL)" and is_admin:
+    st.title("🎮 Esports — League of Legends")
+    st.markdown("---")
+    st.info("🔧 **Admin-only, early build.** Real market side confirmed (Polymarket has genuine player-prop markets for LoL — kills/assists/deaths, resolving on official box scores). Real, purpose-built stats data source (for building actual projections) not yet verified — this page currently only confirms the market/odds side is real and reachable.")
+
+    st.subheader("🧪 Live Polymarket Safety Check")
+    st.caption("Built the same way as NFL's live pipeline safety check — does NOT assume the fetch/filtering logic works correctly, actually calls it and reports the real result. One real, known gap flagged honestly: query-parameter filtering (tag_slug, closed status) could not be independently verified as working from the development sandbox — two test fetches with different parameters returned identical, old results, which points at a caching layer in that environment's fetch tool rather than a confirmed problem with the real API. This is the actual, live test of that.")
+
+    if st.button("Test Polymarket LoL fetch", key="polymarket_lol_safety_check"):
+        with st.spinner("Fetching live Polymarket data..."):
+            try:
+                from polymarket_api import get_polymarket_safety_check
+                result = get_polymarket_safety_check()
+            except ImportError:
+                st.error("❌ Couldn't import polymarket_api — make sure polymarket_api.py is deployed alongside mlb_app.py in the same directory.")
+                result = None
+
+        if result:
+            if result.get("fetch_ok"):
+                st.success(f"✅ Fetch succeeded — {result['event_count']} LoL event(s) returned")
+                if result["event_count"] > 0:
+                    st.write("**Sample event titles:**")
+                    for title in result["sample_titles"]:
+                        st.write(f"- {title}")
+                    st.write(f"**Player-prop-style markets found (via the current heuristic filter):** {result['player_prop_market_count']}")
+                    if result["sample_prop_questions"]:
+                        st.write("**Sample questions matched:**")
+                        for q in result["sample_prop_questions"]:
+                            st.write(f"- {q}")
+                    else:
+                        st.warning("No player-prop-style questions matched — either there genuinely aren't any live right now, or the keyword heuristic in extract_player_prop_markets() needs adjusting once real questions can be inspected.")
+                else:
+                    st.warning("Fetch succeeded but returned 0 events — could mean no LoL events are live right now (plausible, real esports schedules are gappy), or that tag_slug='league-of-legends' isn't the correct real tag slug (never independently confirmed from this environment). Worth checking Polymarket's site directly for the current LoL tag slug if this stays at 0 with real matches known to be scheduled.")
+            else:
+                st.error(f"❌ Real fetch error: {result.get('error')}")
+
+
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
