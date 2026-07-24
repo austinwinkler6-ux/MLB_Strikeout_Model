@@ -7490,6 +7490,8 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         schedule_upcoming = get_lol_schedule_upcoming(api_key)
         name_to_slug = build_team_name_to_slug_map(schedule_today, schedule_upcoming)
     except Exception as e:
+        if "429" in str(e):
+            return {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary (typically resets within a minute or few, not a permanent quota loss), especially right after the earlier pagination bug fired off 18+ rapid calls. Wait a minute and try again rather than assuming this is a new, different problem. Raw error: {e}"}
         return {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
 
     # Resolve every matchup's two team names to real slugs up front,
