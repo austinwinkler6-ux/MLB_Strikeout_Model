@@ -84,31 +84,65 @@ def get_lol_team_matches(api_key, team_slug, timeout=20):
     return response.json()
 
 
-def build_team_name_to_slug_map(schedule_response):
+def get_lol_teams_list(api_key, timeout=20):
+    """Real, documented endpoint (found via Cito's own full docs page,
+    July 2026): GET /api/v1/lol/teams — 'List Teams: Professional LoL
+    teams'. This is the real, authoritative source for team slugs,
+    replacing the earlier approach of deriving a name-to-slug map only
+    from whichever teams happened to appear on a single day's schedule
+    (today/schedule) — a real, meaningful gap, since a team not playing
+    on that specific day would never appear in that map at all, even
+    though it's a real, covered team. This endpoint should return every
+    professional team Cito tracks, regardless of what's scheduled today."""
+    response = requests.get(
+        f"{CITO_BASE_URL}/api/v1/lol/teams",
+        headers=_cito_headers(api_key), timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def build_team_name_to_slug_map(teams_list_response):
     """Solves a real, necessary problem for connecting Polymarket to
     Cito: Polymarket identifies teams by full display name ('G2
     Esports', 'Movistar KOI') inside market outcome strings, while
-    Cito identifies teams by slug ('g2', 'mkoi') for its match-history
-    endpoint. Confirmed real schedule/today response includes both
-    together on every team object (team1/team2: {slug, name, code}),
-    so this builds a real, current mapping FROM this live data rather
-    than a hardcoded, staleness-prone table that would need manual
-    maintenance every time a team rebrands or a new team appears.
-    Maps both the full name AND the short code (both lowercased) to
-    the slug, to maximize real matches against however Polymarket's
-    market text happens to phrase a given team."""
+    Cito identifies teams by slug ('g2', 'mkoi'). Built against the
+    real, documented GET /api/v1/lol/teams endpoint ('List Teams: 
+    Professional LoL teams') — the authoritative full team list,
+    rather than the earlier approach of only building this map from
+    whichever teams happened to appear on one specific day's schedule
+    (a real, meaningful gap: a team not playing that exact day would
+    never resolve, even though it's genuinely covered by Cito).
+
+    HONEST, NAMED UNCERTAINTY: the exact response shape for this
+    specific endpoint has not yet been seen from a real, live call —
+    only its existence and one-line description were confirmed from
+    documentation. Built defensively to handle a plain list, a
+    {"data": [...]} wrapper, or a {"teams": [...]} wrapper, and to try
+    several plausible field-name variants per team (slug/teamSlug,
+    name/teamName, code/teamCode) since the schedule endpoint's nested
+    team objects used one naming convention but this top-level teams
+    endpoint might use another. Needs real verification against a live
+    response — see get_cito_safety_check(), which now calls this
+    endpoint directly and reports its genuine shape."""
     name_to_slug = {}
-    data = schedule_response.get("data", []) if isinstance(schedule_response, dict) else schedule_response
-    for match in data:
-        for team_key in ("team1", "team2"):
-            team = match.get(team_key, {})
-            slug = team.get("slug")
-            name = team.get("name")
-            code = team.get("code")
-            if slug and name:
-                name_to_slug[name.strip().lower()] = slug
-            if slug and code:
-                name_to_slug[code.strip().lower()] = slug
+    if isinstance(teams_list_response, dict):
+        teams = teams_list_response.get("data") or teams_list_response.get("teams") or []
+    elif isinstance(teams_list_response, list):
+        teams = teams_list_response
+    else:
+        teams = []
+
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+        slug = team.get("slug") or team.get("teamSlug")
+        name = team.get("name") or team.get("teamName")
+        code = team.get("code") or team.get("teamCode")
+        if slug and name:
+            name_to_slug[name.strip().lower()] = slug
+        if slug and code:
+            name_to_slug[code.strip().lower()] = slug
     return name_to_slug
 
 
@@ -157,6 +191,50 @@ def extract_completed_matches(team_matches_response):
     return completed
 
 
+def diagnose_team_match_coverage(team_matches_response):
+    """Real diagnostic (July 2026) — built specifically to answer 'why
+    are real matches missing from the ratings?' rather than guessing
+    between the likely causes. Reports:
+    - total entries actually returned by Cito for this team
+    - how many are 'completed' at all
+    - how many of THOSE completed matches have a real, non-empty
+      'games' array (build_team_ratings_from_history() silently skips
+      any completed match missing this — a real, possible source of
+      data loss separate from Cito simply not returning enough
+      matches in the first place)
+    - the real date range covered by the completed matches, to reveal
+      whether this is a pagination/limit issue (a suspiciously narrow
+      window) rather than a per-match data-completeness issue."""
+    if isinstance(team_matches_response, dict):
+        entries = team_matches_response.get("data")
+        if entries is None:
+            entries = list(team_matches_response.values())
+    elif isinstance(team_matches_response, list):
+        entries = team_matches_response
+    else:
+        entries = []
+
+    total = len(entries)
+    completed = [e for e in entries if isinstance(e, dict) and e.get("state") == "completed" and e.get("winner")]
+    completed_with_games = [e for e in completed if e.get("games")]
+    completed_missing_games = [e for e in completed if not e.get("games")]
+
+    start_times = [e.get("startTime") for e in completed if e.get("startTime")]
+    date_range = {"oldest": min(start_times), "newest": max(start_times)} if start_times else None
+
+    return {
+        "total_entries_returned": total,
+        "completed_count": len(completed),
+        "completed_with_usable_games_data": len(completed_with_games),
+        "completed_missing_games_data": len(completed_missing_games),
+        "sample_missing_games_matches": [
+            {"matchId": e.get("matchId"), "startTime": e.get("startTime"), "winner": e.get("winner")}
+            for e in completed_missing_games[:5]
+        ],
+        "date_range_of_completed_matches": date_range,
+    }
+
+
 def sort_matches_chronologically(matches):
     """Sorts completed matches oldest-to-newest by startTime — required
     for a rolling Elo/power-rating system, which must process results
@@ -187,6 +265,7 @@ def get_cito_safety_check(api_key):
     for label, fn in [
         ("schedule_today", get_lol_schedule_today),
         ("live_matches", get_lol_live_matches),
+        ("teams_list", get_lol_teams_list),
     ]:
         try:
             data = fn(api_key)
