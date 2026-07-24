@@ -9099,7 +9099,7 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                 st.warning("Pipeline ran successfully but found 0 usable matchups — could mean no real match-winner markets are live right now, or none of the team names resolved to a real Cito slug. Check the safety checks above for what's actually live right now.")
             else:
                 st.success(f"✅ Pipeline succeeded — {len(lol_results)} real matchup(s) with model predictions")
-                st.warning("⚠️ **Known, unverified issue**: the same team matchup may appear multiple times with different market prices — likely because Polymarket splits one event into several real sub-markets (Map 1 winner, Map 2 winner, overall series winner, etc.), and the current filter doesn't yet distinguish which is which. The 'question' and 'market slug' fields below are shown specifically to diagnose this before trusting any edge number.")
+                st.success("✅ **Real bug found and fixed**: the sub-market issue flagged here previously (Game 1/2 Winner, Game Handicap, First Blood all incorrectly matching the same filter as the real Match Winner market) is now fixed — extract_match_winner_markets() filters on Polymarket's real 'groupItemTitle' field, confirmed via live diagnostic data to reliably isolate just the actual overall-series market. The question/slug fields below are kept visible as an ongoing sanity check, not because the bug is still open.")
                 for r in lol_results:
                     if r.get("fetch_errors"):
                         st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
