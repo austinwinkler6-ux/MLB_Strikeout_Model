@@ -9109,6 +9109,7 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                         st.caption(f"{r['event_title']} — Bo{r['best_of']}")
                         st.caption(f"Q: {r.get('question')}")
                         st.caption(f"Market slug: {r.get('market_slug')} | Group item: {r.get('group_item_title')}")
+                        st.caption(f"Real Cito slugs (use these in the diagnostic below): **{r.get('team1_slug')}** / **{r.get('team2_slug')}**")
                     with col2:
                         st.write(f"Model: {r['model_prob_team1']*100:.1f}%")
                         st.write(f"Market: {r['market_prob_team1']*100:.1f}%")
