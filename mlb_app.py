@@ -9118,6 +9118,24 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
                         st.write(f"Odds: {r['market_odds_team1']}")
                     st.divider()
 
+    st.markdown("---")
+    st.subheader("🔍 Team Match Coverage Diagnostic")
+    st.caption("Answers 'why are real matches missing?' with real data instead of guessing between the likely causes: Cito returning a limited window rather than full season history, some completed matches missing the per-game detail the rating model requires (silently skipped), or the real date range covered being narrower than expected.")
+    diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
+    if "CITO_API_KEY" in st.secrets and st.button("Check coverage", key="lol_coverage_diag_btn"):
+        with st.spinner(f"Fetching real match history for {diag_team_slug}..."):
+            try:
+                from cito_api import get_lol_team_matches, diagnose_team_match_coverage
+                raw = get_lol_team_matches(st.secrets["CITO_API_KEY"], diag_team_slug)
+                diag = diagnose_team_match_coverage(raw)
+                st.json(diag)
+                if diag["completed_missing_games_data"] > 0:
+                    st.warning(f"⚠️ {diag['completed_missing_games_data']} completed match(es) are missing per-game detail and get silently skipped by the rating model — a real, confirmed source of data loss, not a guess.")
+                if diag["date_range_of_completed_matches"]:
+                    st.info(f"Real date range of completed matches Cito actually returned: {diag['date_range_of_completed_matches']['oldest']} to {diag['date_range_of_completed_matches']['newest']} — if this is narrower than a full season, that's real evidence of a pagination/window limit on Cito's side, not a bug in this app's code.")
+            except Exception as e:
+                st.error(f"❌ Real error: {e}")
+
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
