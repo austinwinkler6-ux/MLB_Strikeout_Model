@@ -174,20 +174,25 @@ def build_team_name_to_slug_map(teams_list_response):
 
 def match_polymarket_name_to_slug(polymarket_team_name, name_to_slug_map):
     """Looks up a real slug for a Polymarket outcome team name against
-    the map built by build_team_name_to_slug_map(). Tries an exact
-    (case-insensitive) match first; falls back to a real but honestly
-    imperfect substring check (does the map's team name appear inside,
-    or contain, the Polymarket name) for cases where phrasing differs
-    slightly (e.g. 'G2' vs 'G2 Esports'). Returns None, not a guessed
-    slug, if nothing reasonably matches — an unmatched team should
-    block a prediction, not silently produce a wrong one."""
+    the map built by build_team_name_to_slug_map(). EXACT match only
+    (case-insensitive after stripping whitespace).
+
+    Real bug found and fixed (July 2026): an earlier version of this
+    function also fell back to a loose substring check ("does one
+    string contain the other") when an exact match failed. That was
+    tested only against a small, 2-team sample and looked safe — but
+    against the REAL, full team database (hundreds of teams across all
+    regions/tiers), it produced genuinely wrong, silent mismatches:
+    'T1' matched to 't1-rookies' (T1's academy team, not the real main
+    roster), 'Team Liquid' and 'Cloud9' matched to completely unrelated
+    teams. Dict iteration order meant whichever false match happened to
+    be found first silently won, with no way to tell a right match from
+    a wrong one downstream. Removed entirely — an unmatched team now
+    correctly returns None and gets skipped, rather than risking a
+    wrong, undetectable prediction. This does mean fewer real matchups
+    will resolve than before; that's the correct, honest tradeoff."""
     normalized = polymarket_team_name.strip().lower()
-    if normalized in name_to_slug_map:
-        return name_to_slug_map[normalized]
-    for known_name, slug in name_to_slug_map.items():
-        if known_name in normalized or normalized in known_name:
-            return slug
-    return None
+    return name_to_slug_map.get(normalized)
 
 
 def extract_completed_matches(team_matches_response):
