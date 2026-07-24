@@ -99,25 +99,31 @@ def extract_player_prop_markets(events):
 
 def extract_match_winner_markets(events):
     """Given a list of raw Polymarket event dicts, returns a flat list
-    of real match/series-winner markets — the market type CONFIRMED to
-    actually exist for LoL (unlike player props, which were checked
-    and confirmed absent). A real, more reliable signal than the
-    keyword heuristic used for player props: a genuine match-winner
-    market has real TEAM NAMES as its two outcomes, not the generic
-    "Yes"/"No" pair used by simpler binary markets. This isn't a
-    perfect filter either (a market titled 'Will Team X reach playoffs'
-    could theoretically also list team-name-like outcomes), but
-    checking for exactly 2 outcomes that both look like real team names
-    (present in the event's own team1/team2-style title, when parseable)
-    is meaningfully more targeted than a bare keyword match."""
+    of real, overall SERIES/MATCH winner markets specifically — not
+    the several other real sub-market types Polymarket lists under the
+    same event (Game 1 Winner, Game 2 Winner, Game Handicap, First
+    Blood, etc). Real bug found and fixed (July 2026): an earlier
+    version of this filter (2 outcomes that aren't Yes/No) was too
+    loose — it caught ALL of those sub-markets too, since they all
+    list the two team names as outcomes. Confirmed via a real live
+    pipeline run that this produced multiple, genuinely different
+    prices for what looked like "the same matchup" — comparing a
+    single Bo3-series model prediction against a Map-1-only price is
+    not a meaningful comparison. The real, reliable signal Polymarket
+    provides is the 'groupItemTitle' field, which explicitly reads
+    "Match Winner" for the actual overall-series market and something
+    else ("Game 1 Winner", "Game Handicap: ...", etc.) for every other
+    real sub-market. Matching on this directly, rather than inferring
+    market type from outcome shape, is the fix."""
     match_winner_markets = []
     for event in events:
         for market in event.get("markets", []):
+            group_item_title = (market.get("groupItemTitle") or "").strip().lower()
+            if group_item_title != "match winner":
+                continue
             outcomes = _parse_stringified_json_field(market.get("outcomes"))
             if len(outcomes) != 2:
                 continue
-            if outcomes[0].strip().lower() == "yes" and outcomes[1].strip().lower() == "no":
-                continue  # a plain Yes/No market, not a real team-vs-team one
             parsed_market = dict(market)
             parsed_market["outcomes_parsed"] = outcomes
             parsed_market["outcomePrices_parsed"] = _parse_stringified_json_field(market.get("outcomePrices"))
