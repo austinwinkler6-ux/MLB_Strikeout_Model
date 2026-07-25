@@ -7659,7 +7659,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     return sorted_history, fetch_errors
 
 
-def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None):
+def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None, sorted_history=None):
     """Real extraction (code split #4) — the real per-matchup pricing
     logic: date-cutoff filtering, price validation, illiquid-market
     filtering, model-vs-market probability, recommended side, real
@@ -7746,8 +7746,21 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     question = (market.get("question") or "").lower()
     best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
 
-    from lol_elo import predict_series
+    from lol_elo import predict_series, blend_with_head_to_head
     model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
+
+    # Real addition (July 2026, per direct user feedback and a real,
+    # concrete case — Dignitas/Sentinels had two prior meetings, both
+    # real 2-0 sweeps, a pattern our overall-rating-only Elo had no way
+    # to see). Blends in real, direct head-to-head history between
+    # these two specific teams, conservatively capped so a small
+    # sample can matter without ever fully overriding the broader Elo
+    # signal. h2h_detail is real, honest transparency about what
+    # evidence (if any) went into this, not a hidden adjustment.
+    h2h_detail = {"total_h2h_series": 0}
+    if sorted_history:
+        model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
+
     edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
 
     # A moneyline bet needs a decision about WHICH team to actually
@@ -7813,6 +7826,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "ev_pct": ev_pct,
         "raw_ev_pct_before_volume_discount": round(raw_ev_pct, 2) if raw_ev_pct is not None else None,
         "is_low_volume": is_low_volume,
+        "head_to_head": h2h_detail,
         "volume_confidence": round(volume_confidence, 3),
         "mm_tier": mm_tier,
     }
@@ -7887,7 +7901,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_too_far_ahead = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
-        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map)
+        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history)
         if result is not None:
             result["fetch_errors"] = fetch_errors
             results.append(result)
@@ -9479,6 +9493,12 @@ The gap between two teams' ratings is what turns into the win probability you se
                         team1_intl = r.get("team1_international_matches", 0)
                         team2_intl = r.get("team2_international_matches", 0)
                         why_lines.append(f"Real cross-region international games in history: {r['team1_name']} — {team1_intl}, {r['team2_name']} — {team2_intl}. (International tournaments like MSI/Worlds/EWC are infrequent, so 0 is common and not itself a red flag — just means that team's rating hasn't yet been tested against other regions.)")
+                        h2h = r.get("head_to_head") or {}
+                        if h2h.get("total_h2h_series", 0) > 0:
+                            t1_h2h = h2h.get("team1_h2h_wins", 0)
+                            t2_h2h = h2h.get("team2_h2h_wins", 0)
+                            total_h2h = h2h.get("total_h2h_series", 0)
+                            why_lines.append(f"Real head-to-head history: {r['team1_name']} {t1_h2h} — {t2_h2h} {r['team2_name']} ({total_h2h} prior real meeting{'s' if total_h2h != 1 else ''}). This is already factored into the model probability above, not just background info.")
                         with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
                             for line in why_lines:
                                 st.markdown(line)
