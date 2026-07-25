@@ -61,7 +61,7 @@ Design decisions and why, made explicit rather than buried in code:
 """
 
 from math import comb, exp
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 DEFAULT_STARTING_RATING = 1500
 DEFAULT_K_FACTOR = 32
@@ -536,3 +536,97 @@ def count_international_matches(sorted_completed_matches, team_region_map=None):
             _increment(team2_slug)
 
     return counts
+
+
+DEFAULT_ROSTER_CONTINUITY_LOOKBACK_DAYS = 30  # real, moderate first choice — not backtested, may need real calibration later
+
+
+def calculate_roster_continuity(roster_history_response, reference_date=None, lookback_days=DEFAULT_ROSTER_CONTINUITY_LOOKBACK_DAYS):
+    """Real, honest roster continuity metric (July 2026) — found
+    necessary via a real, concrete case: RED Canids' current roster
+    showed 4 of 5 starters joining on the exact same real date (July
+    15, 2026), just 10 days before a real, upcoming match, with their
+    Elo rating still built entirely from games played before that
+    roster change.
+
+    Uses a real, set-based comparison (deliberately simple, chosen to
+    be robust to real, confirmed data messiness in Cito's roster/
+    history endpoint — some players show overlapping 'current' entries
+    at the same role, which would make precise "starting five at any
+    exact moment" reconstruction unreliable): what fraction of the
+    players CURRENTLY active on the roster were ALSO active
+    lookback_days ago. A continuity of 1.0 means the entire current
+    roster was already there a month ago (real, stable roster,
+    existing rating should be trusted normally). A continuity near 0
+    means the roster is almost entirely new since then (existing
+    rating reflects players who may no longer even be on the team).
+
+    Returns a real dict: {"continuity_pct": float 0-1, "current_roster_size":
+    int, "retained_from_lookback": int, "new_since_lookback": int}.
+    Returns continuity_pct=1.0 (the safe, honest default — no
+    correction applied) if the roster data is missing/malformed, or if
+    there's genuinely no current roster to compare (nothing to be
+    cautious about if there's no real data)."""
+    if reference_date is None:
+        reference_date = datetime.now(timezone.utc)
+    cutoff = reference_date - timedelta(days=lookback_days)
+
+    roster_entries = (roster_history_response or {}).get("roster") or []
+    current_ids = set()
+    for entry in roster_entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") == "current" and entry.get("isActive"):
+            player_id = entry.get("lolPlayerId")
+            if player_id:
+                current_ids.add(player_id)
+
+    if not current_ids:
+        return {"continuity_pct": 1.0, "current_roster_size": 0, "retained_from_lookback": 0, "new_since_lookback": 0}
+
+    retained_ids = set()
+    for entry in roster_entries:
+        if not isinstance(entry, dict):
+            continue
+        player_id = entry.get("lolPlayerId")
+        if not player_id or player_id not in current_ids:
+            continue
+        join_date_str = entry.get("joinDate")
+        leave_date_str = entry.get("leaveDate")
+        try:
+            join_date = datetime.fromisoformat(join_date_str.replace("Z", "+00:00")) if join_date_str else None
+        except (ValueError, TypeError):
+            join_date = None
+        try:
+            leave_date = datetime.fromisoformat(leave_date_str.replace("Z", "+00:00")) if leave_date_str else None
+        except (ValueError, TypeError):
+            leave_date = None
+        # This player counts as "retained from lookback" if some real
+        # roster stint of theirs covers the cutoff date — joined on or
+        # before cutoff, and (still active, or left after cutoff).
+        if join_date and join_date <= cutoff and (leave_date is None or leave_date > cutoff):
+            retained_ids.add(player_id)
+
+    retained_count = len(retained_ids)
+    total_current = len(current_ids)
+    continuity_pct = retained_count / total_current if total_current else 1.0
+    return {
+        "continuity_pct": round(continuity_pct, 3),
+        "current_roster_size": total_current,
+        "retained_from_lookback": retained_count,
+        "new_since_lookback": total_current - retained_count,
+    }
+
+
+def apply_roster_continuity_discount(ev_pct, continuity_pct):
+    """Real, simple, proportional discount — same mechanism already
+    proven for market volume (a market nobody's traded doesn't deserve
+    full trust; a roster that's mostly new doesn't either). Directly
+    scales EV% by continuity_pct: full continuity (1.0) means no
+    discount at all; a roster that's, say, 20% retained gets EV%
+    discounted to 20% of its original value. Deliberately simple and
+    transparent, not finely tuned — same honest first-attempt spirit
+    as every other new adjustment today."""
+    if ev_pct is None:
+        return None
+    return round(ev_pct * continuity_pct, 2)
