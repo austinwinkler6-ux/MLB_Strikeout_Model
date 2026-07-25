@@ -43,12 +43,58 @@ Design decisions and why, made explicit rather than buried in code:
    standard best-of-N formula, assuming games within a series are
    independent and identically distributed (a real simplifying
    assumption — momentum/tilt effects within a series aren't modeled).
+
+6. RECENT-FORM WEIGHTING (added July 2026, per external review). A
+   January win and a July win were previously treated identically —
+   real, external feedback flagged this as the single highest-value
+   improvement available without needing any new data source, since
+   full historical match timestamps already exist. Implemented as a
+   K-factor multiplier, not deletion of old games: a game within the
+   grace period counts fully; older games count progressively less,
+   using a real exponential decay curve fitted to the reviewer's own
+   example points (~100% at 30 days, ~85% at 60, ~70% at 90, ~40% at
+   180). HONEST, NAMED CAVEAT: this specific curve is a reasonable
+   first-pass fit to an illustrative example, not a value derived from
+   real backtesting — exactly like the confidence-tier thresholds
+   elsewhere in this project, it needs real calibration once real
+   settled bets/results exist, not further hand-tuning right now.
 """
 
-from math import comb
+from math import comb, exp
+from datetime import datetime, timezone
 
 DEFAULT_STARTING_RATING = 1500
 DEFAULT_K_FACTOR = 32
+DEFAULT_RECENCY_GRACE_DAYS = 30
+DEFAULT_RECENCY_DECAY_TAU_DAYS = 185  # fitted, not backtested — see module docstring
+
+
+def calculate_recency_weight(game_date_str, reference_date=None, grace_days=DEFAULT_RECENCY_GRACE_DAYS, decay_tau_days=DEFAULT_RECENCY_DECAY_TAU_DAYS):
+    """Returns a real weight multiplier (0 to 1) for how much a game
+    should count toward a rating, based on its real age relative to
+    reference_date (defaults to right now, in UTC — ratings are being
+    built for CURRENT predictions, so 'now' is the correct reference
+    point, not the newest game in whatever dataset happens to be
+    fetched). Full weight (1.0) for any game within grace_days;
+    exponential decay afterward. A genuinely unparseable or missing
+    game_date_str returns 1.0 (full weight) rather than silently
+    discarding real data — an unknown age isn't evidence a game is
+    old, matching the same honest-default principle used throughout
+    this project for missing data elsewhere."""
+    if not game_date_str:
+        return 1.0
+    if reference_date is None:
+        reference_date = datetime.now(timezone.utc)
+    try:
+        game_date = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return 1.0
+    age_days = (reference_date - game_date).total_seconds() / 86400
+    if age_days <= grace_days:
+        return 1.0
+    if age_days < 0:
+        return 1.0  # a real future-dated game (shouldn't normally happen) — don't penalize
+    return exp(-(age_days - grace_days) / decay_tau_days)
 
 
 def calculate_elo_expected_score(rating_a, rating_b):
@@ -95,7 +141,7 @@ def series_win_probability(single_game_prob, best_of):
     return total_prob
 
 
-def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DEFAULT_STARTING_RATING, k_factor=DEFAULT_K_FACTOR):
+def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DEFAULT_STARTING_RATING, k_factor=DEFAULT_K_FACTOR, use_recency_weighting=True, reference_date=None):
     """Processes a chronologically-sorted list of completed matches
     (the output of cito_api.sort_matches_chronologically applied to
     cito_api.extract_completed_matches) and builds up current Elo
@@ -108,7 +154,16 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
     shape from Cito's team-matches endpoint. Matches missing a 'games'
     array (or with an empty one) are skipped for game-level updates —
     a real, honest gap rather than silently guessing at a series-level
-    substitute that would mix two different granularities together."""
+    substitute that would mix two different granularities together.
+
+    Real addition (July 2026): use_recency_weighting (default True,
+    the new baseline behavior) scales each game's effective K-factor
+    by calculate_recency_weight(), using the parent match's real
+    'startTime' field — individual games within a series don't have
+    their own timestamps in Cito's confirmed schema, only the match
+    does, so every game within one match shares that match's single
+    age/weight. A match with a missing/unparseable startTime gets full
+    weight (1.0), not silently excluded."""
     ratings = {}
 
     def _get_rating(slug):
@@ -120,6 +175,13 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
         games = match.get("games") or []
         if not team1_slug or not team2_slug or not games:
             continue
+
+        if use_recency_weighting:
+            recency_weight = calculate_recency_weight(match.get("startTime"), reference_date)
+            effective_k = k_factor * recency_weight
+        else:
+            effective_k = k_factor
+
         for game in games:
             winner_slug = game.get("winnerSlug")
             if winner_slug not in (team1_slug, team2_slug):
@@ -127,7 +189,7 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
             r1 = _get_rating(team1_slug)
             r2 = _get_rating(team2_slug)
             team1_won = (winner_slug == team1_slug)
-            new_r1, new_r2 = update_elo_ratings(r1, r2, team1_won, k_factor)
+            new_r1, new_r2 = update_elo_ratings(r1, r2, team1_won, effective_k)
             ratings[team1_slug] = new_r1
             ratings[team2_slug] = new_r2
 
