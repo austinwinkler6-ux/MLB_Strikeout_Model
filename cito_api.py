@@ -310,6 +310,113 @@ def match_polymarket_name_to_slug(polymarket_team_name, name_to_slug_map):
     return name_to_slug_map.get(normalized)
 
 
+# Real, known league identifiers that plausibly appear in Polymarket's
+# own market text ("... (BO3) - LEC Regular Season", "... - LCS
+# Regular Season"). Used only to disambiguate a GENUINE name collision
+# (e.g. two different real teams both legitimately called "Cloud9" or
+# "Team Liquid" across different regions) — never to override an
+# already-unambiguous match.
+KNOWN_LEAGUE_MARKERS = {
+    'lec': ['lec'], 'lcs': ['lcs'], 'lck': ['lck'], 'lpl': ['lpl'],
+    'lta': ['lta', 'lta_n', 'lta_s', 'lta north', 'lta south'],
+    'nacl': ['nacl'], 'ljl': ['ljl'], 'pcs': ['pcs'], 'vcs': ['vcs'],
+    'cblol': ['cblol'], 'msi': ['msi'], 'worlds': ['worlds'],
+}
+
+
+def build_team_candidates_map(*schedule_or_teams_list_responses):
+    """A richer companion to build_team_name_to_slug_map() — instead
+    of collapsing an ambiguous name to 'excluded', keeps every real
+    candidate (slug + the league slugs it's associated with) for every
+    name/code/shortName seen. Accepts a mix of schedule-shaped
+    responses (nested team1/team2, with a 'leagueSlug' on the parent
+    match) and the flat teams-list shape (team objects with a
+    'leagues' array directly). This is the real data disambiguation
+    needs — a plain name-to-slug map necessarily throws this
+    information away."""
+    candidates = {}  # key -> {slug: set(league_slugs)}
+
+    def _add(key, slug, league_slugs):
+        if not key or not slug:
+            return
+        key = key.strip().lower()
+        candidates.setdefault(key, {}).setdefault(slug, set()).update(league_slugs)
+
+    for response in schedule_or_teams_list_responses:
+        if isinstance(response, dict):
+            if "teams" in response or (isinstance(response.get("data"), list) and response.get("data") and "slug" in response["data"][0] and "team1" not in response["data"][0]):
+                # Flat teams-list shape
+                teams = response.get("teams") or response.get("data") or []
+                for team in teams:
+                    if not isinstance(team, dict):
+                        continue
+                    slug = team.get("slug")
+                    leagues = team.get("leagues") or []
+                    league_slugs = {l.get("slug") for l in leagues if isinstance(l, dict) and l.get("slug")}
+                    for key in (team.get("name"), team.get("shortName")):
+                        _add(key, slug, league_slugs)
+            else:
+                # Schedule shape
+                matches = response.get("data", [])
+                for match in matches:
+                    if not isinstance(match, dict):
+                        continue
+                    league_slug = match.get("leagueSlug")
+                    league_slugs = {league_slug} if league_slug else set()
+                    for team_key in ("team1", "team2"):
+                        team = match.get(team_key) or {}
+                        slug = team.get("slug")
+                        for key in (team.get("name"), team.get("code")):
+                            _add(key, slug, league_slugs)
+        elif isinstance(response, list):
+            for match in response:
+                if not isinstance(match, dict):
+                    continue
+                league_slug = match.get("leagueSlug")
+                league_slugs = {league_slug} if league_slug else set()
+                for team_key in ("team1", "team2"):
+                    team = match.get(team_key) or {}
+                    slug = team.get("slug")
+                    for key in (team.get("name"), team.get("code")):
+                        _add(key, slug, league_slugs)
+
+    return candidates
+
+
+def resolve_team_with_league_context(polymarket_team_name, candidates_map, market_text):
+    """Real disambiguation, used only when a plain exact-match lookup
+    is genuinely ambiguous (more than one real slug shares the same
+    name). Looks for a known league marker (LEC, LCS, LCK, LPL, etc)
+    inside the real Polymarket market text (question/event_title,
+    which reliably includes real league context like '- LEC Regular
+    Season'), then filters the name's candidate slugs to only those
+    associated with that league. Returns a slug ONLY if this narrows
+    it to exactly one — if the market text has no recognizable league
+    marker, or filtering still leaves more than one candidate, returns
+    None rather than guessing. This keeps the same standing principle
+    as the rest of this project: resolve with real evidence, or don't
+    resolve at all."""
+    normalized = polymarket_team_name.strip().lower()
+    candidate_slugs = candidates_map.get(normalized, {})
+    if len(candidate_slugs) == 1:
+        return next(iter(candidate_slugs))
+    if len(candidate_slugs) == 0:
+        return None
+
+    market_text_lower = (market_text or "").lower()
+    matched_markers = set()
+    for marker_league, aliases in KNOWN_LEAGUE_MARKERS.items():
+        if any(alias in market_text_lower for alias in aliases):
+            matched_markers.add(marker_league)
+    if not matched_markers:
+        return None  # genuinely ambiguous, no real league context to disambiguate with
+
+    filtered = [slug for slug, leagues in candidate_slugs.items() if leagues & matched_markers]
+    if len(filtered) == 1:
+        return filtered[0]
+    return None  # still ambiguous even with league context — don't guess
+
+
 def extract_completed_matches(team_matches_response):
     """Given the raw response from get_lol_team_matches(), returns
     only the real, completed matches (state == 'completed', winner is
