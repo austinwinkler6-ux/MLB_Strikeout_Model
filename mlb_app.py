@@ -9425,8 +9425,10 @@ elif nav == "🎮 Esports (LoL)":
                             if matchup_key in already_bet_today_lol:
                                 st.caption("✅ Already bet today")
                         with col2:
-                            st.write(f"{r['team1_rating']}")
-                            st.caption(f"vs {r['team2_rating']}")
+                            rec_rating = r['team1_rating'] if r['recommended_side'] == 'team1' else r['team2_rating']
+                            opp_rating = r['team2_rating'] if r['recommended_side'] == 'team1' else r['team1_rating']
+                            st.write(f"{rec_rating}")
+                            st.caption(f"vs {opp_rating}")
                         with col3:
                             st.write(f"**{r['recommended_team_name']}**")
                         with col4:
