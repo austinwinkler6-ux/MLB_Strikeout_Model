@@ -7615,15 +7615,19 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     sorted_history = sort_matches_chronologically(combined_history)
     ratings = build_team_ratings_from_history(sorted_history)
 
+    filtered_as_illiquid = []
+    filtered_bad_price_data = []
     for m in resolved_matchups:
         market = m["market"]
         outcomes = market.get("outcomes_parsed", [])
         prices = market.get("outcomePrices_parsed", [])
         if len(prices) != 2:
+            filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
             continue
         try:
             market_prob_team1 = float(prices[0])
         except (ValueError, TypeError):
+            filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
             continue
 
         # Real fix (July 2026) — a price at or extremely near 0%/100%
@@ -7636,6 +7640,10 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         # an invalid probability) paired with suspiciously round 0%/100%
         # market prices across multiple real matchups.
         if market_prob_team1 <= 0.01 or market_prob_team1 >= 0.99:
+            filtered_as_illiquid.append({
+                "team1": m["team1_name"], "team2": m["team2_name"],
+                "market_prob_team1": market_prob_team1, "question": market.get("question"),
+            })
             continue
 
         question = (market.get("question") or "").lower()
@@ -7663,6 +7671,8 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         })
 
     debug_info["final_result_count"] = len(results)
+    debug_info["filtered_as_illiquid"] = filtered_as_illiquid
+    debug_info["filtered_bad_price_data"] = filtered_bad_price_data
     return {"debug": debug_info, "results": results}
 
 # ---- HOME PAGE ----
