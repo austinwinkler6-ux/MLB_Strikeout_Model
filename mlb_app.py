@@ -9626,16 +9626,27 @@ The gap between two teams' ratings is what turns into the win probability you se
 
             st.markdown("---")
             st.subheader("🔍 Head-to-Head Investigation")
-            st.caption("Real diagnostic for a reported head-to-head discrepancy — shows EVERY real match object between two specific teams (matchId, tournament, real series score, declared winner), so we can see exactly what get_head_to_head_record() is actually counting instead of guessing at the mechanism.")
+            st.caption("Real diagnostic for a reported head-to-head discrepancy — fetches BOTH teams' real match histories separately and combines them (matching exactly what the real pipeline does), then shows every real match object between them. This reveals whether a missing match exists on one team's side but not the other (a combine/dedupe issue) versus genuinely missing from both (a real Cito data gap) — two very different explanations.")
             h2h_team1 = st.text_input("Team 1 slug", value="kc", key="lol_h2h_team1")
             h2h_team2 = st.text_input("Team 2 slug", value="mkoi", key="lol_h2h_team2")
             if st.button("Investigate head-to-head", key="lol_h2h_diag_btn"):
-                with st.spinner(f"Fetching real match history for {h2h_team1}..."):
+                with st.spinner(f"Fetching real match history for both {h2h_team1} and {h2h_team2}..."):
                     try:
-                        from cito_api import get_lol_team_matches, extract_completed_matches
-                        from lol_elo import get_head_to_head_record
+                        from cito_api import get_lol_team_matches, extract_completed_matches, infer_missing_game_winners, sort_matches_chronologically
+                        from lol_elo import get_head_to_head_record, combine_and_dedupe_matches
+
                         raw1 = get_lol_team_matches(st.secrets["CITO_API_KEY"], h2h_team1)
                         completed1 = extract_completed_matches(raw1)
+                        raw2 = get_lol_team_matches(st.secrets["CITO_API_KEY"], h2h_team2)
+                        completed2 = extract_completed_matches(raw2)
+
+                        st.write(f"**Real completed matches found on {h2h_team1}'s own fetch: {len(completed1)}**")
+                        st.write(f"**Real completed matches found on {h2h_team2}'s own fetch: {len(completed2)}**")
+
+                        combined = combine_and_dedupe_matches([completed1, completed2])
+                        combined = infer_missing_game_winners(combined)
+                        sorted_combined = sort_matches_chronologically(combined)
+
                         h2h_matches = [
                             {
                                 "matchId": m.get("matchId"), "tournamentName": m.get("tournamentName"),
@@ -9645,13 +9656,13 @@ The gap between two teams' ratings is what turns into the win probability you se
                                 "winner": m.get("winner"),
                                 "num_games_in_array": len(m.get("games") or []),
                             }
-                            for m in completed1
+                            for m in sorted_combined
                             if {(m.get("team1") or {}).get("slug"), (m.get("team2") or {}).get("slug")} == {h2h_team1, h2h_team2}
                         ]
-                        st.write(f"**Found {len(h2h_matches)} real match object(s) between {h2h_team1} and {h2h_team2}:**")
+                        st.write(f"**Found {len(h2h_matches)} real, combined match object(s) between {h2h_team1} and {h2h_team2} (after fetching both sides and deduping):**")
                         st.json(h2h_matches)
-                        t1_wins, t2_wins, total = get_head_to_head_record(h2h_team1, h2h_team2, completed1)
-                        st.write(f"**What get_head_to_head_record() actually computes: {h2h_team1} {t1_wins} — {t2_wins} {h2h_team2} ({total} total)**")
+                        t1_wins, t2_wins, total = get_head_to_head_record(h2h_team1, h2h_team2, sorted_combined)
+                        st.write(f"**What get_head_to_head_record() actually computes from the properly-combined data: {h2h_team1} {t1_wins} — {t2_wins} {h2h_team2} ({total} total)**")
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
 
