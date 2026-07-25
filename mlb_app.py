@@ -9327,11 +9327,6 @@ elif nav == "🎮 Esports (LoL)":
                         matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
                         if r.get("no_real_data"):
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
-                        team1_intl = r.get("team1_international_matches", 0)
-                        team2_intl = r.get("team2_international_matches", 0)
-                        if team1_intl == 0 or team2_intl == 0:
-                            no_intl_teams = [name for name, count in [(r['team1_name'], team1_intl), (r['team2_name'], team2_intl)] if count == 0]
-                            st.caption(f"⚠️ No real cross-region international game history yet for {' or '.join(no_intl_teams)} — their rating is real, but genuinely untested against other regions, a real, honest uncertainty rather than a known weakness.")
 
                         col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
                         with col1:
@@ -9366,6 +9361,9 @@ elif nav == "🎮 Esports (LoL)":
                         ]
                         if r.get("no_real_data"):
                             why_lines.append("⚠️ Neither team has real completed-game history in this dataset yet — this pick carries real uncertainty beyond the normal model error.")
+                        team1_intl = r.get("team1_international_matches", 0)
+                        team2_intl = r.get("team2_international_matches", 0)
+                        why_lines.append(f"Real cross-region international games in history: {r['team1_name']} — {team1_intl}, {r['team2_name']} — {team2_intl}. (International tournaments like MSI/Worlds/EWC are infrequent, so 0 is common and not itself a red flag — just means that team's rating hasn't yet been tested against other regions.)")
                         with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
                             for line in why_lines:
                                 st.markdown(line)
