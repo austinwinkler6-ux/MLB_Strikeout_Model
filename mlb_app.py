@@ -9642,6 +9642,20 @@ The gap between two teams' ratings is what turns into the win probability you se
                         st.error(f"❌ Real error: {e}")
 
             st.markdown("---")
+            st.subheader("🔍 Roster Continuity Investigation")
+            st.caption("Real, first investigation for roster continuity — a known gap where a team's rating is built entirely from past results with no concept of WHO was actually playing. Motivated by a real, concrete case: a CBLOL season-opener where both teams could have entirely different rosters than whatever played their existing rated games. Checks the real, raw shape of Cito's roster/history endpoint before any logic gets designed around assumptions about it.")
+            roster_team_slug = st.text_input("Team slug to check", value="red-canids", key="lol_roster_diag_slug")
+            if st.button("Investigate roster history", key="lol_roster_diag_btn"):
+                with st.spinner(f"Fetching real roster history for {roster_team_slug}..."):
+                    try:
+                        from cito_api import get_lol_team_roster_history
+                        roster_data = get_lol_team_roster_history(st.secrets["CITO_API_KEY"], roster_team_slug)
+                        st.success("✅ Real response received from the roster/history endpoint:")
+                        st.json(roster_data)
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
+            st.markdown("---")
             st.subheader("🔍 Head-to-Head Investigation")
             st.caption("Real diagnostic for a reported head-to-head discrepancy — fetches BOTH teams' real match histories separately and combines them (matching exactly what the real pipeline does), then shows every real match object between them. This reveals whether a missing match exists on one team's side but not the other (a combine/dedupe issue) versus genuinely missing from both (a real Cito data gap) — two very different explanations.")
             h2h_team1 = st.text_input("Team 1 slug", value="kc", key="lol_h2h_team1")
