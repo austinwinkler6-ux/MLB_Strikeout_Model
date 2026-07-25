@@ -219,6 +219,74 @@ def build_team_name_to_slug_map(*schedule_responses):
     return name_to_slug
 
 
+def build_team_name_to_slug_map_from_teams_list(teams_list_response):
+    """Companion to build_team_name_to_slug_map(), built from the
+    real, comprehensive GET /api/v1/lol/teams response instead of
+    schedule data. Real, confirmed schema (verified against a live
+    response, July 2026): {"teams": [{"slug", "name", "shortName",
+    "region", "logoUrl", "isActive", "leagues", "rosterCount",
+    "rosterStatus"}, ...]} — note this uses 'shortName', a genuinely
+    different field name than the schedule endpoints' 'code'.
+
+    This was the original approach, then abandoned when real testing
+    on the free tier hit a rate limit at offset=1800 (the full
+    database is genuinely huge — every minor/amateur team across every
+    region). Restored as a real, deliberate fallback (not the default)
+    now that a paid tier (50k calls/month, 30/min) makes the full fetch
+    affordable again — used specifically for teams schedule data
+    doesn't cover (e.g. major but currently-between-matches teams like
+    T1, Cloud9, Team Liquid, confirmed missing from schedule/today +
+    schedule/upcoming during real live testing), not as the default
+    for every run. Same collision-safe two-pass logic as its schedule
+    counterpart."""
+    key_to_slugs = {}
+    if isinstance(teams_list_response, dict):
+        teams = teams_list_response.get("teams") or teams_list_response.get("data") or []
+    elif isinstance(teams_list_response, list):
+        teams = teams_list_response
+    else:
+        teams = []
+
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+        slug = team.get("slug")
+        name = team.get("name")
+        short_name = team.get("shortName")
+        if slug and name:
+            key_to_slugs.setdefault(name.strip().lower(), set()).add(slug)
+        if slug and short_name:
+            key_to_slugs.setdefault(short_name.strip().lower(), set()).add(slug)
+
+    name_to_slug = {}
+    for key, slugs in key_to_slugs.items():
+        if len(slugs) == 1:
+            name_to_slug[key] = next(iter(slugs))
+    return name_to_slug
+
+
+def merge_name_to_slug_maps(*maps):
+    """Safely combines multiple already-built name-to-slug maps (e.g.
+    one from schedule data, one from the full teams list) into one.
+    Applies the same collision-detection principle at the merge level:
+    if a key exists in more than one input map with DIFFERENT slug
+    values, that's a real, genuine conflict between two otherwise-
+    trusted sources — excluded from the final map rather than letting
+    whichever map happened to be passed last silently win. Keys that
+    agree across maps, or that only appear in one map, merge in
+    normally."""
+    key_to_slugs = {}
+    for m in maps:
+        for key, slug in m.items():
+            key_to_slugs.setdefault(key, set()).add(slug)
+
+    merged = {}
+    for key, slugs in key_to_slugs.items():
+        if len(slugs) == 1:
+            merged[key] = next(iter(slugs))
+    return merged
+
+
 def match_polymarket_name_to_slug(polymarket_team_name, name_to_slug_map):
     """Looks up a real slug for a Polymarket outcome team name against
     the map built by build_team_name_to_slug_map(). EXACT match only
