@@ -7809,7 +7809,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         try:
             from cito_api import get_lol_head_to_head
             h2h_api_response = get_lol_head_to_head(api_key, m["team1_slug"], m["team2_slug"])
-            model_prob_team1, h2h_detail = blend_with_head_to_head_from_api(model_prob_team1, h2h_api_response)
+            model_prob_team1, h2h_detail = blend_with_head_to_head_from_api(model_prob_team1, h2h_api_response, m["team1_slug"])
         except Exception:
             if sorted_history:
                 model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
@@ -9692,6 +9692,19 @@ The gap between two teams' ratings is what turns into the win probability you se
                         h2h_raw = get_lol_head_to_head(st.secrets["CITO_API_KEY"], h2h_team1, h2h_team2)
                         st.success("✅ Real response received from the dedicated /h2h endpoint:")
                         st.json(h2h_raw)
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
+            st.markdown("---")
+            st.caption("Real, live test of the league-level schedule endpoint — a real, raw dump of EWC's own league entity showed 0 teams linked to it ('_count': {'teams': 0}), suggesting per-team endpoints (both /matches and /h2h) may miss matches that a direct, league-level query wouldn't. Checking specifically whether this surfaces the two real EWC matches (May 14/17, 2026, Karmine Corp vs Movistar KOI) that neither team-level endpoint could find.")
+            h2h_league_slug = st.text_input("League slug to check", value="lol-ewc_lol", key="lol_league_schedule_slug")
+            if st.button("Test league-level schedule endpoint", key="lol_league_schedule_test_btn"):
+                with st.spinner(f"Fetching real league schedule for {h2h_league_slug}..."):
+                    try:
+                        from cito_api import get_lol_league_schedule
+                        league_schedule = get_lol_league_schedule(st.secrets["CITO_API_KEY"], h2h_league_slug)
+                        st.success(f"✅ Real response received from the league schedule endpoint:")
+                        st.json(league_schedule)
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
 
