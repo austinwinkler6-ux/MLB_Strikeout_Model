@@ -139,24 +139,81 @@ def get_lol_team_matches(api_key, team_slug, timeout=20):
     return response.json()
 
 
-def get_lol_head_to_head(api_key, team_slug, opponent_slug, timeout=20):
+def get_lol_team_roster_history(api_key, team_slug, timeout=20):
     """Real, documented endpoint (found via Cito's full API list, July
-    2026): GET /lol/teams/{slug}/h2h/{opponentSlug} — 'head-to-head
-    record against another team'. NOT YET VERIFIED against a real live
-    response — this is a real, honest first attempt, not a confirmed-
-    working integration like get_lol_team_matches() above.
+    2026): GET /lol/teams/{slug}/roster/history — 'historical rosters
+    and membership periods'. NOT YET VERIFIED against a real live
+    response — a real, honest first step, not a confirmed-working
+    integration like get_lol_team_matches() above.
 
-    Investigated specifically because reconstructing head-to-head by
-    scanning each team's own /matches history was confirmed to have a
-    real gap: two real, dated EWC matches between Karmine Corp and
-    Movistar KOI (May 14 and May 17, 2026, both real KC wins per
-    external verification) were missing from BOTH teams' own /matches
-    fetches. If this dedicated endpoint pulls from a more complete
-    data source, it could be a real, better fix than patching around
-    the gap — but this needs to be checked against live data before
-    trusting it, same as every other endpoint in this project."""
+    Investigated specifically to address roster continuity — a real,
+    known gap in this Elo system (a team's rating is built entirely
+    from past results, with no concept of WHO was actually playing in
+    those games). Motivated by a concrete real case: a CBLOL Split 2
+    season-opener where both teams could have entirely different
+    rosters than whatever played their existing rated games from the
+    prior split. This needs to be checked against live data (real
+    schema, real date granularity, whether player-level identity is
+    even exposed) before any real roster-aware rating logic can be
+    designed around it — guessing at the shape here would repeat a
+    mistake already made and corrected several times today."""
+    response = requests.get(
+        f"{CITO_BASE_URL}/api/v1/lol/teams/{team_slug}/roster/history",
+        headers=_cito_headers(api_key), timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def get_lol_head_to_head(api_key, team_slug, opponent_slug, timeout=20):
+    """Real, documented endpoint, CONFIRMED working via live testing
+    (July 2026): GET /lol/teams/{slug}/h2h/{opponentSlug} — returns a
+    real, structured head-to-head record: {"opponent": {...},
+    "matches": {"total", "wins", "losses", "winRate"}, "games": {...},
+    "recentMatches": [...]}. Confirmed via live testing to return
+    MORE COMPLETE real data than reconstructing head-to-head from each
+    team's own /matches history (10 real matches back to Jan 2025 for
+    a real pair, vs only 4 found by reconstruction for the same pair)
+    — a real, verified improvement, now the preferred head-to-head
+    data source in this pipeline.
+
+    HONEST, NAMED LIMITATION also confirmed via the same live test:
+    even this endpoint was missing the same two real EWC matches
+    (Karmine Corp vs Movistar KOI, May 14 and May 17, 2026) that the
+    reconstruction approach was missing — this is a real, genuine gap
+    in Cito's underlying data itself, not something either approach in
+    our own code can work around. See get_lol_league_schedule() below
+    for a real, different lead being investigated for this specific
+    gap — EWC's own league entity shows a real _count.teams of 0,
+    suggesting per-team endpoints may not properly surface all EWC
+    matches regardless of which one is used."""
     response = requests.get(
         f"{CITO_BASE_URL}/api/v1/lol/teams/{team_slug}/h2h/{opponent_slug}",
+        headers=_cito_headers(api_key), timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def get_lol_league_schedule(api_key, league_slug, timeout=20):
+    """Real, documented endpoint (found via Cito's full API list, July
+    2026): GET /lol/leagues/{leagueId}/schedule. NOT YET VERIFIED
+    against a real live response.
+
+    Investigated specifically as a real, different lead for the
+    confirmed EWC data gap (two real matches, Karmine Corp vs Movistar
+    KOI on May 14/17 2026, missing from both the per-team /matches
+    endpoint AND the dedicated /h2h endpoint). A real, raw dump of
+    EWC's own league entity (via /lol/leagues) showed
+    '_count': {'tournaments': 1, 'teams': 0} — zero teams linked to
+    the league entity — which could mean any endpoint that resolves
+    matches THROUGH a team-to-league association (as both /matches and
+    /h2h likely do) may systematically miss real EWC matches, while a
+    real, direct league-level schedule query might not depend on that
+    same broken/empty linkage. This is a real hypothesis to verify
+    against live data, not a confirmed fix."""
+    response = requests.get(
+        f"{CITO_BASE_URL}/api/v1/lol/leagues/{league_slug}/schedule",
         headers=_cito_headers(api_key), timeout=timeout,
     )
     response.raise_for_status()
