@@ -7784,7 +7784,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     question = (market.get("question") or "").lower()
     best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
 
-    from lol_elo import predict_series, blend_with_head_to_head, blend_with_head_to_head_from_api
+    from lol_elo import predict_series, blend_with_head_to_head, blend_with_head_to_head_from_api, calculate_roster_continuity, apply_roster_continuity_discount
     model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
 
     # Real addition (July 2026, per direct user feedback and a real,
@@ -7835,6 +7835,34 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     # a number that isn't real yet.
     ev_pct = round(raw_ev_pct * volume_confidence, 2) if raw_ev_pct is not None else None
 
+    # Real, proportional discount for roster continuity (July 2026) —
+    # found via a real, concrete case: RED Canids' current roster
+    # showed 4 of 5 starters joining just 10 days before a real match,
+    # with their Elo rating still built entirely from games played
+    # before that change. Fetches real roster history for BOTH teams,
+    # uses whichever team's continuity is worse (the weaker link
+    # determines how much to trust the whole prediction), and applies
+    # the same proportional-discount mechanism already proven for
+    # market volume. A real, honest fallback to no discount (1.0) if
+    # the roster fetch fails for either team — not silently losing the
+    # rest of the pipeline over one failed call.
+    roster_continuity_detail = {"team1": {"continuity_pct": 1.0}, "team2": {"continuity_pct": 1.0}, "worse_continuity_pct": 1.0}
+    if api_key:
+        try:
+            from cito_api import get_lol_team_roster_history
+            team1_roster = get_lol_team_roster_history(api_key, m["team1_slug"])
+            team1_continuity = calculate_roster_continuity(team1_roster)
+            team2_roster = get_lol_team_roster_history(api_key, m["team2_slug"])
+            team2_continuity = calculate_roster_continuity(team2_roster)
+            worse_continuity_pct = min(team1_continuity["continuity_pct"], team2_continuity["continuity_pct"])
+            roster_continuity_detail = {
+                "team1": team1_continuity, "team2": team2_continuity,
+                "worse_continuity_pct": worse_continuity_pct,
+            }
+            ev_pct = apply_roster_continuity_discount(ev_pct, worse_continuity_pct)
+        except Exception:
+            pass  # real, honest fallback — no roster discount applied, not a pipeline failure
+
     # Real, honest first-attempt tier thresholds specific to moneyline
     # EV — genuinely different distribution than prop betting EV, not
     # borrowed from another sport's calibration. Needs real calibration
@@ -7881,6 +7909,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "ev_pct": ev_pct,
         "raw_ev_pct_before_volume_discount": round(raw_ev_pct, 2) if raw_ev_pct is not None else None,
         "is_low_volume": is_low_volume,
+        "roster_continuity": roster_continuity_detail,
         "head_to_head": h2h_detail,
         "volume_confidence": round(volume_confidence, 3),
         "mm_tier": mm_tier,
@@ -9513,6 +9542,17 @@ The gap between two teams' ratings is what turns into the win probability you se
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
                         if r.get("is_low_volume"):
                             st.caption(f"⚠️ Low real trading volume on this market (${r.get('market_volume_numeric', 0):,.0f}) — this price hasn't been genuinely tested by much real money yet. EV% shown is already discounted for this (raw, undiscounted EV was {r.get('raw_ev_pct_before_volume_discount')}%).")
+                        roster_cont = r.get("roster_continuity") or {}
+                        worse_continuity = roster_cont.get("worse_continuity_pct", 1.0)
+                        if worse_continuity < 0.8:
+                            t1_cont = roster_cont.get("team1", {})
+                            t2_cont = roster_cont.get("team2", {})
+                            new_team_notes = []
+                            if t1_cont.get("continuity_pct", 1.0) < 0.8:
+                                new_team_notes.append(f"{r['team1_name']} ({t1_cont.get('new_since_lookback', '?')}/{t1_cont.get('current_roster_size', '?')} new)")
+                            if t2_cont.get("continuity_pct", 1.0) < 0.8:
+                                new_team_notes.append(f"{r['team2_name']} ({t2_cont.get('new_since_lookback', '?')}/{t2_cont.get('current_roster_size', '?')} new)")
+                            st.caption(f"⚠️ Recent roster change(s): {', '.join(new_team_notes)} — the existing rating was built before these changes, so it may not reflect current strength. EV% is already discounted for this.")
 
                         col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
                         with col1:
