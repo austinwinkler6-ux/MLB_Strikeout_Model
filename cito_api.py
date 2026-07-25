@@ -675,6 +675,93 @@ def extract_completed_matches(team_matches_response):
     return completed
 
 
+def infer_missing_game_winners(completed_matches):
+    """Real fix (July 2026) for a genuine data-quality bug found via
+    live investigation: a real completed match (G2 2-1 over Movistar
+    KOI, confirmed via the real match object) had its series score and
+    Game 1's winner recorded correctly, but Games 2 and 3 both showed
+    winnerSlug: null — completely missing. Since build_team_ratings_
+    from_history() processes games individually and silently skips any
+    game with a missing winner, this match was only counting as a KOI
+    win in the rating system — the two games G2 actually won to clinch
+    the series were invisible to Elo, systematically dragging down
+    ratings for teams that win series with some individual game data
+    missing.
+
+    This is often genuinely, safely inferable: given the real final
+    series score (each team's confirmed win count) and whichever
+    individual games ARE recorded, simple arithmetic can determine the
+    remaining unknown games' winners — but ONLY when unambiguous: if
+    all of a match's unknown games must belong to the same team to
+    reach the known final score (the other team has already reached
+    its win quota from known games alone), they're safely filled in.
+    If the math allows more than one real possibility (e.g. two teams
+    each still need exactly one more win, with two unknown games
+    remaining — genuinely ambiguous which unknown game belongs to
+    which team), this is left alone, not guessed — matching this
+    project's standing principle that an unresolved case should stay
+    unresolved rather than risk being silently wrong.
+
+    Returns a new list (does not mutate the input) with inferred
+    winners filled in where safe."""
+    fixed_matches = []
+    for match in completed_matches:
+        if not isinstance(match, dict):
+            fixed_matches.append(match)
+            continue
+
+        games = match.get("games") or []
+        team1 = match.get("team1") or {}
+        team2 = match.get("team2") or {}
+        team1_slug = team1.get("slug")
+        team2_slug = team2.get("slug")
+        team1_score = team1.get("score")
+        team2_score = team2.get("score")
+
+        # Only attempt inference when we have real, confirmed data to
+        # work from — both team slugs, both real final scores, and at
+        # least one game with a genuinely missing winner.
+        unknown_games = [g for g in games if isinstance(g, dict) and g.get("winnerSlug") is None]
+        if not team1_slug or not team2_slug or team1_score is None or team2_score is None or not unknown_games:
+            fixed_matches.append(match)
+            continue
+
+        known_team1_wins = sum(1 for g in games if isinstance(g, dict) and g.get("winnerSlug") == team1_slug)
+        known_team2_wins = sum(1 for g in games if isinstance(g, dict) and g.get("winnerSlug") == team2_slug)
+        team1_needed = team1_score - known_team1_wins
+        team2_needed = team2_score - known_team2_wins
+
+        # Safe, unambiguous inference: ALL remaining unknown games must
+        # belong to one specific team (the other team has already hit
+        # its real, known win quota) — not a case where both teams
+        # still need wins among multiple unknown games, which would be
+        # a real guess, not a real inference.
+        inferred_winner = None
+        if team1_needed == len(unknown_games) and team2_needed == 0:
+            inferred_winner = team1_slug
+        elif team2_needed == len(unknown_games) and team1_needed == 0:
+            inferred_winner = team2_slug
+
+        if inferred_winner is None:
+            fixed_matches.append(match)  # genuinely ambiguous — leave alone, don't guess
+            continue
+
+        new_games = []
+        for g in games:
+            if isinstance(g, dict) and g.get("winnerSlug") is None:
+                new_g = dict(g)
+                new_g["winnerSlug"] = inferred_winner
+                new_g["winnerSlug_inferred"] = True  # real, honest marker that this was inferred, not directly reported
+                new_games.append(new_g)
+            else:
+                new_games.append(g)
+        fixed_match = dict(match)
+        fixed_match["games"] = new_games
+        fixed_matches.append(fixed_match)
+
+    return fixed_matches
+
+
 def diagnose_team_match_coverage(team_matches_response):
     """Real diagnostic (July 2026) — built specifically to answer 'why
     are real matches missing from the ratings?' rather than guessing
