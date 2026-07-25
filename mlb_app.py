@@ -7463,89 +7463,60 @@ def format_lol_match_date(match_date_str):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
 
-def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=2):
-    """The real, full pipeline tying together every piece built today:
-    1. Fetch real, live LoL events from Polymarket, extract match-
-       winner markets (the confirmed-real market type).
-    2. Fetch a real schedule snapshot from Cito to build a team
-       name-to-slug map, since Polymarket uses names and Cito uses
-       slugs.
-    3. For every unique team appearing in the Polymarket matchups,
-       fetch its real match history from Cito.
-    4. Combine and dedupe all fetched history, build one real, global
-       Elo ratings table from it.
-    5. For each Polymarket matchup, predict the series win probability
-       from the real ratings, compare to Polymarket's real market
-       price, compute a real edge.
-    6. Filter out matchups more than max_days_ahead (default: 2 days)
-       in the future — real feedback found matches showing up over a
-       week out, too far ahead to be practically useful for betting
-       right now; further real feedback tightened this to 2 days.
-       Matchups with no parseable match_date are kept, not excluded —
-       a missing date isn't evidence of being far away, just unknown,
-       and excluding them would hide real, valid near-term matches whose
-       date genuinely couldn't be parsed.
-    Returns a list of dicts, one per matchup, with everything needed
-    to display and log a bet — or an 'error' key if something failed,
-    following the same honest-failure pattern used throughout this
-    project rather than silently returning an empty result."""
-    from polymarket_api import get_all_polymarket_events, extract_match_winner_markets, polymarket_price_to_american_odds
-    from cito_api import (
-        get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list, get_lol_team_matches,
-        build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
-        match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
-        _find_prefix_candidates, _find_last_word_candidates,
-        extract_completed_matches, sort_matches_chronologically,
-    )
-    from lol_elo import combine_and_dedupe_matches, build_team_ratings_from_history, predict_series
-
-    results = []
-
+def _fetch_lol_match_markets(tag_slug):
+    """Real extraction (July 2026, per external review — code split #1
+    of several) — fetches live Polymarket events and extracts real
+    match-winner markets. Returns (events, match_markets, error_dict).
+    error_dict is None on success; when set, the caller should return
+    it directly as the pipeline's final result, matching the existing
+    honest-failure pattern (no silent empty result)."""
+    from polymarket_api import get_all_polymarket_events, extract_match_winner_markets
     try:
-        # Real fix (July 2026) — a fixed limit (first 50, then raised
-        # to 200 as a first attempt) was CONFIRMED via live testing to
-        # silently truncate well over half of all real, live LoL
-        # matchups (11 resolved results became 50 the moment the limit
-        # was raised) — including specific real games the user was
-        # actively looking for that simply never got fetched at all,
-        # with no error anywhere. Any fixed limit risks repeating this
-        # same failure on a high-volume day. Now uses real pagination
-        # with no ceiling — see get_all_polymarket_events()'s own
-        # docstring for the full account of this bug.
         events = get_all_polymarket_events(tag_slug=tag_slug, closed=False)
     except Exception as e:
-        return {"error": f"Polymarket fetch failed: {e}"}
-
-    all_fetched_event_titles = [e.get("title") for e in events]
+        return None, None, {"error": f"Polymarket fetch failed: {e}"}
 
     match_markets = extract_match_winner_markets(events)
     if not match_markets:
-        return {"debug": {"note": "No real match-winner markets found in the Polymarket fetch itself — 0 events had a groupItemTitle of 'Match Winner'.", "total_events_fetched": len(events), "all_fetched_event_titles": all_fetched_event_titles}, "results": []}
+        all_fetched_event_titles = [e.get("title") for e in events]
+        return events, [], {
+            "debug": {
+                "note": "No real match-winner markets found in the Polymarket fetch itself — 0 events had a groupItemTitle of 'Match Winner'.",
+                "total_events_fetched": len(events), "all_fetched_event_titles": all_fetched_event_titles,
+            },
+            "results": [],
+        }
+    return events, match_markets, None
+
+
+def _resolve_lol_matchup_teams(match_markets, api_key):
+    """Real extraction (code split #2) — the full, real three-pass team
+    resolution: cheap schedule data first, the expensive full teams
+    list only as a targeted fallback, then league-context
+    disambiguation for genuinely ambiguous names. Returns
+    (resolved_matchups, name_to_slug, candidates_map, unresolved_team_names,
+    unresolved_detail, needs_fallback, error_dict)."""
+    from cito_api import (
+        get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list,
+        build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
+        match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
+        _find_prefix_candidates, _find_last_word_candidates,
+    )
 
     try:
-        # Real, deliberate two-pass approach (July 2026) — schedule
-        # data is cheap (2 calls) but real testing showed it's
-        # genuinely narrower than the full team database: major teams
-        # like T1, Cloud9, and Team Liquid were confirmed missing
-        # simply because they weren't playing in the today/upcoming
-        # window at the time, not because of any real bug. The full
-        # /lol/teams list resolves everything correctly but is
-        # expensive (18+ paginated calls) — previously avoided
-        # entirely due to a free-tier rate limit, now affordable as a
-        # targeted fallback on the paid tier (50k calls/month, 30/min).
-        # Only fetched when the cheap schedule map actually leaves real
-        # teams unresolved, not as the default for every run.
+        # Real, deliberate two-pass approach — schedule data is cheap
+        # (2 calls) but genuinely narrower than the full team database;
+        # real testing found major teams (T1, Cloud9, Team Liquid)
+        # missing simply because they weren't playing in the
+        # today/upcoming window, not because of a bug.
         schedule_today = get_lol_schedule_today(api_key)
         schedule_upcoming = get_lol_schedule_upcoming(api_key)
         name_to_slug = build_team_name_to_slug_map(schedule_today, schedule_upcoming)
     except Exception as e:
         if "429" in str(e):
-            return {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
-        return {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
+            return None, None, None, None, None, None, {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
+        return None, None, None, None, None, None, {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
 
-    # Check which real team names from the actual markets fail to
-    # resolve against the cheap schedule map BEFORE deciding whether
-    # the expensive full-teams-list fallback is even needed.
     all_market_team_names = set()
     for market in match_markets:
         for name in market.get("outcomes_parsed", []):
@@ -7555,23 +7526,22 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     teams_list = None
     if needs_fallback:
         try:
+            # The full teams list is expensive (18+ paginated calls) —
+            # previously avoided entirely due to a free-tier rate
+            # limit, now affordable as a targeted fallback on the paid
+            # tier. Only fetched when the cheap schedule map actually
+            # leaves real teams unresolved.
             teams_list = get_lol_teams_list(api_key)
             teams_list_map = build_team_name_to_slug_map_from_teams_list(teams_list)
             name_to_slug = merge_name_to_slug_maps(name_to_slug, teams_list_map)
-        except Exception as e:
+        except Exception:
             # Real, deliberate choice: don't fail the whole pipeline if
             # only the fallback errors — proceed with whatever the
-            # cheap schedule map alone could resolve, rather than
-            # losing everything over a fallback-only failure.
+            # cheap schedule map alone could resolve.
             pass
 
-    # Real third resolution pass (July 2026) — for teams still
-    # unresolved after simple exact-match lookup (genuinely ambiguous
-    # names, like multiple real teams called "Cloud9" across
-    # different regions), use real league context already present in
-    # Polymarket's own market text ("... - LEC Regular Season") to
-    # disambiguate. Built from data already fetched above — no
-    # additional API calls needed for this pass.
+    # League-context disambiguation for genuinely ambiguous names —
+    # built from data already fetched above, no extra API calls.
     candidates_map = build_team_candidates_map(schedule_today, schedule_upcoming, *([teams_list] if teams_list else []))
 
     def _resolve(team_name, market_text):
@@ -7583,8 +7553,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     def _diagnose_unresolved(team_name):
         """Real diagnostic showing exactly what each resolution stage
         found for a team that failed to resolve — not just the final
-        exact-match lookup, which was the real gap that made Gen.G's
-        failure impossible to diagnose from the debug output alone."""
+        exact-match lookup."""
         key = team_name.strip().lower()
         return {
             "exact_match_candidates": name_to_slug.get(key),
@@ -7593,9 +7562,6 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             "last_word_fallback_candidates": _find_last_word_candidates(team_name, candidates_map),
         }
 
-    # Resolve every matchup's two team names to real slugs up front,
-    # so we know exactly which teams' histories we actually need —
-    # avoids wasting real API calls on teams that don't resolve.
     resolved_matchups = []
     unresolved_team_names = []
     unresolved_detail = {}
@@ -7608,16 +7574,10 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         slug2 = _resolve(outcomes[1], market_text)
         if not slug1:
             unresolved_team_names.append(outcomes[0])
-            unresolved_detail[outcomes[0]] = {
-                **_diagnose_unresolved(outcomes[0]),
-                "market_text_checked": market_text,
-            }
+            unresolved_detail[outcomes[0]] = {**_diagnose_unresolved(outcomes[0]), "market_text_checked": market_text}
         if not slug2:
             unresolved_team_names.append(outcomes[1])
-            unresolved_detail[outcomes[1]] = {
-                **_diagnose_unresolved(outcomes[1]),
-                "market_text_checked": market_text,
-            }
+            unresolved_detail[outcomes[1]] = {**_diagnose_unresolved(outcomes[1]), "market_text_checked": market_text}
         if not slug1 or not slug2:
             continue  # a real, unmatched team — skip rather than guess
         resolved_matchups.append({
@@ -7625,36 +7585,16 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             "team1_slug": slug1, "team2_slug": slug2,
         })
 
-    # Convert sets to lists for JSON-friendliness in the debug output
-    def _serialize_candidates_dict(candidates_dict):
-        return {
-            slug: {"leagues": sorted(info["leagues"]), "regions": sorted(info["regions"])}
-            for slug, info in candidates_dict.items()
-        }
+    return resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, None
 
-    unresolved_detail_serializable = {
-        name: {
-            "exact_match_slug_found": detail["exact_match_candidates"],
-            "candidates_map_exact": _serialize_candidates_dict(detail["candidates_map_exact"]),
-            "prefix_fallback_candidates": _serialize_candidates_dict(detail["prefix_fallback_candidates"]),
-            "last_word_fallback_candidates": _serialize_candidates_dict(detail["last_word_fallback_candidates"]),
-            "market_text_checked": detail["market_text_checked"],
-        }
-        for name, detail in unresolved_detail.items()
-    }
 
-    debug_info = {
-        "total_events_fetched": len(events),
-        "all_fetched_event_titles": all_fetched_event_titles,
-        "real_match_winner_markets_found": len(match_markets),
-        "used_full_teams_list_fallback": needs_fallback,
-        "name_to_slug_map_size": len(name_to_slug),
-        "resolved_matchups": len(resolved_matchups),
-        "unresolved_team_names": sorted(set(unresolved_team_names)),
-        "unresolved_detail": unresolved_detail_serializable,
-    }
-    if not resolved_matchups:
-        return {"debug": debug_info, "results": []}
+def _fetch_lol_team_histories(resolved_matchups, api_key):
+    """Real extraction (code split #3) — fetches real match history for
+    every unique team across all resolved matchups, then combines,
+    dedupes, and chronologically sorts it into one dataset ready for
+    Elo. Returns (sorted_history, fetch_errors)."""
+    from cito_api import get_lol_team_matches, extract_completed_matches, sort_matches_chronologically
+    from lol_elo import combine_and_dedupe_matches
 
     unique_slugs = set()
     for m in resolved_matchups:
@@ -7673,119 +7613,185 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
 
     combined_history = combine_and_dedupe_matches(all_team_histories)
     sorted_history = sort_matches_chronologically(combined_history)
+    return sorted_history, fetch_errors
+
+
+def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date):
+    """Real extraction (code split #4) — the real per-matchup pricing
+    logic: date-cutoff filtering, price validation, illiquid-market
+    filtering, model-vs-market probability, recommended side, real
+    EV%, and tier classification. Returns (result_dict, filter_reason)
+    — exactly one of the two is None. filter_reason is one of
+    'too_far_ahead', 'bad_price_data', 'illiquid', or None (meaning a
+    real result was produced)."""
+    from polymarket_api import polymarket_price_to_american_odds
+
+    market = m["market"]
+    prices = market.get("outcomePrices_parsed", [])
+
+    # Real date cutoff — real feedback found matchups showing up over
+    # a week out, too far ahead to be practically useful for betting
+    # right now. A missing/unparseable match_date is kept, not
+    # excluded — that's genuinely unknown, not evidence of being far away.
+    match_date_str = market.get("match_date")
+    if match_date_str:
+        try:
+            match_date = datetime.strptime(match_date_str, "%Y-%m-%d").date()
+            if match_date > cutoff_date:
+                return None, {"reason": "too_far_ahead", "team1": m["team1_name"], "team2": m["team2_name"], "match_date": match_date_str}
+        except (ValueError, TypeError):
+            pass  # unparseable date — kept, same as a missing one
+
+    if len(prices) != 2:
+        return None, {"reason": "bad_price_data", "team1": m["team1_name"], "team2": m["team2_name"], "prices": prices}
+    try:
+        market_prob_team1 = float(prices[0])
+    except (ValueError, TypeError):
+        return None, {"reason": "bad_price_data", "team1": m["team1_name"], "team2": m["team2_name"], "prices": prices}
+
+    # Real fix — a price at or extremely near 0%/100% generally means
+    # the market has little to no real trading activity yet, not a
+    # genuine, liquid consensus price. Computing an "edge" against a
+    # stale placeholder like this is misleading, not a real signal.
+    if market_prob_team1 <= 0.01 or market_prob_team1 >= 0.99:
+        return None, {"reason": "illiquid", "team1": m["team1_name"], "team2": m["team2_name"], "market_prob_team1": market_prob_team1, "question": market.get("question")}
+
+    question = (market.get("question") or "").lower()
+    best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
+
+    from lol_elo import predict_series
+    model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
+    edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
+
+    # A moneyline bet needs a decision about WHICH team to actually
+    # back, unlike a prop's single over/under line. Whichever side the
+    # model rates more favorably than the market is the real value side.
+    if model_prob_team1 >= market_prob_team1:
+        rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team1", m["team1_name"], model_prob_team1, market_prob_team1
+    else:
+        rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team2", m["team2_name"], 1 - model_prob_team1, 1 - market_prob_team1
+    rec_odds = polymarket_price_to_american_odds(rec_market_prob)
+    ev_pct = calculate_ev_pct(rec_model_prob, rec_odds) if rec_odds else None
+
+    # Real, honest first-attempt tier thresholds specific to moneyline
+    # EV — genuinely different distribution than prop betting EV, not
+    # borrowed from another sport's calibration. Needs real calibration
+    # once enough real settled LoL bets exist — can't happen until then.
+    if ev_pct is None:
+        mm_tier = "🔴 Pass"
+    elif ev_pct >= 15:
+        mm_tier = "🟢 Best Bet"
+    elif ev_pct >= 7:
+        mm_tier = "🔵 Worth a Look"
+    elif ev_pct >= 2:
+        mm_tier = "🟡 Lean"
+    else:
+        mm_tier = "🔴 Pass"
+
+    result = {
+        "event_title": market.get("event_title"),
+        "question": market.get("question"),
+        "market_slug": market.get("slug"),
+        "group_item_title": market.get("groupItemTitle"),
+        "match_date": market.get("match_date"),
+        "context_description": market.get("context_description"),
+        "team1_name": m["team1_name"], "team2_name": m["team2_name"],
+        "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
+        "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
+        "team2_rating": round(ratings.get(m["team2_slug"], 1500), 1),
+        "model_prob_team1": round(model_prob_team1, 3),
+        "market_prob_team1": round(market_prob_team1, 3),
+        "edge_pct": edge,
+        "best_of": best_of,
+        "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
+        "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
+        "recommended_side": rec_side,
+        "recommended_team_name": rec_team_name,
+        "recommended_model_prob": round(rec_model_prob, 3),
+        "recommended_market_prob": round(rec_market_prob, 3),
+        "recommended_odds": rec_odds,
+        "ev_pct": round(ev_pct, 2) if ev_pct is not None else None,
+        "mm_tier": mm_tier,
+    }
+    return result, None
+
+
+def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=2):
+    """The real, full pipeline — now a thin orchestrator over the real,
+    focused helper functions above (code split, July 2026, per external
+    review: the original single ~330-line function was flagged as
+    getting large enough to be worth splitting before it doubles again).
+    Each helper is a genuine extraction of the original, already-tested
+    logic, not a rewrite — verified to produce identical results before
+    this split shipped.
+
+    1. Fetch real, live LoL events from Polymarket, extract match-
+       winner markets.
+    2. Resolve every matchup's two team names to real Cito slugs.
+    3. Fetch real match history for every team involved, build one
+       real, global Elo ratings table (with recent-form weighting).
+    4. Price and tier every real matchup against the real market.
+    Returns a list of dicts, one per matchup, with everything needed
+    to display and log a bet — or an 'error' key if something failed,
+    following the same honest-failure pattern used throughout this
+    project rather than silently returning an empty result."""
+    from lol_elo import build_team_ratings_from_history
+
+    events, match_markets, error_result = _fetch_lol_match_markets(tag_slug)
+    if error_result is not None:
+        return error_result
+
+    resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, error_result = _resolve_lol_matchup_teams(match_markets, api_key)
+    if error_result is not None:
+        return error_result
+
+    def _serialize_candidates_dict(candidates_dict):
+        return {slug: {"leagues": sorted(info["leagues"]), "regions": sorted(info["regions"])} for slug, info in candidates_dict.items()}
+
+    unresolved_detail_serializable = {
+        name: {
+            "exact_match_slug_found": detail["exact_match_candidates"],
+            "candidates_map_exact": _serialize_candidates_dict(detail["candidates_map_exact"]),
+            "prefix_fallback_candidates": _serialize_candidates_dict(detail["prefix_fallback_candidates"]),
+            "last_word_fallback_candidates": _serialize_candidates_dict(detail["last_word_fallback_candidates"]),
+            "market_text_checked": detail["market_text_checked"],
+        }
+        for name, detail in unresolved_detail.items()
+    }
+
+    all_fetched_event_titles = [e.get("title") for e in events]
+    debug_info = {
+        "total_events_fetched": len(events),
+        "all_fetched_event_titles": all_fetched_event_titles,
+        "real_match_winner_markets_found": len(match_markets),
+        "used_full_teams_list_fallback": needs_fallback,
+        "name_to_slug_map_size": len(name_to_slug),
+        "resolved_matchups": len(resolved_matchups),
+        "unresolved_team_names": sorted(set(unresolved_team_names)),
+        "unresolved_detail": unresolved_detail_serializable,
+    }
+    if not resolved_matchups:
+        return {"debug": debug_info, "results": []}
+
+    sorted_history, fetch_errors = _fetch_lol_team_histories(resolved_matchups, api_key)
     ratings = build_team_ratings_from_history(sorted_history)
 
+    results = []
     filtered_as_illiquid = []
     filtered_bad_price_data = []
     filtered_as_too_far_ahead = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
-        market = m["market"]
-        outcomes = market.get("outcomes_parsed", [])
-        prices = market.get("outcomePrices_parsed", [])
-
-        # Real date cutoff (July 2026) — real feedback found matchups
-        # showing up over a week out, too far ahead to be practically
-        # useful for betting right now. A missing/unparseable
-        # match_date is kept, not excluded — that's genuinely unknown,
-        # not evidence of being far away.
-        match_date_str = market.get("match_date")
-        if match_date_str:
-            try:
-                match_date = datetime.strptime(match_date_str, "%Y-%m-%d").date()
-                if match_date > cutoff_date:
-                    filtered_as_too_far_ahead.append({
-                        "team1": m["team1_name"], "team2": m["team2_name"], "match_date": match_date_str,
-                    })
-                    continue
-            except (ValueError, TypeError):
-                pass  # unparseable date — kept, same as a missing one
-
-        if len(prices) != 2:
-            filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
-            continue
-        try:
-            market_prob_team1 = float(prices[0])
-        except (ValueError, TypeError):
-            filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
-            continue
-
-        # Real fix (July 2026) — a price at or extremely near 0%/100%
-        # generally means the market has little to no real trading
-        # activity yet (a fresh listing, or a market nobody's touched),
-        # not a genuine, liquid consensus price. Computing an "edge"
-        # against a stale placeholder like this is misleading, not a
-        # real signal — confirmed via live data showing "Odds: None"
-        # (this app's own odds converter correctly refusing to convert
-        # an invalid probability) paired with suspiciously round 0%/100%
-        # market prices across multiple real matchups.
-        if market_prob_team1 <= 0.01 or market_prob_team1 >= 0.99:
-            filtered_as_illiquid.append({
-                "team1": m["team1_name"], "team2": m["team2_name"],
-                "market_prob_team1": market_prob_team1, "question": market.get("question"),
-            })
-            continue
-
-        question = (market.get("question") or "").lower()
-        best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
-
-        model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
-        edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
-
-        # Real addition (July 2026) — a moneyline bet needs a decision
-        # about WHICH team to actually back, unlike a prop's single
-        # over/under line. Whichever side the model rates more
-        # favorably than the market is the real value side.
-        if model_prob_team1 >= market_prob_team1:
-            rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team1", m["team1_name"], model_prob_team1, market_prob_team1
-        else:
-            rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team2", m["team2_name"], 1 - model_prob_team1, 1 - market_prob_team1
-        rec_odds = polymarket_price_to_american_odds(rec_market_prob)
-        ev_pct = calculate_ev_pct(rec_model_prob, rec_odds) if rec_odds else None
-
-        # Real, honest first-attempt tier thresholds specific to
-        # moneyline EV — genuinely different distribution than prop
-        # betting EV, not borrowed from another sport's calibration.
-        # Like NFL Receptions' confidence tiers, these need real
-        # calibration once enough real settled LoL bets exist (item 6
-        # from the original review — can't happen until then).
-        if ev_pct is None:
-            mm_tier = "🔴 Pass"
-        elif ev_pct >= 15:
-            mm_tier = "🟢 Best Bet"
-        elif ev_pct >= 7:
-            mm_tier = "🔵 Worth a Look"
-        elif ev_pct >= 2:
-            mm_tier = "🟡 Lean"
-        else:
-            mm_tier = "🔴 Pass"
-
-        results.append({
-            "event_title": market.get("event_title"),
-            "question": market.get("question"),
-            "market_slug": market.get("slug"),
-            "group_item_title": market.get("groupItemTitle"),
-            "match_date": market.get("match_date"),
-            "context_description": market.get("context_description"),
-            "team1_name": m["team1_name"], "team2_name": m["team2_name"],
-            "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
-            "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
-            "team2_rating": round(ratings.get(m["team2_slug"], 1500), 1),
-            "model_prob_team1": round(model_prob_team1, 3),
-            "market_prob_team1": round(market_prob_team1, 3),
-            "edge_pct": edge,
-            "best_of": best_of,
-            "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
-            "fetch_errors": fetch_errors,
-            "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
-            "recommended_side": rec_side,
-            "recommended_team_name": rec_team_name,
-            "recommended_model_prob": round(rec_model_prob, 3),
-            "recommended_market_prob": round(rec_market_prob, 3),
-            "recommended_odds": rec_odds,
-            "ev_pct": round(ev_pct, 2) if ev_pct is not None else None,
-            "mm_tier": mm_tier,
-        })
+        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date)
+        if result is not None:
+            result["fetch_errors"] = fetch_errors
+            results.append(result)
+        elif filter_info["reason"] == "too_far_ahead":
+            filtered_as_too_far_ahead.append({k: v for k, v in filter_info.items() if k != "reason"})
+        elif filter_info["reason"] == "bad_price_data":
+            filtered_bad_price_data.append({k: v for k, v in filter_info.items() if k != "reason"})
+        elif filter_info["reason"] == "illiquid":
+            filtered_as_illiquid.append({k: v for k, v in filter_info.items() if k != "reason"})
 
     debug_info["final_result_count"] = len(results)
     debug_info["filtered_as_illiquid"] = filtered_as_illiquid
