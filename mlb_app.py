@@ -7473,13 +7473,21 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     results = []
 
     try:
-        events = get_polymarket_events(tag_slug=tag_slug, closed=False, limit=50)
+        # Real fix (July 2026) — raised from 50 to 200. If genuinely
+        # more than 50 real LoL events are live simultaneously across
+        # every league (LPL, LCK, LCS, LEC, NACL, etc.), some could be
+        # silently cut off before team names are even checked. This is
+        # the FIRST place a real, expected matchup could be missing —
+        # before any team-resolution logic even runs.
+        events = get_polymarket_events(tag_slug=tag_slug, closed=False, limit=200)
     except Exception as e:
         return {"error": f"Polymarket fetch failed: {e}"}
 
+    all_fetched_event_titles = [e.get("title") for e in events]
+
     match_markets = extract_match_winner_markets(events)
     if not match_markets:
-        return {"debug": "No real match-winner markets found in the Polymarket fetch itself — 0 events had a groupItemTitle of 'Match Winner'.", "results": []}
+        return {"debug": {"note": "No real match-winner markets found in the Polymarket fetch itself — 0 events had a groupItemTitle of 'Match Winner'.", "total_events_fetched": len(events), "all_fetched_event_titles": all_fetched_event_titles}, "results": []}
 
     try:
         # Real, deliberate two-pass approach (July 2026) — schedule
@@ -7586,6 +7594,8 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     }
 
     debug_info = {
+        "total_events_fetched": len(events),
+        "all_fetched_event_titles": all_fetched_event_titles,
         "real_match_winner_markets_found": len(match_markets),
         "used_full_teams_list_fallback": needs_fallback,
         "name_to_slug_map_size": len(name_to_slug),
