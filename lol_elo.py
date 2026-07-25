@@ -97,6 +97,27 @@ def calculate_recency_weight(game_date_str, reference_date=None, grace_days=DEFA
     return exp(-(age_days - grace_days) / decay_tau_days)
 
 
+# Real, known international tournament name markers — confirmed real
+# tournament names seen in live data (July 2026): "msi 2026", "ewc lol
+# 2026". Matched as substrings against a real match's tournamentName,
+# since Cito's team-matches endpoint has no clean, direct league/region
+# field — only tournamentId/tournamentName, confirmed via live
+# investigation before this was built (not guessed at).
+INTERNATIONAL_TOURNAMENT_MARKERS = ["msi", "worlds", "world championship", "ewc", "first stand"]
+
+DEFAULT_INTERNATIONAL_K_MULTIPLIER = 1.25  # a real, moderate starting point per external review — not backtested yet
+
+
+def is_international_tournament(tournament_name):
+    """Real, substring-based detection of a known international/
+    cross-region tournament, using tournamentName (the only real,
+    confirmed field available on this endpoint for this purpose)."""
+    if not tournament_name:
+        return False
+    name_lower = tournament_name.strip().lower()
+    return any(marker in name_lower for marker in INTERNATIONAL_TOURNAMENT_MARKERS)
+
+
 def calculate_elo_expected_score(rating_a, rating_b):
     """Standard Elo expected-score formula — returns team A's win
     probability for a SINGLE game, given both current ratings."""
@@ -141,7 +162,7 @@ def series_win_probability(single_game_prob, best_of):
     return total_prob
 
 
-def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DEFAULT_STARTING_RATING, k_factor=DEFAULT_K_FACTOR, use_recency_weighting=True, reference_date=None):
+def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DEFAULT_STARTING_RATING, k_factor=DEFAULT_K_FACTOR, use_recency_weighting=True, reference_date=None, team_region_map=None, international_k_multiplier=DEFAULT_INTERNATIONAL_K_MULTIPLIER):
     """Processes a chronologically-sorted list of completed matches
     (the output of cito_api.sort_matches_chronologically applied to
     cito_api.extract_completed_matches) and builds up current Elo
@@ -163,8 +184,24 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
     their own timestamps in Cito's confirmed schema, only the match
     does, so every game within one match shares that match's single
     age/weight. A match with a missing/unparseable startTime gets full
-    weight (1.0), not silently excluded."""
+    weight (1.0), not silently excluded.
+
+    Real addition (July 2026, per external review's own precise
+    refinement): a moderate K-factor boost for genuinely cross-region
+    international matches (MSI/Worlds/EWC where the two teams are from
+    DIFFERENT regions) — these rare bridge games carry more real
+    information about how separate regional rating pools relate to
+    each other than an ordinary domestic game does. Deliberately NOT
+    applied to a same-region matchup at an international event (e.g.
+    two LCK teams playing each other at Worlds) — per the review,
+    that tells the model nothing new about cross-region strength.
+    Requires team_region_map ({slug: region}, built from the real
+    teams-list data, since match data itself carries no region field)
+    — if not provided, this boost is simply never applied (an honest,
+    safe default, not an error) and behavior is identical to before
+    this feature existed."""
     ratings = {}
+    team_region_map = team_region_map or {}
 
     def _get_rating(slug):
         return ratings.setdefault(slug, starting_rating)
@@ -181,6 +218,14 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
             effective_k = k_factor * recency_weight
         else:
             effective_k = k_factor
+
+        # Real, precise cross-region international boost — both
+        # conditions must be true, matching the review's exact spec.
+        if is_international_tournament(match.get("tournamentName")):
+            region1 = team_region_map.get(team1_slug)
+            region2 = team_region_map.get(team2_slug)
+            if region1 and region2 and region1 != region2:
+                effective_k *= international_k_multiplier
 
         for game in games:
             winner_slug = game.get("winnerSlug")
@@ -227,3 +272,41 @@ def combine_and_dedupe_matches(list_of_match_lists):
                 seen_match_ids.add(match_id)
                 combined.append(match)
     return combined
+
+
+def count_international_matches(sorted_completed_matches, team_region_map=None):
+    """Real, per-reviewer confidence signal (July 2026): rather than
+    changing a team's projection based on having zero cross-region
+    international history (which the reviewer correctly flagged as
+    manufacturing a correction from insufficient evidence), this
+    tracks and returns a real, honest fact — {team_slug: count of
+    real cross-region international games in their history} — so the
+    pipeline can surface a genuine low-confidence flag for a team with
+    zero international games, without pretending to know how that
+    affects their true strength. A team with count=0 hasn't been
+    proven weak OR strong internationally — it's genuinely unknown,
+    and this function's job is only to report that honestly, not to
+    guess at a correction."""
+    team_region_map = team_region_map or {}
+    counts = {}
+
+    def _increment(slug):
+        counts[slug] = counts.get(slug, 0) + 1
+
+    for match in sorted_completed_matches:
+        team1_slug = match.get("team1", {}).get("slug")
+        team2_slug = match.get("team2", {}).get("slug")
+        if not team1_slug or not team2_slug:
+            continue
+        # Ensure every team appears in the output even at zero, not just teams with real international games
+        counts.setdefault(team1_slug, 0)
+        counts.setdefault(team2_slug, 0)
+        if not is_international_tournament(match.get("tournamentName")):
+            continue
+        region1 = team_region_map.get(team1_slug)
+        region2 = team_region_map.get(team2_slug)
+        if region1 and region2 and region1 != region2:
+            _increment(team1_slug)
+            _increment(team2_slug)
+
+    return counts
