@@ -69,6 +69,42 @@ def get_polymarket_events(tag_slug=None, closed=False, limit=50, timeout=20):
     return response.json()
 
 
+def get_all_polymarket_events(tag_slug=None, closed=False, timeout=20, page_size=100, max_pages=30):
+    """Real, deliberate pagination — no fixed ceiling. Real live
+    testing found a genuine, serious bug: a fixed limit=50 (then
+    raised to 200 as a first attempt) was silently truncating well
+    over half of all real, live LoL matchups — including specific,
+    real games the user was actively looking for (Invictus Gaming vs
+    Weibo Gaming, Top Esports vs ThunderTalk Gaming) that simply never
+    got fetched at all, with no error or warning anywhere. Any fixed
+    limit risks repeating this same silent-truncation failure on a
+    high-volume day (e.g. Worlds/MSI overlapping regular seasons
+    across every region at once). This fetches page after page using
+    real offset-based pagination until a page comes back with fewer
+    results than requested (the real signal that nothing is left),
+    combining every page into one full, complete list. max_pages is a
+    safety cap against a genuinely broken/infinite-looping response,
+    not a soft ceiling meant to be hit in normal use — 30 pages at
+    page_size=100 is 3,000 events, far beyond any realistic real
+    volume for one sport's markets."""
+    all_events = []
+    offset = 0
+    for _ in range(max_pages):
+        params = {"limit": page_size, "offset": offset, "closed": str(closed).lower()}
+        if tag_slug:
+            params["tag_slug"] = tag_slug
+        response = requests.get(f"{GAMMA_BASE_URL}/events", params=params, timeout=timeout)
+        response.raise_for_status()
+        page = response.json()
+        if not isinstance(page, list) or not page:
+            break
+        all_events.extend(page)
+        if len(page) < page_size:
+            break  # a page smaller than requested is the real signal nothing is left
+        offset += page_size
+    return all_events
+
+
 def extract_player_prop_markets(events):
     """Given a list of raw Polymarket event dicts, returns a flat list
     of individual market dicts that look like real player-prop
@@ -166,7 +202,7 @@ def get_polymarket_safety_check():
     player props (confirmed absent, per real live-data investigation)."""
     results = {}
     try:
-        events = get_polymarket_events(tag_slug="league-of-legends", closed=False, limit=20)
+        events = get_all_polymarket_events(tag_slug="league-of-legends", closed=False)
         results["fetch_ok"] = True
         results["event_count"] = len(events)
         results["sample_titles"] = [e.get("title") for e in events[:5]]
