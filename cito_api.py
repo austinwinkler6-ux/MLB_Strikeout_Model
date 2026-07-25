@@ -323,6 +323,43 @@ def build_team_region_map(teams_list_response):
     return region_map
 
 
+def build_match_time_map(*schedule_responses):
+    """Real fix (July 2026) — Cito's schedule/today and schedule/
+    upcoming responses include a real, confirmed 'startTime' field on
+    each match (e.g. '2026-07-24T09:00:00.000Z') that genuinely varies
+    per real match — unlike Polymarket's own date fields, which were
+    investigated and confirmed to represent market-creation time, not
+    real game time (see polymarket_api.py's _extract_match_date
+    docstring for the full account of that investigation). Since
+    schedule data is already fetched during team resolution anyway,
+    this builds a real {frozenset({team1_slug, team2_slug}):
+    startTime} lookup from it — a frozenset key since team1/team2
+    ordering may differ between Cito's schedule and Polymarket's
+    outcome ordering, and match identity here is really "these two
+    teams playing," not which one is listed first. Returns the most
+    recently-seen startTime if a same team pair appears more than once
+    across combined schedule_today + schedule_upcoming (a genuine,
+    if rare, real possibility — e.g. a rematch)."""
+    time_map = {}
+    for response in schedule_responses:
+        if isinstance(response, dict):
+            matches = response.get("data", [])
+        elif isinstance(response, list):
+            matches = response
+        else:
+            matches = []
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            team1_slug = (match.get("team1") or {}).get("slug")
+            team2_slug = (match.get("team2") or {}).get("slug")
+            start_time = match.get("startTime")
+            if team1_slug and team2_slug and start_time:
+                key = frozenset({team1_slug, team2_slug})
+                time_map[key] = start_time
+    return time_map
+
+
 def merge_name_to_slug_maps(*maps):
     """Safely combines multiple already-built name-to-slug maps (e.g.
     one from schedule data, one from the full teams list) into one.
