@@ -9345,20 +9345,30 @@ elif nav == "🎮 Esports (LoL)":
 
             st.markdown("---")
             st.subheader("🔍 Raw Market/Event Field Inspector")
-            st.caption("Answers 'why isn't the real match time available?' with real data instead of another guess — dumps the COMPLETE raw event and market objects for one real, live matchup, so every actual field can be seen directly. The real time field (if one exists) will be visible here, or its genuine absence will be confirmed.")
+            st.caption("Answers 'why isn't the real match time available?' with real data instead of another guess — dumps the COMPLETE raw event and market objects for one real, individual scheduled matchup (specifically a 'Match Winner' market, not a season-long futures market like 'LCK 2026 Season Winner' — a real bug in an earlier version of this tool grabbed whatever event came first, which gave a misleading picture since futures markets and single matches carry very different fields). The real time field (if one exists) will be visible here, or its genuine absence will be confirmed.")
             if st.button("Fetch and show raw event data", key="lol_raw_inspector_btn"):
                 with st.spinner("Fetching raw Polymarket data..."):
                     try:
                         from polymarket_api import get_all_polymarket_events
                         raw_events = get_all_polymarket_events(tag_slug="league-of-legends", closed=False)
-                        if raw_events:
-                            st.success(f"✅ Showing the complete, raw first event (of {len(raw_events)} total) — every real field Polymarket actually returns:")
-                            st.json(raw_events[0])
-                            first_market = (raw_events[0].get("markets") or [{}])[0]
-                            st.write("**Complete, raw first market within that event:**")
-                            st.json(first_market)
+                        real_match_event = None
+                        real_match_market = None
+                        for event in raw_events:
+                            for market in event.get("markets", []):
+                                if (market.get("groupItemTitle") or "").strip().lower() == "match winner":
+                                    real_match_event = event
+                                    real_match_market = market
+                                    break
+                            if real_match_market:
+                                break
+                        if real_match_market:
+                            st.success(f"✅ Found a real, individual 'Match Winner' market (out of {len(raw_events)} total events) — showing its complete raw fields:")
+                            st.write("**Complete, raw market object:**")
+                            st.json(real_match_market)
+                            st.write("**Complete, raw parent event object (top-level fields only, not the full nested markets list):**")
+                            st.json({k: v for k, v in real_match_event.items() if k != "markets"})
                         else:
-                            st.warning("No events returned to inspect right now.")
+                            st.warning("No real 'Match Winner' markets found in this fetch to inspect.")
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
 
