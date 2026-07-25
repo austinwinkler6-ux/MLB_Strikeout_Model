@@ -7465,7 +7465,8 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     from cito_api import (
         get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list, get_lol_team_matches,
         build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
-        match_polymarket_name_to_slug, extract_completed_matches, sort_matches_chronologically,
+        match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
+        extract_completed_matches, sort_matches_chronologically,
     )
     from lol_elo import combine_and_dedupe_matches, build_team_ratings_from_history, predict_series
 
@@ -7510,6 +7511,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             all_market_team_names.add(name)
     needs_fallback = any(match_polymarket_name_to_slug(name, name_to_slug) is None for name in all_market_team_names)
 
+    teams_list = None
     if needs_fallback:
         try:
             teams_list = get_lol_teams_list(api_key)
@@ -7522,6 +7524,21 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             # losing everything over a fallback-only failure.
             pass
 
+    # Real third resolution pass (July 2026) — for teams still
+    # unresolved after simple exact-match lookup (genuinely ambiguous
+    # names, like multiple real teams called "Cloud9" across
+    # different regions), use real league context already present in
+    # Polymarket's own market text ("... - LEC Regular Season") to
+    # disambiguate. Built from data already fetched above — no
+    # additional API calls needed for this pass.
+    candidates_map = build_team_candidates_map(schedule_today, schedule_upcoming, *([teams_list] if teams_list else []))
+
+    def _resolve(team_name, market_text):
+        slug = match_polymarket_name_to_slug(team_name, name_to_slug)
+        if slug:
+            return slug
+        return resolve_team_with_league_context(team_name, candidates_map, market_text)
+
     # Resolve every matchup's two team names to real slugs up front,
     # so we know exactly which teams' histories we actually need —
     # avoids wasting real API calls on teams that don't resolve.
@@ -7531,8 +7548,9 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         outcomes = market.get("outcomes_parsed", [])
         if len(outcomes) != 2:
             continue
-        slug1 = match_polymarket_name_to_slug(outcomes[0], name_to_slug)
-        slug2 = match_polymarket_name_to_slug(outcomes[1], name_to_slug)
+        market_text = f"{market.get('event_title', '')} {market.get('question', '')}"
+        slug1 = _resolve(outcomes[0], market_text)
+        slug2 = _resolve(outcomes[1], market_text)
         if not slug1:
             unresolved_team_names.append(outcomes[0])
         if not slug2:
