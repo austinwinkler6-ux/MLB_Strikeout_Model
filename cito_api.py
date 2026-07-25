@@ -321,6 +321,11 @@ KNOWN_LEAGUE_MARKERS = {
     'lta': ['lta', 'lta_n', 'lta_s', 'lta north', 'lta south'],
     'nacl': ['nacl'], 'ljl': ['ljl'], 'pcs': ['pcs'], 'vcs': ['vcs'],
     'cblol': ['cblol'], 'msi': ['msi'], 'worlds': ['worlds'],
+    # Real markers added (July 2026) — confirmed missing from live
+    # diagnostic data, which showed real market text containing these
+    # exact phrases with no matching marker to catch them.
+    'roadoflegends': ['road of legends'],
+    'primeleague': ['prime league'],
 }
 
 
@@ -411,10 +416,56 @@ def resolve_team_with_league_context(polymarket_team_name, candidates_map, marke
     if not matched_markers:
         return None  # genuinely ambiguous, no real league context to disambiguate with
 
-    filtered = [slug for slug, leagues in candidate_slugs.items() if leagues & matched_markers]
+    # Real bug fix (July 2026, found via live diagnostic data): this
+    # used to be an exact set intersection (leagues & matched_markers),
+    # but real candidate league slugs are often more specific than the
+    # marker itself — e.g. a real candidate tagged 'lck_challengers_
+    # league' never exactly equals the marker 'lck', even though the
+    # marker is clearly contained within it. Switched to substring
+    # matching in both directions, which is what actually reflects the
+    # real relationship between a marker and a real league slug.
+    filtered = [
+        slug for slug, leagues in candidate_slugs.items()
+        if any(marker in league or league in marker for league in leagues for marker in matched_markers)
+    ]
     if len(filtered) == 1:
         return filtered[0]
     return None  # still ambiguous even with league context — don't guess
+
+
+def search_teams_list_for_name(teams_list_response, search_term):
+    """Real investigation tool, not used by the main pipeline — for
+    a team that shows ZERO candidates (a real, different problem than
+    genuine ambiguity: it means neither the schedule data nor the
+    full teams list has anything under that exact name/shortName at
+    all), this searches every team's real name/shortName/slug for a
+    partial, case-insensitive match to the search term. Answers the
+    real question directly: does this team exist in Cito's data under
+    a different string than what Polymarket uses, or is it genuinely
+    absent? Returns a list of {slug, name, shortName, region, leagues}
+    for every real, partial match found."""
+    if isinstance(teams_list_response, dict):
+        teams = teams_list_response.get("teams") or teams_list_response.get("data") or []
+    elif isinstance(teams_list_response, list):
+        teams = teams_list_response
+    else:
+        teams = []
+
+    term_lower = search_term.strip().lower()
+    matches = []
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+        name = (team.get("name") or "")
+        short_name = (team.get("shortName") or "")
+        slug = (team.get("slug") or "")
+        if term_lower in name.lower() or term_lower in short_name.lower() or term_lower in slug.lower():
+            matches.append({
+                "slug": slug, "name": name, "shortName": short_name,
+                "region": team.get("region"),
+                "leagues": [l.get("slug") for l in (team.get("leagues") or []) if isinstance(l, dict)],
+            })
+    return matches
 
 
 def extract_completed_matches(team_matches_response):
