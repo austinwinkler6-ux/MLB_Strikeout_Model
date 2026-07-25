@@ -7544,6 +7544,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     # avoids wasting real API calls on teams that don't resolve.
     resolved_matchups = []
     unresolved_team_names = []
+    unresolved_detail = {}
     for market in match_markets:
         outcomes = market.get("outcomes_parsed", [])
         if len(outcomes) != 2:
@@ -7553,8 +7554,18 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         slug2 = _resolve(outcomes[1], market_text)
         if not slug1:
             unresolved_team_names.append(outcomes[0])
+            key = outcomes[0].strip().lower()
+            unresolved_detail[outcomes[0]] = {
+                "candidates": candidates_map.get(key, {}),
+                "market_text_checked": market_text,
+            }
         if not slug2:
             unresolved_team_names.append(outcomes[1])
+            key = outcomes[1].strip().lower()
+            unresolved_detail[outcomes[1]] = {
+                "candidates": candidates_map.get(key, {}),
+                "market_text_checked": market_text,
+            }
         if not slug1 or not slug2:
             continue  # a real, unmatched team — skip rather than guess
         resolved_matchups.append({
@@ -7562,12 +7573,22 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             "team1_slug": slug1, "team2_slug": slug2,
         })
 
+    # Convert sets to lists for JSON-friendliness in the debug output
+    unresolved_detail_serializable = {
+        name: {
+            "candidates": {slug: sorted(leagues) for slug, leagues in detail["candidates"].items()},
+            "market_text_checked": detail["market_text_checked"],
+        }
+        for name, detail in unresolved_detail.items()
+    }
+
     debug_info = {
         "real_match_winner_markets_found": len(match_markets),
         "used_full_teams_list_fallback": needs_fallback,
         "name_to_slug_map_size": len(name_to_slug),
         "resolved_matchups": len(resolved_matchups),
         "unresolved_team_names": sorted(set(unresolved_team_names)),
+        "unresolved_detail": unresolved_detail_serializable,
     }
     if not resolved_matchups:
         return {"debug": debug_info, "results": []}
