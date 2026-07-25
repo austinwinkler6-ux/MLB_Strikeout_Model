@@ -7463,7 +7463,7 @@ def format_lol_match_date(match_date_str):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
 
-def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
+def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=7):
     """The real, full pipeline tying together every piece built today:
     1. Fetch real, live LoL events from Polymarket, extract match-
        winner markets (the confirmed-real market type).
@@ -7477,6 +7477,13 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     5. For each Polymarket matchup, predict the series win probability
        from the real ratings, compare to Polymarket's real market
        price, compute a real edge.
+    6. Filter out matchups more than max_days_ahead in the future —
+       real feedback found matches showing up over a week out, too far
+       ahead to be practically useful for betting right now. Matchups
+       with no parseable match_date are kept, not excluded — a missing
+       date isn't evidence of being far away, just unknown, and
+       excluding them would hide real, valid near-term matches whose
+       date genuinely couldn't be parsed.
     Returns a list of dicts, one per matchup, with everything needed
     to display and log a bet — or an 'error' key if something failed,
     following the same honest-failure pattern used throughout this
@@ -7651,10 +7658,30 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
 
     filtered_as_illiquid = []
     filtered_bad_price_data = []
+    filtered_as_too_far_ahead = []
+    cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
         market = m["market"]
         outcomes = market.get("outcomes_parsed", [])
         prices = market.get("outcomePrices_parsed", [])
+
+        # Real date cutoff (July 2026) — real feedback found matchups
+        # showing up over a week out, too far ahead to be practically
+        # useful for betting right now. A missing/unparseable
+        # match_date is kept, not excluded — that's genuinely unknown,
+        # not evidence of being far away.
+        match_date_str = market.get("match_date")
+        if match_date_str:
+            try:
+                match_date = datetime.strptime(match_date_str, "%Y-%m-%d").date()
+                if match_date > cutoff_date:
+                    filtered_as_too_far_ahead.append({
+                        "team1": m["team1_name"], "team2": m["team2_name"], "match_date": match_date_str,
+                    })
+                    continue
+            except (ValueError, TypeError):
+                pass  # unparseable date — kept, same as a missing one
+
         if len(prices) != 2:
             filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
             continue
@@ -7744,6 +7771,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     debug_info["final_result_count"] = len(results)
     debug_info["filtered_as_illiquid"] = filtered_as_illiquid
     debug_info["filtered_bad_price_data"] = filtered_bad_price_data
+    debug_info["filtered_as_too_far_ahead"] = filtered_as_too_far_ahead
     return {"debug": debug_info, "results": results}
 
 # ---- HOME PAGE ----
