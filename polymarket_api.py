@@ -135,23 +135,21 @@ def extract_player_prop_markets(events):
 
 
 def _extract_match_date(market, event):
-    """Real, honest date extraction — no single source has been
-    confirmed from a live response yet, so this tries several
-    plausible real fields in priority order, then falls back to a
-    source that HAS been repeatedly confirmed today: real market slugs
-    consistently end in a real '-YYYY-MM-DD' suffix (e.g.
-    'lol-lgd-we-2026-07-25', seen dozens of times in real live data).
-    Returns an ISO-format date/datetime string if found, or None if
-    genuinely nothing usable exists — never a guessed/fabricated date."""
-    for source in (market, event):
-        if not isinstance(source, dict):
-            continue
-        for field in ("startDate", "gameStartTime", "eventStartTime", "start_date"):
-            value = source.get(field)
-            if value:
-                return value
-    # Fallback: parse the real, confirmed '-YYYY-MM-DD' suffix pattern
-    # from the market's own slug.
+    """Real date extraction. Real bug found and fixed (July 2026): an
+    earlier version also tried direct fields (startDate,
+    gameStartTime, eventStartTime) before falling back to the slug.
+    Live testing showed these returned real but WRONG values — actual
+    past dates (days before 'today') for matches being displayed as
+    live/upcoming picks, with oddly specific, non-broadcast times
+    (10:53 AM, 4:15 AM) that don't match how real scheduled esports
+    matches are actually timed. Almost certainly a market-creation or
+    market-metadata timestamp, not the real game start time. Removed
+    entirely rather than guessing at which one was the culprit — the
+    slug-based date has been organically, repeatedly correct across
+    dozens of real matchups today and is the only source actually kept
+    now. Returns a date-only string (no time — deliberately not
+    claiming false precision we don't have), or None if genuinely
+    nothing usable exists."""
     slug = (market or {}).get("slug") or ""
     match = re.search(r'(\d{4}-\d{2}-\d{2})$', slug)
     if match:
