@@ -189,6 +189,17 @@ def extract_match_winner_markets(events):
             parsed_market["outcomePrices_parsed"] = _parse_stringified_json_field(market.get("outcomePrices"))
             parsed_market["clobTokenIds_parsed"] = _parse_stringified_json_field(market.get("clobTokenIds"))
             parsed_market["event_title"] = event.get("title")
+            # Real addition (July 2026) — captured defensively. A real
+            # event was confirmed to include eventMetadata with a rich,
+            # genuinely useful context_description field ("HLE finished
+            # Rounds 1-2 with the best regular-season record at
+            # 15-3..."), but that was only seen on a season-long
+            # futures event, NOT yet confirmed present on a real,
+            # individual match-level event like this one — real
+            # verification needed on the next live test rather than
+            # assuming this will actually be populated here.
+            event_metadata = event.get("eventMetadata") or {}
+            parsed_market["context_description"] = event_metadata.get("context_description")
             parsed_market["event_slug"] = event.get("slug")
             parsed_market["match_date"] = _extract_match_date(market, event)
             match_winner_markets.append(parsed_market)
