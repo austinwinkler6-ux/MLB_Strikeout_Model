@@ -43,6 +43,33 @@ from datetime import datetime, timezone
 
 CITO_BASE_URL = "https://api.citoapi.com"
 
+# Real, confirmed set of invisible/zero-width Unicode characters found
+# in real live data (July 2026) — 'Movistar KOI Fénix' had a real
+# U+2060 WORD JOINER character before the name, which Python's
+# .strip() does NOT remove (it only strips actual whitespace, not
+# arbitrary Unicode formatting characters). This silently broke exact-
+# match team-name lookups even though the visible name was otherwise
+# perfectly correct. Includes the most common invisible characters
+# known to appear in real-world text, not just the one specific
+# character confirmed so far — a narrow fix for only U+2060 would risk
+# missing the next real, different invisible character.
+_INVISIBLE_UNICODE_CHARS = "\u2060\u200b\u200c\u200d\ufeff\u00a0"
+
+
+def _normalize_team_name(name):
+    """Real, shared normalization used everywhere a team name gets
+    compared — strips real, confirmed invisible Unicode characters (in
+    addition to normal whitespace) before lowercasing. Centralized
+    here rather than duplicated across every function that touches a
+    team name, so this fix applies consistently everywhere, not just
+    in whichever single spot the bug happened to be noticed first."""
+    if not name:
+        return ""
+    cleaned = name
+    for char in _INVISIBLE_UNICODE_CHARS:
+        cleaned = cleaned.replace(char, "")
+    return cleaned.strip().lower()
+
 
 def _cito_headers(api_key):
     return {"x-api-key": api_key}
@@ -207,9 +234,9 @@ def build_team_name_to_slug_map(*schedule_responses):
                 name = team.get("name")
                 code = team.get("code")
                 if slug and name:
-                    key_to_slugs.setdefault(name.strip().lower(), set()).add(slug)
+                    key_to_slugs.setdefault(_normalize_team_name(name), set()).add(slug)
                 if slug and code:
-                    key_to_slugs.setdefault(code.strip().lower(), set()).add(slug)
+                    key_to_slugs.setdefault(_normalize_team_name(code), set()).add(slug)
 
     name_to_slug = {}
     for key, slugs in key_to_slugs.items():
@@ -254,9 +281,9 @@ def build_team_name_to_slug_map_from_teams_list(teams_list_response):
         name = team.get("name")
         short_name = team.get("shortName")
         if slug and name:
-            key_to_slugs.setdefault(name.strip().lower(), set()).add(slug)
+            key_to_slugs.setdefault(_normalize_team_name(name), set()).add(slug)
         if slug and short_name:
-            key_to_slugs.setdefault(short_name.strip().lower(), set()).add(slug)
+            key_to_slugs.setdefault(_normalize_team_name(short_name), set()).add(slug)
 
     name_to_slug = {}
     for key, slugs in key_to_slugs.items():
@@ -306,7 +333,7 @@ def match_polymarket_name_to_slug(polymarket_team_name, name_to_slug_map):
     correctly returns None and gets skipped, rather than risking a
     wrong, undetectable prediction. This does mean fewer real matchups
     will resolve than before; that's the correct, honest tradeoff."""
-    normalized = polymarket_team_name.strip().lower()
+    normalized = _normalize_team_name(polymarket_team_name)
     return name_to_slug_map.get(normalized)
 
 
@@ -372,11 +399,11 @@ def build_team_candidates_map(*schedule_or_teams_list_responses):
     def _add(key, slug, league_slugs, region):
         if not key or not slug:
             return
-        key = key.strip().lower()
+        key = _normalize_team_name(key)
         entry = candidates.setdefault(key, {}).setdefault(slug, {"leagues": set(), "regions": set()})
         entry["leagues"].update(league_slugs)
         if region:
-            entry["regions"].add(region.strip().lower())
+            entry["regions"].add(_normalize_team_name(region))
 
     for response in schedule_or_teams_list_responses:
         if isinstance(response, dict):
@@ -434,7 +461,7 @@ def _find_prefix_candidates(polymarket_team_name, candidates_map):
     a meaningfully stronger, safer signal than a substring appearing
     anywhere. Returns a merged {slug: {"leagues", "regions"}} dict
     combining every matching key's candidates."""
-    normalized = polymarket_team_name.strip().lower()
+    normalized = _normalize_team_name(polymarket_team_name)
     merged = {}
     for key, slug_map in candidates_map.items():
         if key.startswith(normalized) or normalized.startswith(key):
@@ -457,7 +484,7 @@ def _find_last_word_candidates(polymarket_team_name, candidates_map):
     — deliberately exact and narrow (not 'contains'), since a bare
     2-3 letter shortName like 'WE' would produce real false positives
     under any looser matching rule."""
-    words = polymarket_team_name.strip().lower().split()
+    words = _normalize_team_name(polymarket_team_name).split()
     if not words:
         return {}
     last_word = words[-1]
@@ -477,7 +504,7 @@ def resolve_team_with_league_context(polymarket_team_name, candidates_map, marke
        never guesses. Keeps the same standing principle as the rest of
        this project: resolve with real evidence, or don't resolve at
        all."""
-    normalized = polymarket_team_name.strip().lower()
+    normalized = _normalize_team_name(polymarket_team_name)
 
     if normalized in MANUAL_TEAM_ALIASES:
         return MANUAL_TEAM_ALIASES[normalized]
@@ -536,7 +563,7 @@ def search_teams_list_for_name(teams_list_response, search_term):
     else:
         teams = []
 
-    term_lower = search_term.strip().lower()
+    term_lower = _normalize_team_name(search_term)
     matches = []
     for team in teams:
         if not isinstance(team, dict):
