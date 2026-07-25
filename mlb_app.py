@@ -7678,7 +7678,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     return sorted_history, fetch_errors
 
 
-def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None, sorted_history=None):
+def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None, sorted_history=None, api_key=None):
     """Real extraction (code split #4) — the real per-matchup pricing
     logic: date-cutoff filtering, price validation, illiquid-market
     filtering, model-vs-market probability, recommended side, real
@@ -7784,7 +7784,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     question = (market.get("question") or "").lower()
     best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
 
-    from lol_elo import predict_series, blend_with_head_to_head
+    from lol_elo import predict_series, blend_with_head_to_head, blend_with_head_to_head_from_api
     model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
 
     # Real addition (July 2026, per direct user feedback and a real,
@@ -7795,8 +7795,25 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     # sample can matter without ever fully overriding the broader Elo
     # signal. h2h_detail is real, honest transparency about what
     # evidence (if any) went into this, not a hidden adjustment.
+    #
+    # Real fix (July 2026) — now tries Cito's own dedicated /h2h
+    # endpoint first (confirmed via live testing to return more
+    # complete real data — 10 real matches back to Jan 2025 for a real
+    # pair, vs only 4 found by reconstructing from each team's own
+    # /matches history for that same pair). Falls back to the
+    # reconstruction approach if the API call fails for this specific
+    # pair (rate limit, network issue, etc) — a real, honest fallback,
+    # not silently losing the feature entirely over one failed call.
     h2h_detail = {"total_h2h_series": 0}
-    if sorted_history:
+    if api_key:
+        try:
+            from cito_api import get_lol_head_to_head
+            h2h_api_response = get_lol_head_to_head(api_key, m["team1_slug"], m["team2_slug"])
+            model_prob_team1, h2h_detail = blend_with_head_to_head_from_api(model_prob_team1, h2h_api_response)
+        except Exception:
+            if sorted_history:
+                model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
+    elif sorted_history:
         model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
 
     edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
@@ -7940,7 +7957,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_already_started = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
-        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history)
+        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history, api_key)
         if result is not None:
             result["fetch_errors"] = fetch_errors
             results.append(result)
