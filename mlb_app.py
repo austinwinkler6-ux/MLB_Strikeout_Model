@@ -9666,6 +9666,18 @@ The gap between two teams' ratings is what turns into the win probability you se
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
 
+            st.markdown("---")
+            st.caption("Real, live test of Cito's own dedicated head-to-head endpoint — found in their full API list, never verified against a live response before. Testing whether this is a more complete data source than reconstructing head-to-head from each team's own /matches history (which was just confirmed to have a real gap — two missing EWC matches between KC and Movistar KOI).")
+            if st.button("Test dedicated /h2h endpoint", key="lol_h2h_endpoint_test_btn"):
+                with st.spinner(f"Fetching real /h2h data for {h2h_team1} vs {h2h_team2}..."):
+                    try:
+                        from cito_api import get_lol_head_to_head
+                        h2h_raw = get_lol_head_to_head(st.secrets["CITO_API_KEY"], h2h_team1, h2h_team2)
+                        st.success("✅ Real response received from the dedicated /h2h endpoint:")
+                        st.json(h2h_raw)
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
 
             st.subheader("🧪 Live Polymarket Safety Check")
             if st.button("Test Polymarket LoL fetch", key="polymarket_lol_safety_check"):
