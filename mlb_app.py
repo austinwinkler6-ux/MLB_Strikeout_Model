@@ -9344,6 +9344,25 @@ elif nav == "🎮 Esports (LoL)":
                         st.error(f"❌ Real fetch error: {result.get('error')}")
 
             st.markdown("---")
+            st.subheader("🔍 Raw Market/Event Field Inspector")
+            st.caption("Answers 'why isn't the real match time available?' with real data instead of another guess — dumps the COMPLETE raw event and market objects for one real, live matchup, so every actual field can be seen directly. The real time field (if one exists) will be visible here, or its genuine absence will be confirmed.")
+            if st.button("Fetch and show raw event data", key="lol_raw_inspector_btn"):
+                with st.spinner("Fetching raw Polymarket data..."):
+                    try:
+                        from polymarket_api import get_all_polymarket_events
+                        raw_events = get_all_polymarket_events(tag_slug="league-of-legends", closed=False)
+                        if raw_events:
+                            st.success(f"✅ Showing the complete, raw first event (of {len(raw_events)} total) — every real field Polymarket actually returns:")
+                            st.json(raw_events[0])
+                            first_market = (raw_events[0].get("markets") or [{}])[0]
+                            st.write("**Complete, raw first market within that event:**")
+                            st.json(first_market)
+                        else:
+                            st.warning("No events returned to inspect right now.")
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
+            st.markdown("---")
             st.subheader("🧪 Live Cito API Safety Check")
             if st.button("Test Cito API endpoints", key="cito_safety_check"):
                 with st.spinner("Fetching live Cito data..."):
