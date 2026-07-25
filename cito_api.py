@@ -332,20 +332,30 @@ KNOWN_LEAGUE_MARKERS = {
 def build_team_candidates_map(*schedule_or_teams_list_responses):
     """A richer companion to build_team_name_to_slug_map() — instead
     of collapsing an ambiguous name to 'excluded', keeps every real
-    candidate (slug + the league slugs it's associated with) for every
+    candidate (slug + its real league AND region tags) for every
     name/code/shortName seen. Accepts a mix of schedule-shaped
     responses (nested team1/team2, with a 'leagueSlug' on the parent
-    match) and the flat teams-list shape (team objects with a
-    'leagues' array directly). This is the real data disambiguation
-    needs — a plain name-to-slug map necessarily throws this
-    information away."""
-    candidates = {}  # key -> {slug: set(league_slugs)}
+    match) and the flat teams-list shape (team objects with 'leagues'
+    and 'region' directly). This is the real data disambiguation
+    needs — a plain name-to-slug map necessarily throws this away.
 
-    def _add(key, slug, league_slugs):
+    Real addition (July 2026): now also tracks 'region' as a second,
+    separate disambiguation signal alongside leagues. Real live data
+    showed two different Cito entries both named 'Cloud9 Kia' — one
+    tagged league 'lta_n', the other with NO league tag at all but a
+    real 'region: LCS' field that directly matches real Polymarket
+    market text ('LCS Regular Season'). Leagues alone couldn't
+    disambiguate that case; region can."""
+    candidates = {}  # key -> {slug: {"leagues": set(...), "regions": set(...)}}
+
+    def _add(key, slug, league_slugs, region):
         if not key or not slug:
             return
         key = key.strip().lower()
-        candidates.setdefault(key, {}).setdefault(slug, set()).update(league_slugs)
+        entry = candidates.setdefault(key, {}).setdefault(slug, {"leagues": set(), "regions": set()})
+        entry["leagues"].update(league_slugs)
+        if region:
+            entry["regions"].add(region.strip().lower())
 
     for response in schedule_or_teams_list_responses:
         if isinstance(response, dict):
@@ -358,10 +368,11 @@ def build_team_candidates_map(*schedule_or_teams_list_responses):
                     slug = team.get("slug")
                     leagues = team.get("leagues") or []
                     league_slugs = {l.get("slug") for l in leagues if isinstance(l, dict) and l.get("slug")}
+                    region = team.get("region")
                     for key in (team.get("name"), team.get("shortName")):
-                        _add(key, slug, league_slugs)
+                        _add(key, slug, league_slugs, region)
             else:
-                # Schedule shape
+                # Schedule shape — no region field available here
                 matches = response.get("data", [])
                 for match in matches:
                     if not isinstance(match, dict):
@@ -372,7 +383,7 @@ def build_team_candidates_map(*schedule_or_teams_list_responses):
                         team = match.get(team_key) or {}
                         slug = team.get("slug")
                         for key in (team.get("name"), team.get("code")):
-                            _add(key, slug, league_slugs)
+                            _add(key, slug, league_slugs, None)
         elif isinstance(response, list):
             for match in response:
                 if not isinstance(match, dict):
@@ -383,26 +394,54 @@ def build_team_candidates_map(*schedule_or_teams_list_responses):
                     team = match.get(team_key) or {}
                     slug = team.get("slug")
                     for key in (team.get("name"), team.get("code")):
-                        _add(key, slug, league_slugs)
+                        _add(key, slug, league_slugs, None)
 
     return candidates
 
 
+def _find_prefix_candidates(polymarket_team_name, candidates_map):
+    """Real, deliberately narrow fallback for when the exact name
+    isn't found in candidates_map at all — not genuine ambiguity, but
+    a real naming mismatch (Cito's real name is 'Cloud9 Kia', not
+    plain 'Cloud9', the same pattern already confirmed with '100
+    Thieves' being stored as just 'Thieves'). Only matches when the
+    Polymarket name is a real PREFIX of a candidate key (or vice
+    versa) — e.g. 'cloud9' is a genuine prefix of 'cloud9 kia'. This
+    is deliberately much narrower than the substring-anywhere fallback
+    removed earlier (which caused real wrong matches like 'T1' hitting
+    't1-rookies') — a prefix relationship at the start of the string is
+    a meaningfully stronger, safer signal than a substring appearing
+    anywhere. Returns a merged {slug: {"leagues", "regions"}} dict
+    combining every matching key's candidates."""
+    normalized = polymarket_team_name.strip().lower()
+    merged = {}
+    for key, slug_map in candidates_map.items():
+        if key.startswith(normalized) or normalized.startswith(key):
+            for slug, info in slug_map.items():
+                entry = merged.setdefault(slug, {"leagues": set(), "regions": set()})
+                entry["leagues"].update(info["leagues"])
+                entry["regions"].update(info["regions"])
+    return merged
+
+
 def resolve_team_with_league_context(polymarket_team_name, candidates_map, market_text):
-    """Real disambiguation, used only when a plain exact-match lookup
-    is genuinely ambiguous (more than one real slug shares the same
-    name). Looks for a known league marker (LEC, LCS, LCK, LPL, etc)
-    inside the real Polymarket market text (question/event_title,
-    which reliably includes real league context like '- LEC Regular
-    Season'), then filters the name's candidate slugs to only those
-    associated with that league. Returns a slug ONLY if this narrows
-    it to exactly one — if the market text has no recognizable league
-    marker, or filtering still leaves more than one candidate, returns
-    None rather than guessing. This keeps the same standing principle
-    as the rest of this project: resolve with real evidence, or don't
-    resolve at all."""
+    """Real disambiguation, with two real passes:
+    1. If the exact name is genuinely ambiguous (multiple real slugs),
+       or genuinely absent (a real naming mismatch, e.g. 'Cloud9' vs
+       Cito's real 'Cloud9 Kia'), use real league AND region markers
+       found in the actual Polymarket market text to narrow it down.
+    2. Returns a slug ONLY if evidence narrows it to exactly one —
+       never guesses. Keeps the same standing principle as the rest of
+       this project: resolve with real evidence, or don't resolve at
+       all."""
     normalized = polymarket_team_name.strip().lower()
     candidate_slugs = candidates_map.get(normalized, {})
+
+    if len(candidate_slugs) == 0:
+        # Real naming mismatch fallback — narrow prefix match only,
+        # not a broad "contains anywhere" check.
+        candidate_slugs = _find_prefix_candidates(polymarket_team_name, candidates_map)
+
     if len(candidate_slugs) == 1:
         return next(iter(candidate_slugs))
     if len(candidate_slugs) == 0:
@@ -413,24 +452,20 @@ def resolve_team_with_league_context(polymarket_team_name, candidates_map, marke
     for marker_league, aliases in KNOWN_LEAGUE_MARKERS.items():
         if any(alias in market_text_lower for alias in aliases):
             matched_markers.add(marker_league)
-    if not matched_markers:
-        return None  # genuinely ambiguous, no real league context to disambiguate with
 
-    # Real bug fix (July 2026, found via live diagnostic data): this
-    # used to be an exact set intersection (leagues & matched_markers),
-    # but real candidate league slugs are often more specific than the
-    # marker itself — e.g. a real candidate tagged 'lck_challengers_
-    # league' never exactly equals the marker 'lck', even though the
-    # marker is clearly contained within it. Switched to substring
-    # matching in both directions, which is what actually reflects the
-    # real relationship between a marker and a real league slug.
-    filtered = [
-        slug for slug, leagues in candidate_slugs.items()
-        if any(marker in league or league in marker for league in leagues for marker in matched_markers)
-    ]
-    if len(filtered) == 1:
-        return filtered[0]
-    return None  # still ambiguous even with league context — don't guess
+    def _has_marker_match(tags):
+        return any(marker in tag or tag in marker for tag in tags for marker in matched_markers)
+
+    if matched_markers:
+        # Try leagues first, then region, as two independent real signals
+        by_league = [slug for slug, info in candidate_slugs.items() if _has_marker_match(info["leagues"])]
+        if len(by_league) == 1:
+            return by_league[0]
+        by_region = [slug for slug, info in candidate_slugs.items() if _has_marker_match(info["regions"])]
+        if len(by_region) == 1:
+            return by_region[0]
+
+    return None  # still ambiguous even with all available real context — don't guess
 
 
 def search_teams_list_for_name(teams_list_response, search_term):
