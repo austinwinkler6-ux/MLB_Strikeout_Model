@@ -9402,6 +9402,29 @@ elif nav == "🎮 Esports (LoL)":
         with st.expander("🔧 Admin: Diagnostics & Data Pipeline Tools", expanded=False):
             st.caption("Real diagnostic tools used to build and debug this pipeline — hidden from regular users, kept here since they've caught real, genuine bugs and will likely be needed again as coverage expands to more leagues/games.")
 
+            st.subheader("🔍 League/Tournament Data Investigation")
+            st.caption("Real investigation before building league-strength adjustment — checks how tournament/league info is actually structured in a team's real match history (tournamentId/tournamentName field, not necessarily a clean leagueSlug like the schedule endpoint has), and counts how many real cross-league/international games actually exist to derive a meaningful signal from.")
+            diag_league_slug = st.text_input("Team slug to check", value="t1", key="lol_league_diag_slug")
+            if st.button("Investigate league data", key="lol_league_diag_btn"):
+                with st.spinner(f"Fetching real match history for {diag_league_slug}..."):
+                    try:
+                        from cito_api import get_lol_team_matches, extract_completed_matches
+                        raw = get_lol_team_matches(st.secrets["CITO_API_KEY"], diag_league_slug)
+                        completed = extract_completed_matches(raw)
+                        tournaments_seen = {}
+                        for m in completed:
+                            tid = m.get("tournamentId")
+                            tname = m.get("tournamentName")
+                            tournaments_seen.setdefault(f"{tid} ({tname})", 0)
+                            tournaments_seen[f"{tid} ({tname})"] += 1
+                        st.write(f"**{len(completed)} real completed matches found. Unique tournaments/leagues played in:**")
+                        st.json(tournaments_seen)
+                        st.write("**Sample of one full real match object (to see every real field available):**")
+                        if completed:
+                            st.json(completed[0])
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
             st.subheader("🧪 Live Polymarket Safety Check")
             if st.button("Test Polymarket LoL fetch", key="polymarket_lol_safety_check"):
                 with st.spinner("Fetching live Polymarket data..."):
