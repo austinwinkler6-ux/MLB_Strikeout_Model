@@ -139,6 +139,30 @@ def get_lol_team_matches(api_key, team_slug, timeout=20):
     return response.json()
 
 
+def get_lol_head_to_head(api_key, team_slug, opponent_slug, timeout=20):
+    """Real, documented endpoint (found via Cito's full API list, July
+    2026): GET /lol/teams/{slug}/h2h/{opponentSlug} — 'head-to-head
+    record against another team'. NOT YET VERIFIED against a real live
+    response — this is a real, honest first attempt, not a confirmed-
+    working integration like get_lol_team_matches() above.
+
+    Investigated specifically because reconstructing head-to-head by
+    scanning each team's own /matches history was confirmed to have a
+    real gap: two real, dated EWC matches between Karmine Corp and
+    Movistar KOI (May 14 and May 17, 2026, both real KC wins per
+    external verification) were missing from BOTH teams' own /matches
+    fetches. If this dedicated endpoint pulls from a more complete
+    data source, it could be a real, better fix than patching around
+    the gap — but this needs to be checked against live data before
+    trusting it, same as every other endpoint in this project."""
+    response = requests.get(
+        f"{CITO_BASE_URL}/api/v1/lol/teams/{team_slug}/h2h/{opponent_slug}",
+        headers=_cito_headers(api_key), timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def get_lol_teams_list(api_key, timeout=20, max_pages=20):
     """Real, documented endpoint (found via Cito's own full docs page,
     July 2026): GET /api/v1/lol/teams — 'List Teams: Professional LoL
