@@ -7576,7 +7576,10 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     # Convert sets to lists for JSON-friendliness in the debug output
     unresolved_detail_serializable = {
         name: {
-            "candidates": {slug: sorted(leagues) for slug, leagues in detail["candidates"].items()},
+            "candidates": {
+                slug: {"leagues": sorted(info["leagues"]), "regions": sorted(info["regions"])}
+                for slug, info in detail["candidates"].items()
+            },
             "market_text_checked": detail["market_text_checked"],
         }
         for name, detail in unresolved_detail.items()
