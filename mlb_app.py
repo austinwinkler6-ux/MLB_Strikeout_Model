@@ -7463,7 +7463,7 @@ def format_lol_match_date(match_date_str):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
 
-def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=7):
+def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=2):
     """The real, full pipeline tying together every piece built today:
     1. Fetch real, live LoL events from Polymarket, extract match-
        winner markets (the confirmed-real market type).
@@ -7477,12 +7477,13 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     5. For each Polymarket matchup, predict the series win probability
        from the real ratings, compare to Polymarket's real market
        price, compute a real edge.
-    6. Filter out matchups more than max_days_ahead in the future —
-       real feedback found matches showing up over a week out, too far
-       ahead to be practically useful for betting right now. Matchups
-       with no parseable match_date are kept, not excluded — a missing
-       date isn't evidence of being far away, just unknown, and
-       excluding them would hide real, valid near-term matches whose
+    6. Filter out matchups more than max_days_ahead (default: 2 days)
+       in the future — real feedback found matches showing up over a
+       week out, too far ahead to be practically useful for betting
+       right now; further real feedback tightened this to 2 days.
+       Matchups with no parseable match_date are kept, not excluded —
+       a missing date isn't evidence of being far away, just unknown,
+       and excluding them would hide real, valid near-term matches whose
        date genuinely couldn't be parsed.
     Returns a list of dicts, one per matchup, with everything needed
     to display and log a bet — or an 'error' key if something failed,
@@ -7493,6 +7494,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list, get_lol_team_matches,
         build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
         match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
+        _find_prefix_candidates, _find_last_word_candidates,
         extract_completed_matches, sort_matches_chronologically,
     )
     from lol_elo import combine_and_dedupe_matches, build_team_ratings_from_history, predict_series
@@ -7578,6 +7580,19 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             return slug
         return resolve_team_with_league_context(team_name, candidates_map, market_text)
 
+    def _diagnose_unresolved(team_name):
+        """Real diagnostic showing exactly what each resolution stage
+        found for a team that failed to resolve — not just the final
+        exact-match lookup, which was the real gap that made Gen.G's
+        failure impossible to diagnose from the debug output alone."""
+        key = team_name.strip().lower()
+        return {
+            "exact_match_candidates": name_to_slug.get(key),
+            "candidates_map_exact": candidates_map.get(key, {}),
+            "prefix_fallback_candidates": _find_prefix_candidates(team_name, candidates_map),
+            "last_word_fallback_candidates": _find_last_word_candidates(team_name, candidates_map),
+        }
+
     # Resolve every matchup's two team names to real slugs up front,
     # so we know exactly which teams' histories we actually need —
     # avoids wasting real API calls on teams that don't resolve.
@@ -7593,16 +7608,14 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         slug2 = _resolve(outcomes[1], market_text)
         if not slug1:
             unresolved_team_names.append(outcomes[0])
-            key = outcomes[0].strip().lower()
             unresolved_detail[outcomes[0]] = {
-                "candidates": candidates_map.get(key, {}),
+                **_diagnose_unresolved(outcomes[0]),
                 "market_text_checked": market_text,
             }
         if not slug2:
             unresolved_team_names.append(outcomes[1])
-            key = outcomes[1].strip().lower()
             unresolved_detail[outcomes[1]] = {
-                "candidates": candidates_map.get(key, {}),
+                **_diagnose_unresolved(outcomes[1]),
                 "market_text_checked": market_text,
             }
         if not slug1 or not slug2:
@@ -7613,12 +7626,18 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         })
 
     # Convert sets to lists for JSON-friendliness in the debug output
+    def _serialize_candidates_dict(candidates_dict):
+        return {
+            slug: {"leagues": sorted(info["leagues"]), "regions": sorted(info["regions"])}
+            for slug, info in candidates_dict.items()
+        }
+
     unresolved_detail_serializable = {
         name: {
-            "candidates": {
-                slug: {"leagues": sorted(info["leagues"]), "regions": sorted(info["regions"])}
-                for slug, info in detail["candidates"].items()
-            },
+            "exact_match_slug_found": detail["exact_match_candidates"],
+            "candidates_map_exact": _serialize_candidates_dict(detail["candidates_map_exact"]),
+            "prefix_fallback_candidates": _serialize_candidates_dict(detail["prefix_fallback_candidates"]),
+            "last_word_fallback_candidates": _serialize_candidates_dict(detail["last_word_fallback_candidates"]),
             "market_text_checked": detail["market_text_checked"],
         }
         for name, detail in unresolved_detail.items()
@@ -9268,12 +9287,24 @@ elif nav == "🎮 Esports (LoL)":
                         key=lambda r: (TIER_RANK.get(r.get("mm_tier"), -1), r.get("ev_pct") if r.get("ev_pct") is not None else -999),
                         reverse=True,
                     )
+
+                    hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
+                    header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
+                    for hcol, label in [
+                        (hcol1, "Matchup"), (hcol2, "Ratings"), (hcol3, "Pick"),
+                        (hcol4, "Model %"), (hcol5, "Market %"), (hcol6, "EV%"), (hcol7, "Odds"),
+                        (hcol8, "Tier"), (hcol9, ""),
+                    ]:
+                        with hcol:
+                            st.markdown(f"<div style='{header_style}'>{label}</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+
                     for r in sorted_lol_results:
                         matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
                         if r.get("no_real_data"):
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
 
-                        col1, col2, col3, col4 = st.columns([2.2, 1.1, 1.0, 1.1])
+                        col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
                         with col1:
                             st.write(f"**{r['team1_name']}** vs **{r['team2_name']}**")
                             st.caption(f"{(r.get('event_title') or '').split(' - ')[-1]} — Bo{r['best_of']}")
@@ -9281,14 +9312,24 @@ elif nav == "🎮 Esports (LoL)":
                             if matchup_key in already_bet_today_lol:
                                 st.caption("✅ Already bet today")
                         with col2:
-                            st.write(f"Pick: **{r['recommended_team_name']}**")
-                            st.caption(f"Model {r['recommended_model_prob']*100:.1f}% / Market {r['recommended_market_prob']*100:.1f}%")
+                            st.write(f"{r['team1_rating']}")
+                            st.caption(f"vs {r['team2_rating']}")
                         with col3:
-                            ev = r.get("ev_pct")
-                            st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
-                            st.caption(f"Odds: {r.get('recommended_odds')}")
+                            st.write(f"**{r['recommended_team_name']}**")
                         with col4:
+                            st.write(f"{r['recommended_model_prob']*100:.1f}%")
+                        with col5:
+                            st.write(f"{r['recommended_market_prob']*100:.1f}%")
+                        with col6:
+                            ev = r.get("ev_pct")
+                            st.write(f"**{ev}%**" if ev is not None else "—")
+                        with col7:
+                            st.write(f"{r.get('recommended_odds')}")
+                        with col8:
                             st.markdown(tier_badge(r.get("mm_tier"), compact=True), unsafe_allow_html=True)
+                        with col9:
+                            if st.button("📝 Log", key=f"lol_log_btn_{matchup_key}"):
+                                st.session_state[f'lol_log_modal_{matchup_key}'] = True
 
                         why_lines = [
                             f"**{r['recommended_team_name']}**'s real Elo rating is {r['team1_rating'] if r['recommended_side'] == 'team1' else r['team2_rating']}, vs {r['team2_rating'] if r['recommended_side'] == 'team1' else r['team1_rating']} for the opponent — built from real, completed match history.",
@@ -9314,9 +9355,6 @@ elif nav == "🎮 Esports (LoL)":
                         }
                         stake_result = {}
                         render_mm_stake_block(stake_info, stake_result, bankroll, risk_style)
-
-                        if st.button("📝 Log Bet", key=f"lol_log_btn_{matchup_key}"):
-                            st.session_state[f'lol_log_modal_{matchup_key}'] = True
 
                         if st.session_state.get(f'lol_log_modal_{matchup_key}'):
                             with st.expander(f"📝 Log Bet — {r['recommended_team_name']}", expanded=True):
