@@ -9411,6 +9411,18 @@ elif nav == "🎮 Esports (LoL)":
                         reverse=True,
                     )
 
+                    with st.expander("ℹ️ What's this rating?"):
+                        st.markdown("""
+Every team starts at a neutral **1500**. From there, real match results move it up or down — win, and it goes up; lose, and it goes down. How much depends on who you played: beating a stronger team moves your rating more than beating a weaker one, since that's a bigger, more meaningful result.
+
+A few things make this smarter than a simple win/loss count:
+- **Recent games matter more than old ones.** A win from last week counts more than one from six months ago.
+- **Rare cross-region matchups (like MSI or Worlds) count extra**, since those are the only times we get to see how different regions actually compare to each other.
+- **It's built entirely from real, completed match results** — not estimates, not manual input.
+
+The gap between two teams' ratings is what turns into the win probability you see next to each pick.
+""")
+
                     hcol1, hcol2, hcol3, hcol4, hcol5, hcol6, hcol7, hcol8, hcol9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
                     header_style = "color: var(--mm-text-faint); font-size: 0.72rem; font-family: var(--mm-mono); letter-spacing: 0.04em; text-transform: uppercase;"
                     for hcol, label in [
