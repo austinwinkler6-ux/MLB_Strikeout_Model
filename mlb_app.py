@@ -9624,6 +9624,38 @@ The gap between two teams' ratings is what turns into the win probability you se
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
 
+            st.markdown("---")
+            st.subheader("🔍 Head-to-Head Investigation")
+            st.caption("Real diagnostic for a reported head-to-head discrepancy — shows EVERY real match object between two specific teams (matchId, tournament, real series score, declared winner), so we can see exactly what get_head_to_head_record() is actually counting instead of guessing at the mechanism.")
+            h2h_team1 = st.text_input("Team 1 slug", value="kc", key="lol_h2h_team1")
+            h2h_team2 = st.text_input("Team 2 slug", value="mkoi", key="lol_h2h_team2")
+            if st.button("Investigate head-to-head", key="lol_h2h_diag_btn"):
+                with st.spinner(f"Fetching real match history for {h2h_team1}..."):
+                    try:
+                        from cito_api import get_lol_team_matches, extract_completed_matches, combine_and_dedupe_matches, sort_matches_chronologically
+                        from lol_elo import get_head_to_head_record
+                        raw1 = get_lol_team_matches(st.secrets["CITO_API_KEY"], h2h_team1)
+                        completed1 = extract_completed_matches(raw1)
+                        h2h_matches = [
+                            {
+                                "matchId": m.get("matchId"), "tournamentName": m.get("tournamentName"),
+                                "startTime": m.get("startTime"),
+                                "team1_slug": (m.get("team1") or {}).get("slug"), "team1_score": (m.get("team1") or {}).get("score"),
+                                "team2_slug": (m.get("team2") or {}).get("slug"), "team2_score": (m.get("team2") or {}).get("score"),
+                                "winner": m.get("winner"),
+                                "num_games_in_array": len(m.get("games") or []),
+                            }
+                            for m in completed1
+                            if {(m.get("team1") or {}).get("slug"), (m.get("team2") or {}).get("slug")} == {h2h_team1, h2h_team2}
+                        ]
+                        st.write(f"**Found {len(h2h_matches)} real match object(s) between {h2h_team1} and {h2h_team2}:**")
+                        st.json(h2h_matches)
+                        t1_wins, t2_wins, total = get_head_to_head_record(h2h_team1, h2h_team2, completed1)
+                        st.write(f"**What get_head_to_head_record() actually computes: {h2h_team1} {t1_wins} — {t2_wins} {h2h_team2} ({total} total)**")
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
+
             st.subheader("🧪 Live Polymarket Safety Check")
             if st.button("Test Polymarket LoL fetch", key="polymarket_lol_safety_check"):
                 with st.spinner("Fetching live Polymarket data..."):
