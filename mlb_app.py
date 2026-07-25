@@ -7444,21 +7444,32 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
 
 # ---- LoL LIVE PROJECTION PIPELINE ----
 def format_lol_match_date(match_date_str):
-    """Real, honest formatter for the match_date extracted by
-    polymarket_api. Real fix (July 2026): the source used to also
-    provide direct timestamp fields, so this originally handled both a
-    full ISO timestamp and a date-only fallback — those direct fields
-    were found to be unreliable (real but wrong values) and removed
-    upstream, so this now only ever receives a date-only string
-    ('YYYY-MM-DD'). Simplified to match, rather than leaving dead code
-    for a timestamp format that's no longer actually produced. Returns
-    a clear 'not yet known' message rather than a blank or malformed
-    string if genuinely nothing usable was found."""
+    """Real, honest formatter for the match_date shown in results.
+    Real history: an earlier version tried direct Polymarket date
+    fields for an exact time, which real live data confirmed were
+    market-creation timestamps, not game times — removed, falling back
+    to a date-only slug parse. Real fix (July 2026): a genuine,
+    verified exact-time source was found — Cito's schedule endpoints
+    include a real 'startTime' field per match (confirmed via live
+    data to show real, varying times, not a placeholder), looked up by
+    team pair via cito_api.build_match_time_map() and prioritized
+    upstream in _price_and_tier_lol_matchup() before this formatter
+    ever sees the value. So this now genuinely may receive either a
+    full ISO timestamp (the common case now) or a date-only string (a
+    real, honest fallback for the rarer case where no schedule entry
+    was found for that team pair — a bye week, a very recent schedule
+    change, etc). Returns a clear 'not yet known' message rather than
+    a blank or malformed string if genuinely nothing usable was found."""
     if not match_date_str:
         return "Date not available"
     try:
-        dt_date = datetime.strptime(match_date_str, "%Y-%m-%d")
-        return dt_date.strftime("%a %b %-d") + " (exact time not available)"
+        if "T" in match_date_str:
+            dt_utc = datetime.fromisoformat(match_date_str.replace("Z", "+00:00"))
+            dt_eastern = dt_utc.astimezone(ZoneInfo("America/New_York"))
+            return dt_eastern.strftime("%a %b %-d, %-I:%M %p ET")
+        else:
+            dt_date = datetime.strptime(match_date_str, "%Y-%m-%d")
+            return dt_date.strftime("%a %b %-d") + " (exact time not available)"
     except (ValueError, TypeError):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
@@ -7495,7 +7506,7 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
     list only as a targeted fallback, then league-context
     disambiguation for genuinely ambiguous names. Returns
     (resolved_matchups, name_to_slug, candidates_map, unresolved_team_names,
-    unresolved_detail, needs_fallback, team_region_map, error_dict).
+    unresolved_detail, needs_fallback, team_region_map, match_time_map, error_dict).
 
     Real, honest note on team_region_map: it's only built when the
     full teams list happens to already be fetched (i.e. needs_fallback
@@ -7505,11 +7516,17 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
     alone resolves everything, team_region_map comes back empty, and
     the cross-region international K-factor boost simply doesn't apply
     for that run — a real, honest limitation, not a silent bug, since
-    the boost logic already treats an empty map as a safe no-op."""
+    the boost logic already treats an empty map as a safe no-op.
+
+    match_time_map is real, confirmed Cito startTime data (genuinely
+    varying real times, unlike Polymarket's own date fields, which
+    were investigated and confirmed to be market-creation timestamps,
+    not game times) — always available from the cheap schedule fetch,
+    unlike team_region_map."""
     from cito_api import (
         get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list,
         build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
-        build_team_region_map,
+        build_team_region_map, build_match_time_map,
         match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
         _find_prefix_candidates, _find_last_word_candidates,
     )
@@ -7523,10 +7540,11 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
         schedule_today = get_lol_schedule_today(api_key)
         schedule_upcoming = get_lol_schedule_upcoming(api_key)
         name_to_slug = build_team_name_to_slug_map(schedule_today, schedule_upcoming)
+        match_time_map = build_match_time_map(schedule_today, schedule_upcoming)
     except Exception as e:
         if "429" in str(e):
-            return None, None, None, None, None, None, None, {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
-        return None, None, None, None, None, None, None, {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
+            return None, None, None, None, None, None, None, None, {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
+        return None, None, None, None, None, None, None, None, {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
 
     all_market_team_names = set()
     for market in match_markets:
@@ -7598,7 +7616,7 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
             "team1_slug": slug1, "team2_slug": slug2,
         })
 
-    return resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, None
+    return resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, match_time_map, None
 
 
 def _fetch_lol_team_histories(resolved_matchups, api_key):
@@ -7629,7 +7647,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     return sorted_history, fetch_errors
 
 
-def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None):
+def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None):
     """Real extraction (code split #4) — the real per-matchup pricing
     logic: date-cutoff filtering, price validation, illiquid-market
     filtering, model-vs-market probability, recommended side, real
@@ -7642,16 +7660,32 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     market = m["market"]
     prices = market.get("outcomePrices_parsed", [])
 
+    # Real fix (July 2026) — prioritize Cito's own confirmed, real
+    # startTime (genuinely varying real times, unlike Polymarket's own
+    # date fields, which were investigated and confirmed to be market-
+    # creation timestamps, not game times) over the date-only slug
+    # fallback. Looked up by team pair since match_time_map is built
+    # from Cito's schedule data, which doesn't share a common match ID
+    # with Polymarket's markets.
+    real_match_time = None
+    if match_time_map:
+        real_match_time = match_time_map.get(frozenset({m["team1_slug"], m["team2_slug"]}))
+    match_date_display = real_match_time or market.get("match_date")
+
     # Real date cutoff — real feedback found matchups showing up over
     # a week out, too far ahead to be practically useful for betting
-    # right now. A missing/unparseable match_date is kept, not
-    # excluded — that's genuinely unknown, not evidence of being far away.
-    match_date_str = market.get("match_date")
-    if match_date_str:
+    # right now. A missing/unparseable date is kept, not excluded —
+    # that's genuinely unknown, not evidence of being far away.
+    if match_date_display:
         try:
-            match_date = datetime.strptime(match_date_str, "%Y-%m-%d").date()
+            # A real startTime is a full ISO timestamp; the slug
+            # fallback is date-only — parse whichever form this is.
+            if "T" in match_date_display:
+                match_date = datetime.fromisoformat(match_date_display.replace("Z", "+00:00")).date()
+            else:
+                match_date = datetime.strptime(match_date_display, "%Y-%m-%d").date()
             if match_date > cutoff_date:
-                return None, {"reason": "too_far_ahead", "team1": m["team1_name"], "team2": m["team2_name"], "match_date": match_date_str}
+                return None, {"reason": "too_far_ahead", "team1": m["team1_name"], "team2": m["team2_name"], "match_date": match_date_display}
         except (ValueError, TypeError):
             pass  # unparseable date — kept, same as a missing one
 
@@ -7706,7 +7740,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "question": market.get("question"),
         "market_slug": market.get("slug"),
         "group_item_title": market.get("groupItemTitle"),
-        "match_date": market.get("match_date"),
+        "match_date": match_date_display,
         "context_description": market.get("context_description"),
         "team1_name": m["team1_name"], "team2_name": m["team2_name"],
         "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
@@ -7756,7 +7790,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     if error_result is not None:
         return error_result
 
-    resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, error_result = _resolve_lol_matchup_teams(match_markets, api_key)
+    resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, match_time_map, error_result = _resolve_lol_matchup_teams(match_markets, api_key)
     if error_result is not None:
         return error_result
 
@@ -7799,7 +7833,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_too_far_ahead = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
-        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts)
+        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map)
         if result is not None:
             result["fetch_errors"] = fetch_errors
             results.append(result)
