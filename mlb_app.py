@@ -9288,6 +9288,7 @@ elif nav == "🎮 Esports (LoL)":
                 if not lol_results:
                     st.info("No live matchups available right now — check back closer to game time.")
                 else:
+                    st.success(f"✅ {len(lol_results)} real matchup(s) with model predictions")
                     sorted_lol_results = sorted(
                         lol_results,
                         key=lambda r: (TIER_RANK.get(r.get("mm_tier"), -1), r.get("ev_pct") if r.get("ev_pct") is not None else -999),
