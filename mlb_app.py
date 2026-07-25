@@ -9382,7 +9382,7 @@ elif nav == "🎮 Esports (LoL)":
                             ev = r.get("ev_pct")
                             st.write(f"**{ev}%**" if ev is not None else "—")
                         with col7:
-                            st.write(f"{r.get('recommended_odds')}")
+                            st.write(f"{fmt_odds_signed(r.get('recommended_odds'))}")
                         with col8:
                             st.markdown(tier_badge(r.get("mm_tier"), compact=True), unsafe_allow_html=True)
                         with col9:
