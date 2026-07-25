@@ -7461,7 +7461,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     to display and log a bet — or an 'error' key if something failed,
     following the same honest-failure pattern used throughout this
     project rather than silently returning an empty result."""
-    from polymarket_api import get_polymarket_events, extract_match_winner_markets, polymarket_price_to_american_odds
+    from polymarket_api import get_all_polymarket_events, extract_match_winner_markets, polymarket_price_to_american_odds
     from cito_api import (
         get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list, get_lol_team_matches,
         build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
@@ -7473,13 +7473,17 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     results = []
 
     try:
-        # Real fix (July 2026) — raised from 50 to 200. If genuinely
-        # more than 50 real LoL events are live simultaneously across
-        # every league (LPL, LCK, LCS, LEC, NACL, etc.), some could be
-        # silently cut off before team names are even checked. This is
-        # the FIRST place a real, expected matchup could be missing —
-        # before any team-resolution logic even runs.
-        events = get_polymarket_events(tag_slug=tag_slug, closed=False, limit=200)
+        # Real fix (July 2026) — a fixed limit (first 50, then raised
+        # to 200 as a first attempt) was CONFIRMED via live testing to
+        # silently truncate well over half of all real, live LoL
+        # matchups (11 resolved results became 50 the moment the limit
+        # was raised) — including specific real games the user was
+        # actively looking for that simply never got fetched at all,
+        # with no error anywhere. Any fixed limit risks repeating this
+        # same failure on a high-volume day. Now uses real pagination
+        # with no ceiling — see get_all_polymarket_events()'s own
+        # docstring for the full account of this bug.
+        events = get_all_polymarket_events(tag_slug=tag_slug, closed=False)
     except Exception as e:
         return {"error": f"Polymarket fetch failed: {e}"}
 
