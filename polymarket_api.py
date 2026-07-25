@@ -32,6 +32,7 @@ real HTTP response (or a real error) instead of assuming either way.
 """
 
 import json
+import re
 import requests
 
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
@@ -133,6 +134,31 @@ def extract_player_prop_markets(events):
     return player_prop_markets
 
 
+def _extract_match_date(market, event):
+    """Real, honest date extraction — no single source has been
+    confirmed from a live response yet, so this tries several
+    plausible real fields in priority order, then falls back to a
+    source that HAS been repeatedly confirmed today: real market slugs
+    consistently end in a real '-YYYY-MM-DD' suffix (e.g.
+    'lol-lgd-we-2026-07-25', seen dozens of times in real live data).
+    Returns an ISO-format date/datetime string if found, or None if
+    genuinely nothing usable exists — never a guessed/fabricated date."""
+    for source in (market, event):
+        if not isinstance(source, dict):
+            continue
+        for field in ("startDate", "gameStartTime", "eventStartTime", "start_date"):
+            value = source.get(field)
+            if value:
+                return value
+    # Fallback: parse the real, confirmed '-YYYY-MM-DD' suffix pattern
+    # from the market's own slug.
+    slug = (market or {}).get("slug") or ""
+    match = re.search(r'(\d{4}-\d{2}-\d{2})$', slug)
+    if match:
+        return match.group(1)
+    return None
+
+
 def extract_match_winner_markets(events):
     """Given a list of raw Polymarket event dicts, returns a flat list
     of real, overall SERIES/MATCH winner markets specifically — not
@@ -166,6 +192,7 @@ def extract_match_winner_markets(events):
             parsed_market["clobTokenIds_parsed"] = _parse_stringified_json_field(market.get("clobTokenIds"))
             parsed_market["event_title"] = event.get("title")
             parsed_market["event_slug"] = event.get("slug")
+            parsed_market["match_date"] = _extract_match_date(market, event)
             match_winner_markets.append(parsed_market)
     return match_winner_markets
 
