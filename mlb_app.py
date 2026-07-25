@@ -7623,8 +7623,19 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     """Real extraction (code split #3) — fetches real match history for
     every unique team across all resolved matchups, then combines,
     dedupes, and chronologically sorts it into one dataset ready for
-    Elo. Returns (sorted_history, fetch_errors)."""
-    from cito_api import get_lol_team_matches, extract_completed_matches, sort_matches_chronologically
+    Elo. Returns (sorted_history, fetch_errors).
+
+    Real fix (July 2026) — also applies infer_missing_game_winners()
+    to the combined history before returning it. A real, confirmed data
+    bug: some completed matches have their overall series score
+    correct but individual games missing a winnerSlug (found via live
+    investigation of a real G2 2-1 series where only Game 1's winner
+    was recorded) — since Elo processes games individually, those
+    missing games were previously invisible to the rating system
+    entirely, silently under-crediting series winners. Applied here,
+    after combining/deduping but before Elo ever sees the data, so
+    every downstream caller benefits automatically."""
+    from cito_api import get_lol_team_matches, extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
     from lol_elo import combine_and_dedupe_matches
 
     unique_slugs = set()
@@ -7643,6 +7654,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
             fetch_errors.append(f"{slug}: {e}")
 
     combined_history = combine_and_dedupe_matches(all_team_histories)
+    combined_history = infer_missing_game_winners(combined_history)
     sorted_history = sort_matches_chronologically(combined_history)
     return sorted_history, fetch_errors
 
