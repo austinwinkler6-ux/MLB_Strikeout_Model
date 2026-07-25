@@ -329,6 +329,27 @@ KNOWN_LEAGUE_MARKERS = {
 }
 
 
+# Real, explicit, human-verified name-to-slug overrides — for cases
+# where Polymarket's team name and Cito's real team name/shortName
+# differ in a way too specific and one-off to justify a general (and
+# riskier) matching rule, the same way the prefix and last-word
+# fallbacks above generalize real, confirmed patterns. Each entry here
+# is a fact a real person confirmed (not a string-similarity guess) —
+# e.g. 'KT Rolster Challengers' (Polymarket's name) is known, from
+# real domain knowledge of LCK's structure (each org fields a distinct
+# main team AND a separate 'Challengers' developmental team), to be
+# Cito's 'kt-challengers' entry ('kt Challengers'). A first attempt at
+# this alias incorrectly pointed to 'kt-rolster-b' — corrected after
+# the user's real domain knowledge caught the mistake before it
+# shipped: 'kt-rolster-b' is some other, unrelated 'B team' concept in
+# Cito's data, not the real LCK Challengers team.
+# Add more entries here as specific, confirmed mismatches are found —
+# each key should be the exact Polymarket team name, lowercased.
+MANUAL_TEAM_ALIASES = {
+    'kt rolster challengers': 'kt-challengers',
+}
+
+
 def build_team_candidates_map(*schedule_or_teams_list_responses):
     """A richer companion to build_team_name_to_slug_map() — instead
     of collapsing an ambiguous name to 'excluded', keeps every real
@@ -444,17 +465,23 @@ def _find_last_word_candidates(polymarket_team_name, candidates_map):
 
 
 def resolve_team_with_league_context(polymarket_team_name, candidates_map, market_text):
-    """Real disambiguation, with two real passes:
-    1. If the exact name is genuinely ambiguous (multiple real slugs),
+    """Real disambiguation, with three real passes, in priority order:
+    1. A human-verified manual alias (MANUAL_TEAM_ALIASES) — a
+       confirmed fact takes priority over any pattern-based guessing.
+    2. If the exact name is genuinely ambiguous (multiple real slugs),
        or genuinely absent (a real naming mismatch, e.g. 'Cloud9' vs
        Cito's real 'Cloud9 Kia', or 'Team WE' vs 'Xi'an Team WE'), use
        real league AND region markers found in the actual Polymarket
        market text to narrow it down.
-    2. Returns a slug ONLY if evidence narrows it to exactly one —
+    3. Returns a slug ONLY if evidence narrows it to exactly one —
        never guesses. Keeps the same standing principle as the rest of
        this project: resolve with real evidence, or don't resolve at
        all."""
     normalized = polymarket_team_name.strip().lower()
+
+    if normalized in MANUAL_TEAM_ALIASES:
+        return MANUAL_TEAM_ALIASES[normalized]
+
     candidate_slugs = candidates_map.get(normalized, {})
 
     if len(candidate_slugs) == 0:
