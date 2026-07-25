@@ -7462,7 +7462,11 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     following the same honest-failure pattern used throughout this
     project rather than silently returning an empty result."""
     from polymarket_api import get_polymarket_events, extract_match_winner_markets, polymarket_price_to_american_odds
-    from cito_api import get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_team_matches, build_team_name_to_slug_map, match_polymarket_name_to_slug, extract_completed_matches, sort_matches_chronologically
+    from cito_api import (
+        get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list, get_lol_team_matches,
+        build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
+        match_polymarket_name_to_slug, extract_completed_matches, sort_matches_chronologically,
+    )
     from lol_elo import combine_and_dedupe_matches, build_team_ratings_from_history, predict_series
 
     results = []
@@ -7477,22 +7481,46 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         return {"debug": "No real match-winner markets found in the Polymarket fetch itself — 0 events had a groupItemTitle of 'Match Winner'.", "results": []}
 
     try:
-        # Real fix (July 2026) — the previous version fetched Cito's
-        # ENTIRE global team database for completeness (GET /lol/teams,
-        # paginated). Real live testing showed that's genuinely huge —
-        # pagination hit a rate limit at offset=1800, burning through
-        # the free tier's monthly quota in a single run. Since
-        # Polymarket only lists markets for real, currently live/
-        # upcoming matches, combining schedule/today + schedule/
-        # upcoming (2 real calls, not 18+) naturally covers the same
-        # currently-relevant teams at a fraction of the cost.
+        # Real, deliberate two-pass approach (July 2026) — schedule
+        # data is cheap (2 calls) but real testing showed it's
+        # genuinely narrower than the full team database: major teams
+        # like T1, Cloud9, and Team Liquid were confirmed missing
+        # simply because they weren't playing in the today/upcoming
+        # window at the time, not because of any real bug. The full
+        # /lol/teams list resolves everything correctly but is
+        # expensive (18+ paginated calls) — previously avoided
+        # entirely due to a free-tier rate limit, now affordable as a
+        # targeted fallback on the paid tier (50k calls/month, 30/min).
+        # Only fetched when the cheap schedule map actually leaves real
+        # teams unresolved, not as the default for every run.
         schedule_today = get_lol_schedule_today(api_key)
         schedule_upcoming = get_lol_schedule_upcoming(api_key)
         name_to_slug = build_team_name_to_slug_map(schedule_today, schedule_upcoming)
     except Exception as e:
         if "429" in str(e):
-            return {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary (typically resets within a minute or few, not a permanent quota loss), especially right after the earlier pagination bug fired off 18+ rapid calls. Wait a minute and try again rather than assuming this is a new, different problem. Raw error: {e}"}
+            return {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
         return {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
+
+    # Check which real team names from the actual markets fail to
+    # resolve against the cheap schedule map BEFORE deciding whether
+    # the expensive full-teams-list fallback is even needed.
+    all_market_team_names = set()
+    for market in match_markets:
+        for name in market.get("outcomes_parsed", []):
+            all_market_team_names.add(name)
+    needs_fallback = any(match_polymarket_name_to_slug(name, name_to_slug) is None for name in all_market_team_names)
+
+    if needs_fallback:
+        try:
+            teams_list = get_lol_teams_list(api_key)
+            teams_list_map = build_team_name_to_slug_map_from_teams_list(teams_list)
+            name_to_slug = merge_name_to_slug_maps(name_to_slug, teams_list_map)
+        except Exception as e:
+            # Real, deliberate choice: don't fail the whole pipeline if
+            # only the fallback errors — proceed with whatever the
+            # cheap schedule map alone could resolve, rather than
+            # losing everything over a fallback-only failure.
+            pass
 
     # Resolve every matchup's two team names to real slugs up front,
     # so we know exactly which teams' histories we actually need —
@@ -7518,6 +7546,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
 
     debug_info = {
         "real_match_winner_markets_found": len(match_markets),
+        "used_full_teams_list_fallback": needs_fallback,
         "name_to_slug_map_size": len(name_to_slug),
         "resolved_matchups": len(resolved_matchups),
         "unresolved_team_names": sorted(set(unresolved_team_names)),
