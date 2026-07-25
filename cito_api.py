@@ -292,6 +292,37 @@ def build_team_name_to_slug_map_from_teams_list(teams_list_response):
     return name_to_slug
 
 
+def build_team_region_map(teams_list_response):
+    """Real extraction (July 2026) — {slug: region} from the same
+    confirmed teams-list schema used by build_team_name_to_slug_map_
+    from_teams_list(). Needed for lol_elo.py's cross-region
+    international K-factor boost, which requires knowing whether two
+    teams in an international match are actually from different
+    regions (a same-region matchup at Worlds doesn't teach the model
+    anything new about cross-region strength, per the real, precise
+    refinement this feature was built around). A team with a missing/
+    null region (confirmed to happen in real data — some entries have
+    region: null) is simply excluded from the map, not given a guessed
+    value — the boost logic already treats a missing region as 'don't
+    apply the boost', the safe, honest default."""
+    if isinstance(teams_list_response, dict):
+        teams = teams_list_response.get("teams") or teams_list_response.get("data") or []
+    elif isinstance(teams_list_response, list):
+        teams = teams_list_response
+    else:
+        teams = []
+
+    region_map = {}
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+        slug = team.get("slug")
+        region = team.get("region")
+        if slug and region:
+            region_map[slug] = region.strip().lower()
+    return region_map
+
+
 def merge_name_to_slug_maps(*maps):
     """Safely combines multiple already-built name-to-slug maps (e.g.
     one from schedule data, one from the full teams list) into one.
