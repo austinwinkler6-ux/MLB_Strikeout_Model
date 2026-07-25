@@ -7495,10 +7495,21 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
     list only as a targeted fallback, then league-context
     disambiguation for genuinely ambiguous names. Returns
     (resolved_matchups, name_to_slug, candidates_map, unresolved_team_names,
-    unresolved_detail, needs_fallback, error_dict)."""
+    unresolved_detail, needs_fallback, team_region_map, error_dict).
+
+    Real, honest note on team_region_map: it's only built when the
+    full teams list happens to already be fetched (i.e. needs_fallback
+    was True for at least one team) — fetching the full, expensive
+    teams list JUST for region data on every run would reverse the
+    real rate-limit optimization built earlier. When the schedule data
+    alone resolves everything, team_region_map comes back empty, and
+    the cross-region international K-factor boost simply doesn't apply
+    for that run — a real, honest limitation, not a silent bug, since
+    the boost logic already treats an empty map as a safe no-op."""
     from cito_api import (
         get_lol_schedule_today, get_lol_schedule_upcoming, get_lol_teams_list,
         build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
+        build_team_region_map,
         match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
         _find_prefix_candidates, _find_last_word_candidates,
     )
@@ -7514,8 +7525,8 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
         name_to_slug = build_team_name_to_slug_map(schedule_today, schedule_upcoming)
     except Exception as e:
         if "429" in str(e):
-            return None, None, None, None, None, None, {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
-        return None, None, None, None, None, None, {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
+            return None, None, None, None, None, None, None, {"error": f"Cito is rate-limiting this key right now (429 Too Many Requests) — this is almost always temporary. Wait a minute and try again. Raw error: {e}"}
+        return None, None, None, None, None, None, None, {"error": f"Cito schedule fetch failed (needed for team name matching): {e}"}
 
     all_market_team_names = set()
     for market in match_markets:
@@ -7524,6 +7535,7 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
     needs_fallback = any(match_polymarket_name_to_slug(name, name_to_slug) is None for name in all_market_team_names)
 
     teams_list = None
+    team_region_map = {}
     if needs_fallback:
         try:
             # The full teams list is expensive (18+ paginated calls) —
@@ -7534,6 +7546,7 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
             teams_list = get_lol_teams_list(api_key)
             teams_list_map = build_team_name_to_slug_map_from_teams_list(teams_list)
             name_to_slug = merge_name_to_slug_maps(name_to_slug, teams_list_map)
+            team_region_map = build_team_region_map(teams_list)
         except Exception:
             # Real, deliberate choice: don't fail the whole pipeline if
             # only the fallback errors — proceed with whatever the
@@ -7585,7 +7598,7 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
             "team1_slug": slug1, "team2_slug": slug2,
         })
 
-    return resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, None
+    return resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, None
 
 
 def _fetch_lol_team_histories(resolved_matchups, api_key):
@@ -7616,7 +7629,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     return sorted_history, fetch_errors
 
 
-def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date):
+def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None):
     """Real extraction (code split #4) — the real per-matchup pricing
     logic: date-cutoff filtering, price validation, illiquid-market
     filtering, model-vs-market probability, recommended side, real
@@ -7705,6 +7718,8 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date):
         "best_of": best_of,
         "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
         "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
+        "team1_international_matches": (international_counts or {}).get(m["team1_slug"], 0),
+        "team2_international_matches": (international_counts or {}).get(m["team2_slug"], 0),
         "recommended_side": rec_side,
         "recommended_team_name": rec_team_name,
         "recommended_model_prob": round(rec_model_prob, 3),
@@ -7741,7 +7756,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     if error_result is not None:
         return error_result
 
-    resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, error_result = _resolve_lol_matchup_teams(match_markets, api_key)
+    resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, error_result = _resolve_lol_matchup_teams(match_markets, api_key)
     if error_result is not None:
         return error_result
 
@@ -7774,7 +7789,9 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         return {"debug": debug_info, "results": []}
 
     sorted_history, fetch_errors = _fetch_lol_team_histories(resolved_matchups, api_key)
-    ratings = build_team_ratings_from_history(sorted_history)
+    ratings = build_team_ratings_from_history(sorted_history, team_region_map=team_region_map)
+    from lol_elo import count_international_matches
+    international_counts = count_international_matches(sorted_history, team_region_map)
 
     results = []
     filtered_as_illiquid = []
@@ -7782,7 +7799,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_too_far_ahead = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
-        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date)
+        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts)
         if result is not None:
             result["fetch_errors"] = fetch_errors
             results.append(result)
@@ -9310,6 +9327,11 @@ elif nav == "🎮 Esports (LoL)":
                         matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
                         if r.get("no_real_data"):
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
+                        team1_intl = r.get("team1_international_matches", 0)
+                        team2_intl = r.get("team2_international_matches", 0)
+                        if team1_intl == 0 or team2_intl == 0:
+                            no_intl_teams = [name for name, count in [(r['team1_name'], team1_intl), (r['team2_name'], team2_intl)] if count == 0]
+                            st.caption(f"⚠️ No real cross-region international game history yet for {' or '.join(no_intl_teams)} — their rating is real, but genuinely untested against other regions, a real, honest uncertainty rather than a known weakness.")
 
                         col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
                         with col1:
