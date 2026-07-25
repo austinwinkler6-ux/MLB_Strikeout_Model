@@ -7720,6 +7720,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             "market_slug": market.get("slug"),
             "group_item_title": market.get("groupItemTitle"),
             "match_date": market.get("match_date"),
+            "context_description": market.get("context_description"),
             "team1_name": m["team1_name"], "team2_name": m["team2_name"],
             "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
             "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
@@ -9270,6 +9271,10 @@ elif nav == "🎮 Esports (LoL)":
                         with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
                             for line in why_lines:
                                 st.markdown(line)
+                            if r.get("context_description"):
+                                st.markdown("---")
+                                st.caption("Additional real market context:")
+                                st.markdown(r["context_description"])
 
                         stake_info = {
                             'MM Tier': r.get('mm_tier'), 'Model Prob': r.get('recommended_model_prob'),
