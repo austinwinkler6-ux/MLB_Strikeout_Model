@@ -424,12 +424,32 @@ def _find_prefix_candidates(polymarket_team_name, candidates_map):
     return merged
 
 
+def _find_last_word_candidates(polymarket_team_name, candidates_map):
+    """Real, narrow fallback for the mirror-image pattern of the
+    prefix fallback above: real live data showed 'Team WE' is stored
+    in Cito as 'Xi'an Team WE' — here 'WE' is a SUFFIX/last word, not
+    a prefix, so _find_prefix_candidates can't catch it (neither
+    string is a prefix of the other). Both real candidate entries had
+    shortName exactly 'WE', which exactly equals the last word of
+    'Team WE'. Matches ONLY when the Polymarket name's last word,
+    split on whitespace, EXACTLY equals an existing candidates_map key
+    — deliberately exact and narrow (not 'contains'), since a bare
+    2-3 letter shortName like 'WE' would produce real false positives
+    under any looser matching rule."""
+    words = polymarket_team_name.strip().lower().split()
+    if not words:
+        return {}
+    last_word = words[-1]
+    return dict(candidates_map.get(last_word, {}))
+
+
 def resolve_team_with_league_context(polymarket_team_name, candidates_map, market_text):
     """Real disambiguation, with two real passes:
     1. If the exact name is genuinely ambiguous (multiple real slugs),
        or genuinely absent (a real naming mismatch, e.g. 'Cloud9' vs
-       Cito's real 'Cloud9 Kia'), use real league AND region markers
-       found in the actual Polymarket market text to narrow it down.
+       Cito's real 'Cloud9 Kia', or 'Team WE' vs 'Xi'an Team WE'), use
+       real league AND region markers found in the actual Polymarket
+       market text to narrow it down.
     2. Returns a slug ONLY if evidence narrows it to exactly one —
        never guesses. Keeps the same standing principle as the rest of
        this project: resolve with real evidence, or don't resolve at
@@ -438,9 +458,12 @@ def resolve_team_with_league_context(polymarket_team_name, candidates_map, marke
     candidate_slugs = candidates_map.get(normalized, {})
 
     if len(candidate_slugs) == 0:
-        # Real naming mismatch fallback — narrow prefix match only,
-        # not a broad "contains anywhere" check.
+        # Real naming mismatch fallbacks — prefix match (Cloud9 case),
+        # then last-word exact match (Team WE case). Both deliberately
+        # narrow, not broad substring matching.
         candidate_slugs = _find_prefix_candidates(polymarket_team_name, candidates_map)
+    if len(candidate_slugs) == 0:
+        candidate_slugs = _find_last_word_candidates(polymarket_team_name, candidates_map)
 
     if len(candidate_slugs) == 1:
         return next(iter(candidate_slugs))
