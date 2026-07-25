@@ -7742,6 +7742,9 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "group_item_title": market.get("groupItemTitle"),
         "match_date": match_date_display,
         "context_description": market.get("context_description"),
+        "market_liquidity": market.get("liquidity"),
+        "market_volume24hr": market.get("volume24hr"),
+        "market_volume": market.get("volume"),
         "team1_name": m["team1_name"], "team2_name": m["team2_name"],
         "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
         "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
@@ -9405,6 +9408,8 @@ elif nav == "🎮 Esports (LoL)":
                                 st.markdown("---")
                                 st.caption("Additional real market context:")
                                 st.markdown(r["context_description"])
+                            st.markdown("---")
+                            st.caption(f"Real market liquidity: {r.get('market_liquidity')} | 24hr volume: {r.get('market_volume24hr')} | Total volume: {r.get('market_volume')}")
 
                         stake_info = {
                             'MM Tier': r.get('mm_tier'), 'Model Prob': r.get('recommended_model_prob'),
