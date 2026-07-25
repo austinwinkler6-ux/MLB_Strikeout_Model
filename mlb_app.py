@@ -9632,7 +9632,7 @@ The gap between two teams' ratings is what turns into the win probability you se
             if st.button("Investigate head-to-head", key="lol_h2h_diag_btn"):
                 with st.spinner(f"Fetching real match history for {h2h_team1}..."):
                     try:
-                        from cito_api import get_lol_team_matches, extract_completed_matches, combine_and_dedupe_matches, sort_matches_chronologically
+                        from cito_api import get_lol_team_matches, extract_completed_matches
                         from lol_elo import get_head_to_head_record
                         raw1 = get_lol_team_matches(st.secrets["CITO_API_KEY"], h2h_team1)
                         completed1 = extract_completed_matches(raw1)
