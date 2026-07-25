@@ -7443,6 +7443,28 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
             st.divider()
 
 # ---- LoL LIVE PROJECTION PIPELINE ----
+def format_lol_match_date(match_date_str):
+    """Real, honest formatter for the match_date extracted by
+    polymarket_api — handles both a full ISO timestamp (converts to
+    Eastern time, matching this app's standing convention used
+    everywhere else — see mm_today_str()) and a date-only fallback
+    string (just the date, no time available to convert). Returns a
+    clear 'not yet known' message rather than a blank or malformed
+    string if genuinely nothing usable was found."""
+    if not match_date_str:
+        return "Date/time not available"
+    try:
+        if "T" in match_date_str:
+            dt_utc = datetime.fromisoformat(match_date_str.replace("Z", "+00:00"))
+            dt_eastern = dt_utc.astimezone(ZoneInfo("America/New_York"))
+            return dt_eastern.strftime("%a %b %-d, %-I:%M %p ET")
+        else:
+            dt_date = datetime.strptime(match_date_str, "%Y-%m-%d")
+            return dt_date.strftime("%a %b %-d") + " (time TBD)"
+    except (ValueError, TypeError):
+        return match_date_str  # real, unparseable value — show it raw rather than hide it
+
+
 def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
     """The real, full pipeline tying together every piece built today:
     1. Fetch real, live LoL events from Polymarket, extract match-
@@ -7699,6 +7721,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             "question": market.get("question"),
             "market_slug": market.get("slug"),
             "group_item_title": market.get("groupItemTitle"),
+            "match_date": market.get("match_date"),
             "team1_name": m["team1_name"], "team2_name": m["team2_name"],
             "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
             "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
@@ -9227,6 +9250,7 @@ elif nav == "🎮 Esports (LoL)":
                         with col1:
                             st.write(f"**{r['team1_name']}** vs **{r['team2_name']}**")
                             st.caption(f"{(r.get('event_title') or '').split(' - ')[-1]} — Bo{r['best_of']}")
+                            st.caption(f"🕐 {format_lol_match_date(r.get('match_date'))}")
                             if matchup_key in already_bet_today_lol:
                                 st.caption("✅ Already bet today")
                         with col2:
