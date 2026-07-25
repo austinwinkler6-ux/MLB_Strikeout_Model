@@ -4257,8 +4257,8 @@ with st.sidebar:
         """, unsafe_allow_html=True)
 
     st.markdown("---")
-    admin_nav = ["🔬 Model Lab", "🧪 Backtest", "🎮 Esports (LoL)"] if is_admin else []
-    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
+    admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
+    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "🎮 Esports (LoL)", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
     if st.session_state.get('nav_redirect') in nav_options:
         st.session_state['main_nav_radio'] = st.session_state['nav_redirect']
         del st.session_state['nav_redirect']
@@ -7666,6 +7666,34 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
         model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
         edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
 
+        # Real addition (July 2026) — a moneyline bet needs a decision
+        # about WHICH team to actually back, unlike a prop's single
+        # over/under line. Whichever side the model rates more
+        # favorably than the market is the real value side.
+        if model_prob_team1 >= market_prob_team1:
+            rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team1", m["team1_name"], model_prob_team1, market_prob_team1
+        else:
+            rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team2", m["team2_name"], 1 - model_prob_team1, 1 - market_prob_team1
+        rec_odds = polymarket_price_to_american_odds(rec_market_prob)
+        ev_pct = calculate_ev_pct(rec_model_prob, rec_odds) if rec_odds else None
+
+        # Real, honest first-attempt tier thresholds specific to
+        # moneyline EV — genuinely different distribution than prop
+        # betting EV, not borrowed from another sport's calibration.
+        # Like NFL Receptions' confidence tiers, these need real
+        # calibration once enough real settled LoL bets exist (item 6
+        # from the original review — can't happen until then).
+        if ev_pct is None:
+            mm_tier = "🔴 Pass"
+        elif ev_pct >= 15:
+            mm_tier = "🟢 Best Bet"
+        elif ev_pct >= 7:
+            mm_tier = "🔵 Worth a Look"
+        elif ev_pct >= 2:
+            mm_tier = "🟡 Lean"
+        else:
+            mm_tier = "🔴 Pass"
+
         results.append({
             "event_title": market.get("event_title"),
             "question": market.get("question"),
@@ -7682,6 +7710,13 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends"):
             "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
             "fetch_errors": fetch_errors,
             "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
+            "recommended_side": rec_side,
+            "recommended_team_name": rec_team_name,
+            "recommended_model_prob": round(rec_model_prob, 3),
+            "recommended_market_prob": round(rec_market_prob, 3),
+            "recommended_odds": rec_odds,
+            "ev_pct": round(ev_pct, 2) if ev_pct is not None else None,
+            "mm_tier": mm_tier,
         })
 
     debug_info["final_result_count"] = len(results)
@@ -9150,158 +9185,207 @@ elif nav == "🔬 Model Lab" and is_admin:
             if publish_model_performance(sport_key):
                 st.success(f"✅ Published {lab_sport} stats to the public Model Performance page.")
 
-# ---- ESPORTS (LoL) — ADMIN ONLY, BRAND NEW, UNPROVEN ----
-elif nav == "🎮 Esports (LoL)" and is_admin:
+# ---- ESPORTS (LoL) ----
+elif nav == "🎮 Esports (LoL)":
     st.title("🎮 Esports — League of Legends")
     st.markdown("---")
-    st.info("🔧 **Admin-only, early build.** Real, confirmed data foundation: Polymarket has real match/series-winner markets for LoL (confirmed live — player props were checked directly and confirmed NOT to exist for this game, despite initial marketing copy suggesting otherwise). Cito API confirmed working for real team match history with real winners/scores. Full live pipeline below connects both into real Elo-based win probabilities.")
-
-    st.subheader("🧪 Live Polymarket Safety Check")
-    st.caption("Built the same way as NFL's live pipeline safety check — does NOT assume the fetch/filtering logic works correctly, actually calls it and reports the real result. One real, known gap flagged honestly: query-parameter filtering (tag_slug, closed status) could not be independently verified as working from the development sandbox — two test fetches with different parameters returned identical, old results, which points at a caching layer in that environment's fetch tool rather than a confirmed problem with the real API. This is the actual, live test of that.")
-
-    if st.button("Test Polymarket LoL fetch", key="polymarket_lol_safety_check"):
-        with st.spinner("Fetching live Polymarket data..."):
-            try:
-                from polymarket_api import get_polymarket_safety_check
-                result = get_polymarket_safety_check()
-            except ImportError:
-                st.error("❌ Couldn't import polymarket_api — make sure polymarket_api.py is deployed alongside mlb_app.py in the same directory.")
-                result = None
-
-        if result:
-            if result.get("fetch_ok"):
-                st.success(f"✅ Fetch succeeded — {result['event_count']} LoL event(s) returned")
-                if result["event_count"] > 0:
-                    st.write("**Sample event titles:**")
-                    for title in result["sample_titles"]:
-                        st.write(f"- {title}")
-                    st.write(f"**Real match-winner markets found (confirmed market type):** {result['match_winner_market_count']}")
-                    if result["sample_match_markets"]:
-                        st.write("**Sample match-winner markets:**")
-                        for m in result["sample_match_markets"]:
-                            st.write(f"- {m['event']}: {m['outcomes']} @ {m['prices']}")
-                    else:
-                        st.warning("No match-winner-style markets matched in this batch — could mean the current events are mostly futures/other market types rather than head-to-head matches right now.")
-                else:
-                    st.warning("Fetch succeeded but returned 0 events — could mean no LoL events are live right now (plausible, real esports schedules are gappy), or that tag_slug='league-of-legends' isn't the correct real tag slug (never independently confirmed from this environment). Worth checking Polymarket's site directly for the current LoL tag slug if this stays at 0 with real matches known to be scheduled.")
-            else:
-                st.error(f"❌ Real fetch error: {result.get('error')}")
-
-    st.markdown("---")
-    st.subheader("🧪 Live Cito API Safety Check")
-    st.caption("Cito's exact response schema for team match history/results was never independently confirmed from documentation research alone — only a single example response for a LIVE in-game match was found (kills/gold/towers), not what's needed here (completed results: who played, who won). This calls the real, live API and shows the genuine response for each endpoint, including one deliberately-flagged unconfirmed guess at the team-match-history path, so the real schema can finally be inspected before anything gets built on assumed field names — same lesson learned the hard way with the NBA balldontlie rebuild.")
-    if "CITO_API_KEY" not in st.secrets:
-        st.warning("⚠️ CITO_API_KEY not found in secrets. Add it to your Railway environment variables (same way ODDS_API_KEY and BDL_API_KEY are set) before this check can run.")
-    else:
-        if st.button("Test Cito API endpoints", key="cito_safety_check"):
-            with st.spinner("Fetching live Cito data..."):
-                try:
-                    from cito_api import get_cito_safety_check
-                    cito_result = get_cito_safety_check(st.secrets["CITO_API_KEY"])
-                except ImportError:
-                    st.error("❌ Couldn't import cito_api — make sure cito_api.py is deployed alongside mlb_app.py in the same directory.")
-                    cito_result = None
-
-            if cito_result:
-                for label, res in cito_result.items():
-                    st.write(f"**{label}**")
-                    if res.get("ok"):
-                        if label == "team_matches_t1":
-                            st.success(f"✅ Real response received — {res.get('total_entries')} total entries, {res.get('completed_match_count')} completed matches extracted")
-                            st.write("Sample completed matches (real Elo/rating training data):")
-                            st.json(res.get("sample_completed"))
-                        elif label == "teams_list":
-                            st.success(f"✅ Real response received — {res.get('total_fetched')} total teams fetched across all pages")
-                            st.write("First 5 (alphabetically earliest):")
-                            st.json(res.get("sample_first_5"))
-                            st.write("Last 5 (alphabetically latest — should include real later-alphabet teams like G2/Karmine Corp if pagination actually worked):")
-                            st.json(res.get("sample_last_5"))
-                        else:
-                            st.success(f"✅ Real response received — type: {res['type']}" + (f", count: {res['count']}" if res.get('count') is not None else ""))
-                            st.json(res["sample"])
-                    else:
-                        st.error(f"❌ Real error: {res.get('error')}")
-                    st.markdown("---")
-
-    st.markdown("---")
-    st.subheader("🚀 Run Live LoL Projections")
-    st.caption("The real, full pipeline: fetches live Polymarket LoL matchups, matches team names to Cito slugs, pulls real match history for every team involved, builds a real Elo ratings table, and compares the model's win probability against Polymarket's real market price. Genuinely new — has not been run end-to-end before, so treat the first real run here the same way NFL's first live Receptions run was treated: watch it closely, don't assume success.")
+    bankroll, risk_style = get_bankroll_context()
+    already_bet_today_lol = get_already_bet_players_today('LOL')
 
     if "CITO_API_KEY" not in st.secrets:
-        st.warning("⚠️ CITO_API_KEY not found in secrets — required for this pipeline to run.")
+        st.warning("⚠️ This model isn't fully configured yet — check back soon.")
     else:
-        if st.button("🚀 Run LoL Matchup Projections", key="run_lol_projections"):
-            with st.spinner("Running the full live pipeline — fetching Polymarket, matching teams, pulling Cito history, building ratings..."):
+        if st.button("🚀 Load Latest Matchups", use_container_width=True, key="run_lol_projections"):
+            with st.spinner("Pulling live matchups and building projections..."):
                 pipeline_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
+                st.session_state['lol_pipeline_output'] = pipeline_output
 
+        pipeline_output = st.session_state.get('lol_pipeline_output')
+        if pipeline_output:
             if isinstance(pipeline_output, dict) and pipeline_output.get("error"):
-                st.error(f"❌ Pipeline failed: {pipeline_output['error']}")
+                st.error(f"Couldn't load matchups right now — please try again shortly.")
+                if is_admin:
+                    st.caption(f"Admin detail: {pipeline_output['error']}")
             else:
                 debug = pipeline_output.get("debug")
                 lol_results = pipeline_output.get("results", [])
-                if debug:
-                    with st.expander("🔍 Pipeline diagnostics (why matchups did/didn't resolve)", expanded=not lol_results):
-                        st.json(debug)
+
                 if not lol_results:
-                    st.warning("Pipeline ran successfully but found 0 usable matchups this time — expand the diagnostics above to see exactly why (0 real markets found, 0 teams in the name map, or specific team names that failed to resolve).")
+                    st.info("No live matchups available right now — check back closer to game time.")
                 else:
-                    st.success(f"✅ Pipeline succeeded — {len(lol_results)} real matchup(s) with model predictions")
-                    for r in lol_results:
-                        if r.get("fetch_errors"):
-                            st.caption(f"⚠️ Some team history fetches failed: {r['fetch_errors']}")
+                    sorted_lol_results = sorted(
+                        lol_results,
+                        key=lambda r: (TIER_RANK.get(r.get("mm_tier"), -1), r.get("ev_pct") if r.get("ev_pct") is not None else -999),
+                        reverse=True,
+                    )
+                    for r in sorted_lol_results:
+                        matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
                         if r.get("no_real_data"):
-                            st.warning(f"⚠️ Neither team has any real completed-game history in this dataset — the 50% shown below is a data-free default, not a real model prediction. Treat this matchup as unrated, not as a real edge.")
-                        col1, col2, col3 = st.columns([2, 1, 1])
+                            st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
+
+                        col1, col2, col3, col4 = st.columns([2.2, 1.1, 1.0, 1.1])
                         with col1:
-                            st.write(f"**{r['team1_name']}** ({r['team1_rating']}) vs **{r['team2_name']}** ({r['team2_rating']})")
-                            st.caption(f"{r['event_title']} — Bo{r['best_of']}")
-                            st.caption(f"Q: {r.get('question')}")
-                            st.caption(f"Market slug: {r.get('market_slug')} | Group item: {r.get('group_item_title')}")
-                            st.caption(f"Real Cito slugs (use these in the diagnostic below): **{r.get('team1_slug')}** / **{r.get('team2_slug')}**")
+                            st.write(f"**{r['team1_name']}** vs **{r['team2_name']}**")
+                            st.caption(f"{(r.get('event_title') or '').split(' - ')[-1]} — Bo{r['best_of']}")
+                            if matchup_key in already_bet_today_lol:
+                                st.caption("✅ Already bet today")
                         with col2:
-                            st.write(f"Model: {r['model_prob_team1']*100:.1f}%")
-                            st.write(f"Market: {r['market_prob_team1']*100:.1f}%")
+                            st.write(f"Pick: **{r['recommended_team_name']}**")
+                            st.caption(f"Model {r['recommended_model_prob']*100:.1f}% / Market {r['recommended_market_prob']*100:.1f}%")
                         with col3:
-                            edge_color = "🟢" if r["edge_pct"] > 0 else "🔴"
-                            st.write(f"{edge_color} Edge: {r['edge_pct']:+.1f}%")
-                            st.write(f"Odds: {r['market_odds_team1']}")
+                            ev = r.get("ev_pct")
+                            st.write(f"EV: **{ev}%**" if ev is not None else "EV: —")
+                            st.caption(f"Odds: {r.get('recommended_odds')}")
+                        with col4:
+                            st.markdown(tier_badge(r.get("mm_tier"), compact=True), unsafe_allow_html=True)
+
+                        why_lines = [
+                            f"**{r['recommended_team_name']}**'s real Elo rating is {r['team1_rating'] if r['recommended_side'] == 'team1' else r['team2_rating']}, vs {r['team2_rating'] if r['recommended_side'] == 'team1' else r['team1_rating']} for the opponent — built from real, completed match history.",
+                            f"Model gives {r['recommended_team_name']} a {r['recommended_model_prob']*100:.1f}% chance to win, vs {r['recommended_market_prob']*100:.1f}% implied by the current market price — a real, computed gap, not a guess.",
+                        ]
+                        if r.get("no_real_data"):
+                            why_lines.append("⚠️ Neither team has real completed-game history in this dataset yet — this pick carries real uncertainty beyond the normal model error.")
+                        with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
+                            for line in why_lines:
+                                st.markdown(line)
+
+                        stake_info = {
+                            'MM Tier': r.get('mm_tier'), 'Model Prob': r.get('recommended_model_prob'),
+                            'Odds': r.get('recommended_odds'), 'EV%': r.get('ev_pct'),
+                            # 'Edge' deliberately omitted — calculate_mm_stake's edge-magnitude
+                            # bonus was calibrated for stat-unit prop edges (e.g. 0.3 strikeouts),
+                            # not probability-percentage-point edges here; omitting it safely
+                            # skips that adjustment rather than misapplying mismatched thresholds.
+                        }
+                        stake_result = {}
+                        render_mm_stake_block(stake_info, stake_result, bankroll, risk_style)
+
+                        if st.button("📝 Log Bet", key=f"lol_log_btn_{matchup_key}"):
+                            st.session_state[f'lol_log_modal_{matchup_key}'] = True
+
+                        if st.session_state.get(f'lol_log_modal_{matchup_key}'):
+                            with st.expander(f"📝 Log Bet — {r['recommended_team_name']}", expanded=True):
+                                log_mm_stake_dollars = None
+                                mm_stake_calc = calculate_mm_stake(stake_info, stake_result, bankroll, risk_style) if bankroll else None
+                                if mm_stake_calc and not mm_stake_calc.get('pass'):
+                                    log_mm_stake_dollars = mm_stake_calc.get('stake_dollars')
+
+                                col_a, col_b = st.columns(2)
+                                with col_a:
+                                    log_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f", key=f"lol_log_bet_{matchup_key}")
+                                    log_odds = st.number_input("Odds (e.g. -140 or +110)", value=r.get('recommended_odds'), step=1, key=f"lol_log_odds_{matchup_key}")
+                                with col_b:
+                                    log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"lol_log_result_{matchup_key}")
+
+                                if st.button("✅ Confirm Log Bet", key=f"lol_log_confirm_{matchup_key}", use_container_width=True):
+                                    odds = int(log_odds) if log_odds else -110
+                                    bet_val = round(float(log_bet), 2) if log_bet else 0.0
+                                    profit = calc_profit(bet_val, odds, log_result)
+                                    save_bet({
+                                        'date': mm_today_str(), 'pitcher': matchup_key,
+                                        'projection': r.get('recommended_model_prob'),
+                                        'opening_line': r.get('recommended_market_prob'),
+                                        'over_under': r['recommended_team_name'], 'odds': odds,
+                                        'bet_amount': bet_val, 'result': log_result,
+                                        'actual': 0, 'profit': profit,
+                                        'sport': 'LOL', 'ev_pct': r.get('ev_pct'),
+                                        'mm_tier': r.get('mm_tier'),
+                                        'model_prob': r.get('recommended_model_prob'),
+                                        'mm_stake_recommended': log_mm_stake_dollars,
+                                    })
+                                    st.session_state[f'lol_log_modal_{matchup_key}'] = False
+                                    st.success(f"✅ Bet logged for {r['recommended_team_name']}!")
+                                    st.rerun()
                         st.divider()
 
-    st.markdown("---")
-    st.subheader("🔍 Team Match Coverage Diagnostic")
-    st.caption("Answers 'why are real matches missing?' with real data instead of guessing between the likely causes: Cito returning a limited window rather than full season history, some completed matches missing the per-game detail the rating model requires (silently skipped), or the real date range covered being narrower than expected.")
-    diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
-    if "CITO_API_KEY" in st.secrets and st.button("Check coverage", key="lol_coverage_diag_btn"):
-        with st.spinner(f"Fetching real match history for {diag_team_slug}..."):
-            try:
-                from cito_api import get_lol_team_matches, diagnose_team_match_coverage
-                raw = get_lol_team_matches(st.secrets["CITO_API_KEY"], diag_team_slug)
-                diag = diagnose_team_match_coverage(raw)
-                st.json(diag)
-                if diag["completed_missing_games_data"] > 0:
-                    st.warning(f"⚠️ {diag['completed_missing_games_data']} completed match(es) are missing per-game detail and get silently skipped by the rating model — a real, confirmed source of data loss, not a guess.")
-                if diag["date_range_of_completed_matches"]:
-                    st.info(f"Real date range of completed matches Cito actually returned: {diag['date_range_of_completed_matches']['oldest']} to {diag['date_range_of_completed_matches']['newest']} — if this is narrower than a full season, that's real evidence of a pagination/window limit on Cito's side, not a bug in this app's code.")
-            except Exception as e:
-                st.error(f"❌ Real error: {e}")
+    if is_admin:
+        with st.expander("🔧 Admin: Diagnostics & Data Pipeline Tools", expanded=False):
+            st.caption("Real diagnostic tools used to build and debug this pipeline — hidden from regular users, kept here since they've caught real, genuine bugs and will likely be needed again as coverage expands to more leagues/games.")
 
-    st.markdown("---")
-    st.subheader("🔎 Search Real Team Database")
-    st.caption("For a team showing ZERO candidates in the resolution diagnostics (a real, different problem than genuine ambiguity — it means the name isn't found anywhere, not that multiple teams share it). Searches the full, real teams list for partial matches, to see what a team is actually called in Cito's data before assuming it's genuinely missing.")
-    search_term = st.text_input("Search term (e.g. 'cloud', 'liquid', 'WE')", value="", key="lol_team_search")
-    if "CITO_API_KEY" in st.secrets and search_term and st.button("Search", key="lol_team_search_btn"):
-        with st.spinner(f"Searching the real team database for '{search_term}'..."):
-            try:
-                from cito_api import get_lol_teams_list, search_teams_list_for_name
-                teams_list = get_lol_teams_list(st.secrets["CITO_API_KEY"])
-                matches = search_teams_list_for_name(teams_list, search_term)
-                if matches:
-                    st.success(f"✅ Found {len(matches)} real, partial match(es):")
-                    st.json(matches)
-                else:
-                    st.warning(f"⚠️ Genuinely zero matches for '{search_term}' anywhere in the real team database — this team may not be tracked by Cito at all under any name variant.")
-            except Exception as e:
-                st.error(f"❌ Real error: {e}")
+            st.subheader("🧪 Live Polymarket Safety Check")
+            if st.button("Test Polymarket LoL fetch", key="polymarket_lol_safety_check"):
+                with st.spinner("Fetching live Polymarket data..."):
+                    try:
+                        from polymarket_api import get_polymarket_safety_check
+                        result = get_polymarket_safety_check()
+                    except ImportError:
+                        st.error("❌ Couldn't import polymarket_api.")
+                        result = None
+                if result:
+                    if result.get("fetch_ok"):
+                        st.success(f"✅ Fetch succeeded — {result['event_count']} LoL event(s) returned")
+                        st.write("**Sample event titles:**")
+                        for title in result["sample_titles"]:
+                            st.write(f"- {title}")
+                        st.write(f"**Real match-winner markets found:** {result['match_winner_market_count']}")
+                    else:
+                        st.error(f"❌ Real fetch error: {result.get('error')}")
+
+            st.markdown("---")
+            st.subheader("🧪 Live Cito API Safety Check")
+            if st.button("Test Cito API endpoints", key="cito_safety_check"):
+                with st.spinner("Fetching live Cito data..."):
+                    try:
+                        from cito_api import get_cito_safety_check
+                        cito_result = get_cito_safety_check(st.secrets["CITO_API_KEY"])
+                    except ImportError:
+                        st.error("❌ Couldn't import cito_api.")
+                        cito_result = None
+                if cito_result:
+                    for label, res in cito_result.items():
+                        st.write(f"**{label}**")
+                        if res.get("ok"):
+                            if label == "team_matches_t1":
+                                st.success(f"✅ {res.get('total_entries')} total entries, {res.get('completed_match_count')} completed")
+                                st.json(res.get("sample_completed"))
+                            elif label == "teams_list":
+                                st.success(f"✅ {res.get('total_fetched')} total teams fetched")
+                                st.json(res.get("sample_first_5"))
+                                st.json(res.get("sample_last_5"))
+                            else:
+                                st.success(f"✅ type: {res['type']}" + (f", count: {res['count']}" if res.get('count') is not None else ""))
+                                st.json(res["sample"])
+                        else:
+                            st.error(f"❌ Real error: {res.get('error')}")
+                        st.markdown("---")
+
+            st.markdown("---")
+            st.subheader("🔍 Pipeline Diagnostics (last run)")
+            last_output = st.session_state.get('lol_pipeline_output')
+            if last_output and isinstance(last_output, dict) and last_output.get("debug"):
+                st.json(last_output["debug"])
+            else:
+                st.caption("Run the projections above first to see diagnostics for that run.")
+
+            st.markdown("---")
+            st.subheader("🔍 Team Match Coverage Diagnostic")
+            diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
+            if st.button("Check coverage", key="lol_coverage_diag_btn"):
+                with st.spinner(f"Fetching real match history for {diag_team_slug}..."):
+                    try:
+                        from cito_api import get_lol_team_matches, diagnose_team_match_coverage
+                        raw = get_lol_team_matches(st.secrets["CITO_API_KEY"], diag_team_slug)
+                        diag = diagnose_team_match_coverage(raw)
+                        st.json(diag)
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
+
+            st.markdown("---")
+            st.subheader("🔎 Search Real Team Database")
+            search_term = st.text_input("Search term (e.g. 'cloud', 'liquid', 'WE')", value="", key="lol_team_search")
+            if search_term and st.button("Search", key="lol_team_search_btn"):
+                with st.spinner(f"Searching the real team database for '{search_term}'..."):
+                    try:
+                        from cito_api import get_lol_teams_list, search_teams_list_for_name
+                        teams_list = get_lol_teams_list(st.secrets["CITO_API_KEY"])
+                        matches = search_teams_list_for_name(teams_list, search_term)
+                        if matches:
+                            st.success(f"✅ Found {len(matches)} real, partial match(es):")
+                            st.json(matches)
+                        else:
+                            st.warning(f"⚠️ Genuinely zero matches for '{search_term}'.")
+                    except Exception as e:
+                        st.error(f"❌ Real error: {e}")
 
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
