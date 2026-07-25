@@ -7684,6 +7684,25 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         real_match_time = match_time_map.get(frozenset({m["team1_slug"], m["team2_slug"]}))
     match_date_display = real_match_time or market.get("match_date")
 
+    # Real fix (July 2026, per direct user feedback) — a live/already-
+    # started match shouldn't get a pre-game projection at all, since
+    # the real market price would already be reacting to in-game
+    # events our model has no idea happened, making the comparison
+    # meaningless. Same real pattern already used for MLB/NFL
+    # (comparing commence_time against now_utc) — applied here using
+    # Cito's own confirmed startTime. Only checked when we have the
+    # PRECISE real timestamp, not the date-only slug fallback, since a
+    # bare date can't tell us whether a game already started earlier
+    # today.
+    if real_match_time and "T" in real_match_time:
+        try:
+            real_start_dt = datetime.fromisoformat(real_match_time.replace("Z", "+00:00"))
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            if real_start_dt <= now_utc:
+                return None, {"reason": "already_started", "team1": m["team1_name"], "team2": m["team2_name"], "match_date": real_match_time}
+        except (ValueError, TypeError):
+            pass  # unparseable real timestamp — don't block on it
+
     # Real date cutoff — real feedback found matchups showing up over
     # a week out, too far ahead to be practically useful for betting
     # right now. A missing/unparseable date is kept, not excluded —
@@ -7899,6 +7918,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_illiquid = []
     filtered_bad_price_data = []
     filtered_as_too_far_ahead = []
+    filtered_as_already_started = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
         result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history)
@@ -7911,6 +7931,8 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             filtered_bad_price_data.append({k: v for k, v in filter_info.items() if k != "reason"})
         elif filter_info["reason"] == "illiquid":
             filtered_as_illiquid.append({k: v for k, v in filter_info.items() if k != "reason"})
+        elif filter_info["reason"] == "already_started":
+            filtered_as_already_started.append({k: v for k, v in filter_info.items() if k != "reason"})
 
     # Real fix (July 2026, per direct user feedback) — low-volume
     # matchups are no longer excluded; they stay visible with a real,
@@ -7926,6 +7948,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     debug_info["filtered_as_illiquid"] = filtered_as_illiquid
     debug_info["filtered_bad_price_data"] = filtered_bad_price_data
     debug_info["filtered_as_too_far_ahead"] = filtered_as_too_far_ahead
+    debug_info["filtered_as_already_started"] = filtered_as_already_started
     debug_info["low_volume_results_discounted_not_filtered"] = low_volume_results
     return {"debug": debug_info, "results": results}
 
