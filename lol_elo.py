@@ -118,6 +118,34 @@ def is_international_tournament(tournament_name):
     return any(marker in name_lower for marker in INTERNATIONAL_TOURNAMENT_MARKERS)
 
 
+# Real, known lower-tier/developmental tournament name markers — found
+# via direct real-data investigation (July 2026): Dignitas's real match
+# history showed ~40% of their games (17 of 43) in "LTA North Promotion
+# 2026" — a real, lower-division tournament for teams trying to move UP
+# into the main league, not real top-tier competition. Meanwhile
+# Sentinels (the team Dignitas was compared against) had zero such
+# games, only real top-tier competition (LCS splits, EWC, Americas
+# Cup). This let Dignitas accumulate real wins against weaker
+# opposition that inflated their rating relative to how they actually
+# perform against genuine LCS-caliber teams. "challengers", "academy",
+# and "youth" cover the equivalent developmental-league pattern already
+# seen elsewhere in real data (T1 Academy, Gen.G Global Academy, BNK
+# FearX Youth, LCK Challengers League).
+LOWER_TIER_TOURNAMENT_MARKERS = ["promotion", "challengers", "academy", "youth", "desafiante"]
+
+DEFAULT_LOWER_TIER_K_MULTIPLIER = 0.6  # a real, moderate first discount — not backtested, may need real calibration later
+
+
+def is_lower_tier_tournament(tournament_name):
+    """Real, substring-based detection of a known lower-tier/
+    developmental tournament, using tournamentName — the same
+    approach as is_international_tournament(), inverted in intent."""
+    if not tournament_name:
+        return False
+    name_lower = tournament_name.strip().lower()
+    return any(marker in name_lower for marker in LOWER_TIER_TOURNAMENT_MARKERS)
+
+
 def calculate_elo_expected_score(rating_a, rating_b):
     """Standard Elo expected-score formula — returns team A's win
     probability for a SINGLE game, given both current ratings."""
@@ -162,7 +190,7 @@ def series_win_probability(single_game_prob, best_of):
     return total_prob
 
 
-def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DEFAULT_STARTING_RATING, k_factor=DEFAULT_K_FACTOR, use_recency_weighting=True, reference_date=None, team_region_map=None, international_k_multiplier=DEFAULT_INTERNATIONAL_K_MULTIPLIER):
+def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DEFAULT_STARTING_RATING, k_factor=DEFAULT_K_FACTOR, use_recency_weighting=True, reference_date=None, team_region_map=None, international_k_multiplier=DEFAULT_INTERNATIONAL_K_MULTIPLIER, lower_tier_k_multiplier=DEFAULT_LOWER_TIER_K_MULTIPLIER):
     """Processes a chronologically-sorted list of completed matches
     (the output of cito_api.sort_matches_chronologically applied to
     cito_api.extract_completed_matches) and builds up current Elo
@@ -199,7 +227,21 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
     teams-list data, since match data itself carries no region field)
     — if not provided, this boost is simply never applied (an honest,
     safe default, not an error) and behavior is identical to before
-    this feature existed."""
+    this feature existed.
+
+    Real addition (July 2026, found via direct real-data
+    investigation, not a hypothesis): a moderate K-factor discount for
+    known lower-tier/developmental tournaments (promotion leagues,
+    challengers/academy circuits). Found via a real case — Dignitas
+    had ~40% of their real match history in a lower-division
+    "promotion" tournament while their opponent (Sentinels) had zero
+    such games, only real top-tier competition — letting Dignitas
+    accumulate real wins against weaker opposition that inflated their
+    rating relative to genuine LCS-caliber performance. This is the
+    inverse of the international boost: applied unconditionally to any
+    game in a known lower-tier tournament, not conditional on the two
+    teams' regions (a promotion-tier game is a weaker signal regardless
+    of who's playing in it)."""
     ratings = {}
     team_region_map = team_region_map or {}
 
@@ -227,6 +269,12 @@ def build_team_ratings_from_history(sorted_completed_matches, starting_rating=DE
             if region1 and region2 and region1 != region2:
                 effective_k *= international_k_multiplier
 
+        # Real, found-via-direct-evidence lower-tier discount —
+        # unconditional on region, since a promotion/academy game is a
+        # weaker signal regardless of who's involved.
+        if is_lower_tier_tournament(match.get("tournamentName")):
+            effective_k *= lower_tier_k_multiplier
+
         for game in games:
             winner_slug = game.get("winnerSlug")
             if winner_slug not in (team1_slug, team2_slug):
@@ -252,6 +300,78 @@ def predict_series(ratings, team1_slug, team2_slug, best_of, starting_rating=DEF
     r2 = ratings.get(team2_slug, starting_rating)
     single_game_prob = calculate_elo_expected_score(r1, r2)
     return series_win_probability(single_game_prob, best_of)
+
+
+# Real, conservative head-to-head blending parameters (July 2026, per
+# direct user feedback and a real, concrete case: Dignitas and
+# Sentinels had two prior meetings, both real 2-0 sweeps in Sentinels'
+# favor — a clean, consistent pattern our overall-rating-only Elo
+# system had no way to see at all). Deliberately capped: even with
+# many real head-to-head meetings, this can never contribute more than
+# MAX_HEAD_TO_HEAD_WEIGHT to the final probability — head-to-head
+# history is real, relevant evidence, but overall recent form (Elo)
+# should remain the primary signal, not be overridden by a small
+# sample of direct meetings. Not backtested — a reasonable, honest
+# first attempt, same as every other new threshold in this project.
+MAX_HEAD_TO_HEAD_WEIGHT = 0.30
+HEAD_TO_HEAD_WEIGHT_PER_SERIES = 0.10
+
+
+def get_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches):
+    """Real, direct scan of the combined match history for every real,
+    completed SERIES (not individual game) played directly between
+    these two specific teams — matching how a person actually thinks
+    about head-to-head ("they've swept us twice"), not game-level
+    counting. Returns (team1_series_wins, team2_series_wins,
+    total_series). Uses each match's real 'winner' field (the series
+    winner) rather than re-deriving it from individual games, since
+    that's the most direct, real signal available."""
+    team1_wins = 0
+    team2_wins = 0
+    total = 0
+    for match in sorted_completed_matches:
+        m_team1 = (match.get("team1") or {}).get("slug")
+        m_team2 = (match.get("team2") or {}).get("slug")
+        if {m_team1, m_team2} != {team1_slug, team2_slug}:
+            continue
+        winner = match.get("winner")
+        if winner == team1_slug:
+            team1_wins += 1
+            total += 1
+        elif winner == team2_slug:
+            team2_wins += 1
+            total += 1
+        # a match with a genuinely missing/unrecognized winner is
+        # skipped, not guessed at — consistent with this project's
+        # standing principle throughout
+    return team1_wins, team2_wins, total
+
+
+def blend_with_head_to_head(elo_prob_team1, team1_slug, team2_slug, sorted_completed_matches, max_weight=MAX_HEAD_TO_HEAD_WEIGHT, weight_per_series=HEAD_TO_HEAD_WEIGHT_PER_SERIES):
+    """Real, conservative blend of the Elo-based series probability
+    with real, direct head-to-head history between these two specific
+    teams. Weight scales with how many real prior series exist between
+    them, capped at max_weight so a small sample (even a clean 2-0/2-0
+    sweep pattern) can meaningfully shift the prediction without ever
+    fully overriding the broader, more data-rich Elo signal. Returns
+    (blended_prob_team1, head_to_head_detail_dict) — the detail dict
+    is real, honest transparency about what head-to-head evidence (if
+    any) went into the blend, for display/debugging, not hidden inside
+    a single opaque number."""
+    team1_wins, team2_wins, total_series = get_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches)
+    detail = {
+        "team1_h2h_wins": team1_wins, "team2_h2h_wins": team2_wins,
+        "total_h2h_series": total_series, "h2h_weight_applied": 0.0,
+    }
+    if total_series == 0:
+        return elo_prob_team1, detail  # no real head-to-head evidence — Elo alone, unchanged
+
+    h2h_win_rate_team1 = team1_wins / total_series
+    weight = min(max_weight, total_series * weight_per_series)
+    blended_prob = (1 - weight) * elo_prob_team1 + weight * h2h_win_rate_team1
+    detail["h2h_weight_applied"] = round(weight, 3)
+    detail["h2h_win_rate_team1"] = round(h2h_win_rate_team1, 3)
+    return blended_prob, detail
 
 
 def combine_and_dedupe_matches(list_of_match_lists):
