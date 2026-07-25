@@ -9258,6 +9258,24 @@ elif nav == "🎮 Esports (LoL)" and is_admin:
             except Exception as e:
                 st.error(f"❌ Real error: {e}")
 
+    st.markdown("---")
+    st.subheader("🔎 Search Real Team Database")
+    st.caption("For a team showing ZERO candidates in the resolution diagnostics (a real, different problem than genuine ambiguity — it means the name isn't found anywhere, not that multiple teams share it). Searches the full, real teams list for partial matches, to see what a team is actually called in Cito's data before assuming it's genuinely missing.")
+    search_term = st.text_input("Search term (e.g. 'cloud', 'liquid', 'WE')", value="", key="lol_team_search")
+    if "CITO_API_KEY" in st.secrets and search_term and st.button("Search", key="lol_team_search_btn"):
+        with st.spinner(f"Searching the real team database for '{search_term}'..."):
+            try:
+                from cito_api import get_lol_teams_list, search_teams_list_for_name
+                teams_list = get_lol_teams_list(st.secrets["CITO_API_KEY"])
+                matches = search_teams_list_for_name(teams_list, search_term)
+                if matches:
+                    st.success(f"✅ Found {len(matches)} real, partial match(es):")
+                    st.json(matches)
+                else:
+                    st.warning(f"⚠️ Genuinely zero matches for '{search_term}' anywhere in the real team database — this team may not be tracked by Cito at all under any name variant.")
+            except Exception as e:
+                st.error(f"❌ Real error: {e}")
+
 elif nav == "🧪 Backtest" and is_admin:
     st.title("🧪 Backtest")
 
