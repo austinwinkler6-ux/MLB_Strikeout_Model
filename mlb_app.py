@@ -7703,6 +7703,28 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     if market_prob_team1 <= 0.01 or market_prob_team1 >= 0.99:
         return None, {"reason": "illiquid", "team1": m["team1_name"], "team2": m["team2_name"], "market_prob_team1": market_prob_team1, "question": market.get("question")}
 
+    # Real fix (July 2026) — found via direct comparison of real data:
+    # a 187% "EV" matchup had just $739 in real total trading volume,
+    # vs a genuine, reasonable 4% EV matchup with $92,869 — roughly a
+    # 159x gap. Real market liquidity (capital sitting in the order
+    # book) was actually similar between the two ($88K vs $134K),
+    # confirming liquidity is NOT the discriminating signal here —
+    # volume (actual real trades that happened) is. A market nobody's
+    # genuinely traded yet doesn't have a price that means anything,
+    # even if it's not sitting at the 0%/100% extreme the filter above
+    # already catches. MIN_MARKET_VOLUME is a real, conservative first
+    # threshold set well above the confirmed-bad case and well below
+    # the confirmed-good one — not finely tuned, and may need real
+    # calibration later once more real examples are seen, same as
+    # every other threshold in this project.
+    MIN_MARKET_VOLUME = 2000
+    try:
+        market_volume = float(market.get("volume") or 0)
+    except (ValueError, TypeError):
+        market_volume = 0
+    if market_volume < MIN_MARKET_VOLUME:
+        return None, {"reason": "low_volume", "team1": m["team1_name"], "team2": m["team2_name"], "market_volume": market_volume, "question": market.get("question")}
+
     question = (market.get("question") or "").lower()
     best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
 
@@ -7834,6 +7856,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_illiquid = []
     filtered_bad_price_data = []
     filtered_as_too_far_ahead = []
+    filtered_as_low_volume = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
         result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map)
@@ -7846,11 +7869,14 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             filtered_bad_price_data.append({k: v for k, v in filter_info.items() if k != "reason"})
         elif filter_info["reason"] == "illiquid":
             filtered_as_illiquid.append({k: v for k, v in filter_info.items() if k != "reason"})
+        elif filter_info["reason"] == "low_volume":
+            filtered_as_low_volume.append({k: v for k, v in filter_info.items() if k != "reason"})
 
     debug_info["final_result_count"] = len(results)
     debug_info["filtered_as_illiquid"] = filtered_as_illiquid
     debug_info["filtered_bad_price_data"] = filtered_bad_price_data
     debug_info["filtered_as_too_far_ahead"] = filtered_as_too_far_ahead
+    debug_info["filtered_as_low_volume"] = filtered_as_low_volume
     return {"debug": debug_info, "results": results}
 
 # ---- HOME PAGE ----
