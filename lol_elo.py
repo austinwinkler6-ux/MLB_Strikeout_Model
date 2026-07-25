@@ -325,7 +325,12 @@ def get_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches):
     counting. Returns (team1_series_wins, team2_series_wins,
     total_series). Uses each match's real 'winner' field (the series
     winner) rather than re-deriving it from individual games, since
-    that's the most direct, real signal available."""
+    that's the most direct, real signal available.
+
+    Real, honest limitation (kept for backward compatibility/display
+    purposes): this returns RAW, unweighted counts — see
+    get_recency_weighted_head_to_head_record() below for the real,
+    recency-aware version now used in the actual blending logic."""
     team1_wins = 0
     team2_wins = 0
     total = 0
@@ -347,6 +352,43 @@ def get_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches):
     return team1_wins, team2_wins, total
 
 
+def get_recency_weighted_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches, reference_date=None):
+    """Real fix (July 2026) — found via a real, concrete case: RED
+    Canids vs Vivo Keyd Stars showed a head-to-head record favoring
+    VKS (7-4), but the real market's own context text explicitly said
+    "current momentum and team form heavily favor RED," mentioning a
+    recent RED win. The raw, unweighted head-to-head record was
+    treating an old VKS advantage as equally meaningful as recent form
+    — actively pulling the prediction in the WRONG direction from what
+    real, current results actually show.
+
+    Applies the same real recency-decay curve already proven for the
+    main Elo rating (calculate_recency_weight) to each head-to-head
+    meeting — a recent head-to-head win counts close to fully, an old
+    one counts for much less, rather than all prior meetings counting
+    identically regardless of when they happened. Returns
+    (weighted_team1_wins, weighted_total_series) — both REAL NUMBERS
+    (not integers), the sum of recency weights for team1's wins / all
+    matches, not raw counts. A team1_needed of 0 total_series means
+    genuinely no real head-to-head evidence exists, same meaning as
+    before, just measured in weighted terms now."""
+    weighted_team1_wins = 0.0
+    weighted_total = 0.0
+    for match in sorted_completed_matches:
+        m_team1 = (match.get("team1") or {}).get("slug")
+        m_team2 = (match.get("team2") or {}).get("slug")
+        if {m_team1, m_team2} != {team1_slug, team2_slug}:
+            continue
+        winner = match.get("winner")
+        if winner not in (team1_slug, team2_slug):
+            continue  # a genuinely missing/unrecognized winner — skipped, not guessed at
+        weight = calculate_recency_weight(match.get("startTime"), reference_date)
+        weighted_total += weight
+        if winner == team1_slug:
+            weighted_team1_wins += weight
+    return weighted_team1_wins, weighted_total
+
+
 def _blend_elo_with_h2h_rate(elo_prob_team1, team1_wins, total_series, max_weight, weight_per_series):
     """Shared blending math used by both blend_with_head_to_head() and
     blend_with_head_to_head_from_api() — kept in one place so the two
@@ -366,26 +408,34 @@ def _blend_elo_with_h2h_rate(elo_prob_team1, team1_wins, total_series, max_weigh
     return blended_prob, detail
 
 
-def blend_with_head_to_head(elo_prob_team1, team1_slug, team2_slug, sorted_completed_matches, max_weight=MAX_HEAD_TO_HEAD_WEIGHT, weight_per_series=HEAD_TO_HEAD_WEIGHT_PER_SERIES):
+def blend_with_head_to_head(elo_prob_team1, team1_slug, team2_slug, sorted_completed_matches, reference_date=None, max_weight=MAX_HEAD_TO_HEAD_WEIGHT, weight_per_series=HEAD_TO_HEAD_WEIGHT_PER_SERIES):
     """Real, conservative blend of the Elo-based series probability
     with real, direct head-to-head history between these two specific
     teams, RECONSTRUCTED from each team's own real /matches history.
 
+    Real fix (July 2026) — now uses recency-weighted head-to-head
+    (get_recency_weighted_head_to_head_record) instead of raw counts.
+    Found necessary via a real case: an old head-to-head advantage was
+    fighting against real, recent form the market itself was pricing
+    in — a recent head-to-head win should matter more than one from
+    years ago, same principle already proven for the main Elo rating.
+
     Real, honest limitation confirmed via live investigation (July
     2026): this reconstruction can miss real matches that are absent
-    from BOTH teams' own /matches fetches (two real May 2026 EWC
-    matches between Karmine Corp and Movistar KOI were confirmed
-    missing from both sides). blend_with_head_to_head_from_api() below
-    uses Cito's own dedicated /h2h endpoint instead, confirmed via live
-    testing to return more complete data (10 real matches vs 4 found
-    here for the same real pair) — that function is now the real,
-    preferred path in the pipeline; this one remains as an honest
-    fallback if that API call fails for a specific pair."""
-    team1_wins, team2_wins, total_series = get_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches)
-    return _blend_elo_with_h2h_rate(elo_prob_team1, team1_wins, total_series, max_weight, weight_per_series)
+    from BOTH teams' own /matches fetches (two real matches between
+    Karmine Corp and Movistar KOI were confirmed missing from both
+    sides — later found to be from a genuinely different, untracked
+    qualifier tournament, not a real gap in this data source itself).
+    blend_with_head_to_head_from_api() below uses Cito's own dedicated
+    /h2h endpoint instead, confirmed via live testing to return more
+    complete data — that function is the real, preferred path in the
+    pipeline; this one remains as an honest fallback if that API call
+    fails for a specific pair."""
+    weighted_team1_wins, weighted_total = get_recency_weighted_head_to_head_record(team1_slug, team2_slug, sorted_completed_matches, reference_date)
+    return _blend_elo_with_h2h_rate(elo_prob_team1, weighted_team1_wins, weighted_total, max_weight, weight_per_series)
 
 
-def blend_with_head_to_head_from_api(elo_prob_team1, h2h_api_response, max_weight=MAX_HEAD_TO_HEAD_WEIGHT, weight_per_series=HEAD_TO_HEAD_WEIGHT_PER_SERIES):
+def blend_with_head_to_head_from_api(elo_prob_team1, h2h_api_response, team1_slug, reference_date=None, max_weight=MAX_HEAD_TO_HEAD_WEIGHT, weight_per_series=HEAD_TO_HEAD_WEIGHT_PER_SERIES):
     """Real, preferred head-to-head blend (July 2026) — uses Cito's own
     dedicated GET /lol/teams/{slug}/h2h/{opponentSlug} endpoint
     (cito_api.get_lol_head_to_head) instead of reconstructing from
@@ -395,19 +445,39 @@ def blend_with_head_to_head_from_api(elo_prob_team1, h2h_api_response, max_weigh
     reconstruction approach for the same real pair) — a real,
     verified improvement, not a guess.
 
+    Real fix (July 2026) — now uses the real 'recentMatches' array
+    (each with a real 'date' and 'winner' slug) to apply the same
+    recency-decay weighting as the reconstruction method, instead of
+    the earlier version which used the aggregate 'matches.total/wins'
+    summary — that summary has NO date information at all, so it could
+    not distinguish a recent head-to-head win from an old one. Found
+    necessary via the same real case that motivated the reconstruction
+    method's fix (an old head-to-head advantage fighting against real,
+    current form). HONEST, NAMED TRADEOFF: recentMatches is confirmed
+    to cap at some real limit (10 in live testing) — this sees
+    whatever recentMatches actually provides, not necessarily every
+    real match counted in the aggregate 'matches.total' figure, but
+    gains real recency-awareness that aggregate figure could never
+    provide.
+
     HONEST, NAMED LIMITATION found via the same live test: even this
-    dedicated endpoint was confirmed MISSING the same two real EWC
-    matches the reconstruction approach was missing — this is a real,
-    genuine gap in Cito's underlying data itself, not something either
-    approach in our own code can work around. Expects
-    h2h_api_response in the real, confirmed shape: {"matches": {
-    "total": int, "wins": int, "losses": int, "winRate": float}, ...}
-    — wins/total are from the perspective of the team passed as the
-    first argument to get_lol_head_to_head()."""
-    matches_data = (h2h_api_response or {}).get("matches") or {}
-    total_series = matches_data.get("total", 0) or 0
-    team1_wins = matches_data.get("wins", 0) or 0
-    return _blend_elo_with_h2h_rate(elo_prob_team1, team1_wins, total_series, max_weight, weight_per_series)
+    dedicated endpoint was confirmed MISSING two real matches between
+    KC and Movistar KOI that the reconstruction approach was also
+    missing — later confirmed to be from a genuinely different,
+    untracked qualifier tournament, not a real gap in this endpoint
+    specifically."""
+    recent_matches = (h2h_api_response or {}).get("recentMatches") or []
+    weighted_team1_wins = 0.0
+    weighted_total = 0.0
+    for match in recent_matches:
+        winner = match.get("winner")
+        if not winner:
+            continue  # a genuinely missing winner — skipped, not guessed at
+        weight = calculate_recency_weight(match.get("date"), reference_date)
+        weighted_total += weight
+        if winner == team1_slug:
+            weighted_team1_wins += weight
+    return _blend_elo_with_h2h_rate(elo_prob_team1, weighted_team1_wins, weighted_total, max_weight, weight_per_series)
 
 
 def combine_and_dedupe_matches(list_of_match_lists):
