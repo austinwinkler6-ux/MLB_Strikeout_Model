@@ -7445,22 +7445,20 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
 # ---- LoL LIVE PROJECTION PIPELINE ----
 def format_lol_match_date(match_date_str):
     """Real, honest formatter for the match_date extracted by
-    polymarket_api — handles both a full ISO timestamp (converts to
-    Eastern time, matching this app's standing convention used
-    everywhere else — see mm_today_str()) and a date-only fallback
-    string (just the date, no time available to convert). Returns a
-    clear 'not yet known' message rather than a blank or malformed
+    polymarket_api. Real fix (July 2026): the source used to also
+    provide direct timestamp fields, so this originally handled both a
+    full ISO timestamp and a date-only fallback — those direct fields
+    were found to be unreliable (real but wrong values) and removed
+    upstream, so this now only ever receives a date-only string
+    ('YYYY-MM-DD'). Simplified to match, rather than leaving dead code
+    for a timestamp format that's no longer actually produced. Returns
+    a clear 'not yet known' message rather than a blank or malformed
     string if genuinely nothing usable was found."""
     if not match_date_str:
-        return "Date/time not available"
+        return "Date not available"
     try:
-        if "T" in match_date_str:
-            dt_utc = datetime.fromisoformat(match_date_str.replace("Z", "+00:00"))
-            dt_eastern = dt_utc.astimezone(ZoneInfo("America/New_York"))
-            return dt_eastern.strftime("%a %b %-d, %-I:%M %p ET")
-        else:
-            dt_date = datetime.strptime(match_date_str, "%Y-%m-%d")
-            return dt_date.strftime("%a %b %-d") + " (time TBD)"
+        dt_date = datetime.strptime(match_date_str, "%Y-%m-%d")
+        return dt_date.strftime("%a %b %-d") + " (exact time not available)"
     except (ValueError, TypeError):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
