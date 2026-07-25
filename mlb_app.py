@@ -3996,13 +3996,32 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
 
 def load_nba_props_data(prop_market):
     """Fetches today's NBA player props for the given market
-    ('player_points' or 'player_assists'). Returns an all_players dict."""
+    ('player_points' or 'player_assists'). Returns an all_players dict.
+
+    Real fix (July 2026) — found via a direct audit after a live-game
+    issue was caught in the new LoL model: NBA was the one sport
+    missing the same real, already-proven live-game filter MLB and all
+    three NFL models already had. Skips any event whose commence_time
+    has already passed — a game already in progress would otherwise
+    keep showing the same pre-game projection, paired against odds
+    that DO shift with the live game state, creating genuinely
+    inconsistent-looking props."""
     try:
         events_data = get_json("https://api.the-odds-api.com/v4/sports/basketball_nba/events",
             params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'})
         all_players = {}
+        now_utc = datetime.now(ZoneInfo("UTC"))
 
         for event in events_data:
+            commence_time_str = event.get('commence_time')
+            if commence_time_str:
+                try:
+                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
+                    if commence_time <= now_utc:
+                        continue  # game has already started — a pre-game projection is stale, not just less accurate
+                except (ValueError, TypeError):
+                    pass  # if the timestamp can't be parsed, don't block the whole event over it
+
             home = event['home_team']
             away = event['away_team']
             event_id = event['id']
