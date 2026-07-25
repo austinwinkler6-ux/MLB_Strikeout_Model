@@ -7712,7 +7712,13 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     # volume (actual real trades that happened) is. A market nobody's
     # genuinely traded yet doesn't have a price that means anything,
     # even if it's not sitting at the 0%/100% extreme the filter above
-    # already catches. MIN_MARKET_VOLUME is a real, conservative first
+    # already catches.
+    #
+    # Real design choice, per direct user feedback: rather than
+    # hiding a low-volume matchup entirely, it stays visible with a
+    # real, proportional EV discount and a visible warning — a $1,900
+    # market barely gets touched, a $200 market gets discounted
+    # heavily. MIN_MARKET_VOLUME is a real, conservative first
     # threshold set well above the confirmed-bad case and well below
     # the confirmed-good one — not finely tuned, and may need real
     # calibration later once more real examples are seen, same as
@@ -7722,8 +7728,8 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         market_volume = float(market.get("volume") or 0)
     except (ValueError, TypeError):
         market_volume = 0
-    if market_volume < MIN_MARKET_VOLUME:
-        return None, {"reason": "low_volume", "team1": m["team1_name"], "team2": m["team2_name"], "market_volume": market_volume, "question": market.get("question")}
+    volume_confidence = min(1.0, market_volume / MIN_MARKET_VOLUME) if MIN_MARKET_VOLUME else 1.0
+    is_low_volume = market_volume < MIN_MARKET_VOLUME
 
     question = (market.get("question") or "").lower()
     best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
@@ -7740,7 +7746,14 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     else:
         rec_side, rec_team_name, rec_model_prob, rec_market_prob = "team2", m["team2_name"], 1 - model_prob_team1, 1 - market_prob_team1
     rec_odds = polymarket_price_to_american_odds(rec_market_prob)
-    ev_pct = calculate_ev_pct(rec_model_prob, rec_odds) if rec_odds else None
+    raw_ev_pct = calculate_ev_pct(rec_model_prob, rec_odds) if rec_odds else None
+    # Real, proportional discount for low real trading volume — a
+    # market nobody's traded doesn't deserve the same trust as one
+    # that's been genuinely tested by real money. Applied to the tier
+    # too (not just displayed alongside it), so a huge raw EV% from an
+    # untraded market doesn't get called "Best Bet" on the strength of
+    # a number that isn't real yet.
+    ev_pct = round(raw_ev_pct * volume_confidence, 2) if raw_ev_pct is not None else None
 
     # Real, honest first-attempt tier thresholds specific to moneyline
     # EV — genuinely different distribution than prop betting EV, not
@@ -7767,6 +7780,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "market_liquidity": market.get("liquidity"),
         "market_volume24hr": market.get("volume24hr"),
         "market_volume": market.get("volume"),
+        "market_volume_numeric": market_volume,
         "team1_name": m["team1_name"], "team2_name": m["team2_name"],
         "team1_slug": m["team1_slug"], "team2_slug": m["team2_slug"],
         "team1_rating": round(ratings.get(m["team1_slug"], 1500), 1),
@@ -7784,7 +7798,10 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "recommended_model_prob": round(rec_model_prob, 3),
         "recommended_market_prob": round(rec_market_prob, 3),
         "recommended_odds": rec_odds,
-        "ev_pct": round(ev_pct, 2) if ev_pct is not None else None,
+        "ev_pct": ev_pct,
+        "raw_ev_pct_before_volume_discount": round(raw_ev_pct, 2) if raw_ev_pct is not None else None,
+        "is_low_volume": is_low_volume,
+        "volume_confidence": round(volume_confidence, 3),
         "mm_tier": mm_tier,
     }
     return result, None
@@ -7856,7 +7873,6 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_illiquid = []
     filtered_bad_price_data = []
     filtered_as_too_far_ahead = []
-    filtered_as_low_volume = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
     for m in resolved_matchups:
         result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map)
@@ -7869,14 +7885,22 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             filtered_bad_price_data.append({k: v for k, v in filter_info.items() if k != "reason"})
         elif filter_info["reason"] == "illiquid":
             filtered_as_illiquid.append({k: v for k, v in filter_info.items() if k != "reason"})
-        elif filter_info["reason"] == "low_volume":
-            filtered_as_low_volume.append({k: v for k, v in filter_info.items() if k != "reason"})
+
+    # Real fix (July 2026, per direct user feedback) — low-volume
+    # matchups are no longer excluded; they stay visible with a real,
+    # proportional EV discount and a warning instead. This reports
+    # which real results got discounted, for visibility, rather than
+    # tracking them as filtered-out (they're not).
+    low_volume_results = [
+        {"team1": r["team1_name"], "team2": r["team2_name"], "raw_ev_pct": r["raw_ev_pct_before_volume_discount"], "discounted_ev_pct": r["ev_pct"], "volume_confidence": r["volume_confidence"]}
+        for r in results if r.get("is_low_volume")
+    ]
 
     debug_info["final_result_count"] = len(results)
     debug_info["filtered_as_illiquid"] = filtered_as_illiquid
     debug_info["filtered_bad_price_data"] = filtered_bad_price_data
     debug_info["filtered_as_too_far_ahead"] = filtered_as_too_far_ahead
-    debug_info["filtered_as_low_volume"] = filtered_as_low_volume
+    debug_info["low_volume_results_discounted_not_filtered"] = low_volume_results
     return {"debug": debug_info, "results": results}
 
 # ---- HOME PAGE ----
@@ -9390,6 +9414,8 @@ elif nav == "🎮 Esports (LoL)":
                         matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
                         if r.get("no_real_data"):
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
+                        if r.get("is_low_volume"):
+                            st.caption(f"⚠️ Low real trading volume on this market (${r.get('market_volume_numeric', 0):,.0f}) — this price hasn't been genuinely tested by much real money yet. EV% shown is already discounted for this (raw, undiscounted EV was {r.get('raw_ev_pct_before_volume_discount')}%).")
 
                         col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns([2.4, 1.2, 1.3, 0.9, 0.9, 0.8, 0.8, 1.3, 1.0])
                         with col1:
