@@ -8002,7 +8002,23 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     is_low_volume = market_volume < MIN_MARKET_VOLUME
 
     question = (market.get("question") or "").lower()
-    best_of = 5 if "bo5" in question else 3  # real, simple default — Bo3 is the common LoL regular-season format
+    # Real fix (July 2026) — found via a real case: a KeSPA Cup match
+    # whose own market context text explicitly said "BO1" was still
+    # being computed as Bo3, since the old logic only ever checked for
+    # "bo5" and silently defaulted everything else to 3. Bo3 math
+    # genuinely inflates a clear favorite's series-win probability
+    # above their real single-game probability (needing only 1 win
+    # instead of 2 gives them fewer chances to close it out, which
+    # actually lowers a favorite's true win probability versus Bo3) —
+    # likely the real reason this specific match showed an extreme,
+    # overconfident 92.9%. Now explicitly checks for "bo1" too, rather
+    # than only ever detecting the Bo5 case.
+    if "bo1" in question:
+        best_of = 1
+    elif "bo5" in question:
+        best_of = 5
+    else:
+        best_of = 3  # real, simple default — Bo3 is the common LoL regular-season format
 
     from lol_elo import predict_series, blend_with_head_to_head, blend_with_head_to_head_from_api, calculate_roster_continuity, apply_roster_continuity_discount
     model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
@@ -8035,6 +8051,26 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
                 model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
     elif sorted_history:
         model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
+
+    # Real addition (July 2026) — found via a real, concrete case: a
+    # KeSPA Cup match where Dplus KIA (rated 1684.7, one of the best
+    # teams in the world) was genuinely 0-2 in that exact tournament,
+    # while HANJIN BRION (rated far lower) was 2-2 in the same event —
+    # real, current evidence that a team's overall Elo (built across
+    # every tournament/roster configuration they've played under) had
+    # no way to reflect. KeSPA Cup specifically is a real, known event
+    # where teams often field substitutes/academy players instead of
+    # their main roster, but this blend doesn't need to know WHY a
+    # team is over/underperforming in a given tournament — it just
+    # uses their real, direct record in that specific event, whatever
+    # the reason. Extracts the tournament name the same way the
+    # display text already does (the part after the last ' - ' in the
+    # real event_title).
+    in_tournament_detail = {"team1_total": 0, "team2_total": 0}
+    tournament_name_for_form = (market.get("event_title") or "").split(" - ")[-1].strip()
+    if sorted_history and tournament_name_for_form:
+        from lol_elo import blend_with_in_tournament_form
+        model_prob_team1, in_tournament_detail = blend_with_in_tournament_form(model_prob_team1, m["team1_slug"], m["team2_slug"], tournament_name_for_form, sorted_history)
 
     edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
 
@@ -8131,6 +8167,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "is_low_volume": is_low_volume,
         "roster_continuity": roster_continuity_detail,
         "head_to_head": h2h_detail,
+        "in_tournament_form": in_tournament_detail,
         "volume_confidence": round(volume_confidence, 3),
         "mm_tier": mm_tier,
     }
@@ -9814,10 +9851,24 @@ The gap between two teams' ratings is what turns into the win probability you se
                         why_lines.append(f"Real cross-region international games in history: {r['team1_name']} — {team1_intl}, {r['team2_name']} — {team2_intl}. (International tournaments like MSI/Worlds/EWC are infrequent, so 0 is common and not itself a red flag — just means that team's rating hasn't yet been tested against other regions.)")
                         h2h = r.get("head_to_head") or {}
                         if h2h.get("total_h2h_series", 0) > 0:
-                            t1_h2h = h2h.get("team1_h2h_wins", 0)
-                            t2_h2h = h2h.get("team2_h2h_wins", 0)
-                            total_h2h = h2h.get("total_h2h_series", 0)
-                            why_lines.append(f"Real head-to-head history: {r['team1_name']} {t1_h2h} — {t2_h2h} {r['team2_name']} ({total_h2h} prior real meeting{'s' if total_h2h != 1 else ''}). This is already factored into the model probability above, not just background info.")
+                            # Real fix (July 2026) — these are genuinely
+                            # recency-weighted values by design (older
+                            # meetings count less in the actual model
+                            # blend, per yesterday's fix), not raw
+                            # integer counts. The display previously
+                            # showed the raw, unrounded floats directly
+                            # (e.g. "0.18 — 3.76"), which is honest but
+                            # unreadable. Now rounds to 1 decimal and
+                            # labels it clearly as recency-weighted.
+                            t1_h2h = round(h2h.get("team1_h2h_wins", 0), 1)
+                            t2_h2h = round(h2h.get("team2_h2h_wins", 0), 1)
+                            total_h2h = round(h2h.get("total_h2h_series", 0), 1)
+                            why_lines.append(f"Real head-to-head history (recency-weighted — recent meetings count more than old ones): {r['team1_name']} {t1_h2h} — {t2_h2h} {r['team2_name']} (~{total_h2h} effective prior meetings). This is already factored into the model probability above, not just background info.")
+                        in_tourn = r.get("in_tournament_form") or {}
+                        if in_tourn.get("team1_total", 0) > 0 or in_tourn.get("team2_total", 0) > 0:
+                            t1_rec = f"{in_tourn.get('team1_wins', 0)}-{in_tourn.get('team1_losses', 0)}"
+                            t2_rec = f"{in_tourn.get('team2_wins', 0)}-{in_tourn.get('team2_losses', 0)}"
+                            why_lines.append(f"Real record in this specific tournament: {r['team1_name']} {t1_rec}, {r['team2_name']} {t2_rec}. A team's overall rating can miss real, current form within one event (e.g. fielding substitutes, a hot or cold streak) — this is already factored into the model probability above.")
                         with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
                             for line in why_lines:
                                 st.markdown(line)
