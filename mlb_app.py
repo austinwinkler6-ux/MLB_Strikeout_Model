@@ -2239,6 +2239,9 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'lineup_factor': round(lineup_k_pct, 3) if lineup_k_pct else None,
             'ip_cv': ip_cv, 'workload_tier': workload_tier,
             'recent_5ip_starts_count': recent_5ip_starts_count,
+            'last10_avg_ip': last10_avg_ip,
+            'season_ip_looks_stale': season_ip_looks_stale,
+            'ip_season_w': ip_season_w, 'ip_last10_w': ip_last10_w, 'ip_last5_w': ip_last5_w,
         }
     except Exception as e:
         return None
@@ -8630,6 +8633,25 @@ elif nav == "⚾ MLB Models":
                     with st.expander(f"💡 Why this bet? — {pitcher}"):
                         for line in why_lines:
                             st.markdown(line)
+                        st.markdown("---")
+                        st.caption("🔧 Debug — real, raw intermediate values used in this calculation:")
+                        st.json({
+                            "season_avg_ip": result.get("season_avg_ip"),
+                            "last10_avg_ip": result.get("last10_avg_ip"),
+                            "last5_avg_ip": result.get("last5_avg_ip"),
+                            "recent_5ip_starts_count": result.get("recent_5ip_starts_count"),
+                            "season_ip_looks_stale": result.get("season_ip_looks_stale"),
+                            "ip_season_w": result.get("ip_season_w"),
+                            "ip_last10_w": result.get("ip_last10_w"),
+                            "ip_last5_w": result.get("ip_last5_w"),
+                            "pitch_count_factor (pitch_based_ip)": result.get("pitch_count_factor"),
+                            "expected_innings (final)": result.get("expected_innings"),
+                            "expected_pitch_count": result.get("expected_pitch_count"),
+                            "last3_pitches": result.get("last3_pitches"),
+                            "season_avg_pitches": result.get("season_avg_pitches"),
+                            "workload_tier": result.get("workload_tier"),
+                            "ip_cv": result.get("ip_cv"),
+                        })
                         if ANTHROPIC_API_KEY:
                             if st.button("🧠 Generate Model Insight", key=f"insight_btn_{pitcher}"):
                                 with st.spinner("🧠 Generating model insight..."):
