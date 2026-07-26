@@ -612,7 +612,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 workload_note = f" — expected **{expected_minutes} MIN**"
             else:
                 workload_note = ""
-            lines.append(f"{icon} Role Stability: **{workload_tier}**{workload_note}")
+            lines.append(f"{icon} Usage Workload: **{workload_tier}**{workload_note}")
 
         evidence_line = workload_evidence_line(result)
         if evidence_line:
@@ -2009,11 +2009,31 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         last10_k_pct = round(df['strikeouts'].head(10).sum() / df['batters_faced'].head(10).sum(), 3)
         recent_strike_pct = round(df['strike_pct'].head(5).mean(), 3)
 
+        # Real fix (July 2026) — moved earlier (was previously computed
+        # further down) so it's available here too. See the full
+        # explanation where it's used below in the IP-weighting logic.
+        last5_ip_values = df['innings'].head(5)
+        recent_5ip_starts_count = int((last5_ip_values >= 5.0).sum())
+
         last10_ip = df['innings'].head(10)
         last10_ip_std = round(last10_ip.std(), 2) if len(last10_ip) > 1 else 0.0
         ip_cv = round(last10_ip_std / last10_avg_ip, 3) if last10_avg_ip > 0 else 1.0
 
-        if ip_cv < 0.20:
+        # Real fix (July 2026) — found via the same real Avila case.
+        # ip_cv measures variance across the last 10 starts, but for a
+        # pitcher with a genuine, settled role change (reliever ->
+        # starter), those 10 starts mix two real, different roles
+        # together — producing a misleadingly high "volatile" reading
+        # even when his recent pattern (last 5 starts) is actually
+        # clear and stable. A strong recent_5ip_starts_count is real,
+        # direct evidence the role has settled, so it overrides the
+        # backward-looking ip_cv reading rather than being contradicted
+        # by it — the two were confusingly disagreeing with each other
+        # before this fix (e.g. showing both "🔴 Highly Volatile Usage"
+        # and a stable-looking recent IP figure side by side).
+        if recent_5ip_starts_count >= 4:
+            workload_tier = "🟢 Stable Starter (Recently Settled)"
+        elif ip_cv < 0.20:
             workload_tier = "🟢 Stable Starter"
         elif ip_cv < 0.35:
             workload_tier = "🟡 Recently Changing Workload"
@@ -2028,30 +2048,6 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         if cv < 0.35: confidence_tier = "🟢 Reliable"
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
-
-        # Real fix (July 2026) — found via two independent real cases.
-        # The old logic counted an UNBROKEN streak of 5+ IP starts
-        # starting from the most recent game, breaking entirely the
-        # instant it hit one start under 5 IP. This meant a single
-        # fluke start — in either direction — could completely erase
-        # a real, otherwise-consistent pattern:
-        #   - Framber Valdez: 8+ consecutive 5+ IP starts, then one bad
-        #     outing (0.2 IP, got hit around) reset the streak to 0,
-        #     dragging his projection down to 2.3 IP despite being a
-        #     clear, established workhorse who just had one rough game.
-        #   - Luinder Avila: last 5 starts were 6.1/5/5/4/5 IP — a
-        #     real, consistent starter workload — but the single 4-IP
-        #     start (itself not even that short) still broke the
-        #     streak logic's confidence in his role.
-        # Now counts how many of the last 5 starts were 5+ IP,
-        # regardless of whether they're an unbroken streak — resilient
-        # to exactly one fluke (short OR long) sitting anywhere in the
-        # window, while still requiring a real, genuine pattern (not
-        # just one or two good starts) before trusting it. Computed
-        # here (moved earlier) so the pitch-count logic below can also
-        # use it — see the real, second fix immediately below.
-        last5_ip_values = df['innings'].head(5)
-        recent_5ip_starts_count = int((last5_ip_values >= 5.0).sum())
 
         last3_pitches = round(df['pitches'].head(3).mean(), 1)
         last10_pitches = round(df['pitches'].head(10).mean(), 1)
