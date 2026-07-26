@@ -2057,7 +2057,27 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         last10_pitches = round(df['pitches'].head(10).mean(), 1)
         season_avg_pitches = round(df['pitches'].mean(), 1)
         career_high_pitches = df['pitches'].max()
-        pitches_per_inning = round(df['pitches_per_inning'].head(10).mean(), 2)
+        # Real, final fix (July 2026) — found via live debugging with
+        # real, exact intermediate values. The old calculation averaged
+        # each game's own per-game pitches/innings RATIO — statistically
+        # wrong, since a single game with a tiny IP denominator (e.g. a
+        # brief early-season relief outing, 10 pitches over 0.1 IP)
+        # produces an absurd per-game rate (100 pitches/inning) that
+        # then dominates a simple average across 10 games. Confirmed
+        # via live debug output: this was producing ~40 pitches/inning
+        # for a real pitcher (normal range is ~15-17), which meant
+        # dividing his real, correctly-blended expected pitch count by
+        # this inflated rate produced an absurdly low innings estimate
+        # — the actual reason the projection stayed capped at 1.97 IP
+        # even after both earlier fixes correctly raised the blended
+        # IP estimate to a real ~4.7. Now computes a real, robust total-
+        # pitches-over-total-innings rate, which weights each game's
+        # contribution by how many real innings it represents, instead
+        # of treating a 0.1-inning outing as equally informative as a
+        # normal 6-inning start.
+        last10_pitches_sum = df['pitches'].head(10).sum()
+        last10_innings_sum = df['innings'].head(10).sum()
+        pitches_per_inning = round(last10_pitches_sum / last10_innings_sum, 2) if last10_innings_sum > 0 else 17.0
 
         if use_pitch_count:
             expected_pitch_count = round((season_avg_pitches * 0.30) + (last10_pitches * 0.30) + (last3_pitches * 0.40), 1)
