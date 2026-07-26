@@ -4318,11 +4318,20 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
     return results
 
 def run_todays_card_auto_run(minimal_ui=False):
-    """Loads and runs today's MLB + NBA models if not already done this session.
-    minimal_ui=False (Today's Card): shows the detailed technical checklist.
-    minimal_ui=True (Home): shows polished, on-brand copy instead — a first-time
-    visitor landing on the homepage shouldn't see raw step names like "Loading
-    NBA assists props," that reads like an unfinished dev tool, not a product."""
+    """Loads and runs every model in the app if not already done this
+    session — MLB, both NBA prop types, all three NFL prop types, and
+    LoL. minimal_ui=False (Today's Card): shows the detailed technical
+    checklist. minimal_ui=True (Home): shows polished, on-brand copy
+    instead — a first-time visitor landing on the homepage shouldn't
+    see raw step names like "Loading NBA assists props," that reads
+    like an unfinished dev tool, not a product.
+
+    Real fix (July 2026) — originally only auto-ran MLB + NBA, even
+    though NFL and LoL were both real, working models elsewhere in the
+    app. Today's Card silently never showed them unless the user
+    happened to separately visit those pages and run them manually
+    first. Now covers every model, using the same real functions/
+    session-state keys each model's own page already uses."""
     if st.session_state.get('today_card_auto_ran'):
         return
 
@@ -4330,6 +4339,10 @@ def run_todays_card_auto_run(minimal_ui=False):
         "Loading MLB props", "Running MLB projections",
         "Loading NBA points props", "Running NBA points projections",
         "Loading NBA assists props", "Running NBA assists projections",
+        "Loading NFL attempts props", "Running NFL attempts projections",
+        "Loading NFL completions props", "Running NFL completions projections",
+        "Loading NFL receptions props", "Running NFL receptions projections",
+        "Loading LoL matchups", "Running LoL projections",
     ]
     status_box = st.empty()
     completed = []
@@ -4410,6 +4423,54 @@ def run_todays_card_auto_run(minimal_ui=False):
             completed.append("Running NBA assists projections")
     else:
         completed.extend(["Loading NBA assists props", "Running NBA assists projections"])
+
+    # Real addition (July 2026) — all three NFL models, same real
+    # load_fn/run_all_fn functions and session-state keys each model's
+    # own page (run_nfl_display) already uses, just triggered here too.
+    nfl_season = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
+    nfl_models = [
+        ('all_qbs', 'nfl_attempts', load_nfl_props_data, run_all_nfl_projections,
+         "Loading NFL attempts props", "Running NFL attempts projections"),
+        ('all_qbs_completions', 'nfl_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections,
+         "Loading NFL completions props", "Running NFL completions projections"),
+        ('all_receivers', 'nfl_receptions', load_nfl_receptions_props_data, run_all_nfl_receptions_projections,
+         "Loading NFL receptions props", "Running NFL receptions projections"),
+    ]
+    for all_players_key, session_key, load_fn, run_all_fn, load_step, run_step in nfl_models:
+        if all_players_key not in st.session_state:
+            render(load_step)
+            nfl_props = load_fn()
+            completed.append(load_step)
+            if nfl_props:
+                render(run_step)
+                nfl_results = run_all_fn(nfl_props, nfl_season)
+                completed.append(run_step)
+                st.session_state[all_players_key] = nfl_props
+                st.session_state[f'{session_key}_results'] = nfl_results
+                st.session_state[f'{session_key}_season'] = nfl_season
+                st.session_state.setdefault(f'manual_run_order_{session_key}', {})
+                st.session_state.setdefault(f'manual_run_counter_{session_key}', 0)
+            else:
+                completed.append(run_step)
+        else:
+            completed.extend([load_step, run_step])
+
+    # Real addition (July 2026) — LoL, structured differently from the
+    # other models (one real, all-in-one call rather than a separate
+    # load-then-run step), same real function/session-state key its
+    # own page already uses.
+    if 'lol_pipeline_output' not in st.session_state:
+        if "CITO_API_KEY" in st.secrets:
+            render("Loading LoL matchups")
+            completed.append("Loading LoL matchups")
+            render("Running LoL projections")
+            lol_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
+            st.session_state['lol_pipeline_output'] = lol_output
+            completed.append("Running LoL projections")
+        else:
+            completed.extend(["Loading LoL matchups", "Running LoL projections"])
+    else:
+        completed.extend(["Loading LoL matchups", "Running LoL projections"])
 
     status_box.empty()
 
@@ -8415,7 +8476,7 @@ if nav == "🏠 Home":
 # ---- TODAY'S CARD (Decision Engine) ----
 elif nav == "🎯 Today's Card":
     st.title("🎯 Today's Card")
-    st.caption("Ranked, not listed. Loads and runs today's MLB + NBA models automatically.")
+    st.caption("Ranked, not listed. Loads and runs every model automatically — MLB, NBA, NFL, and LoL.")
 
     run_todays_card_auto_run(minimal_ui=True)
 
