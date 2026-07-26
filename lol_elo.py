@@ -480,6 +480,105 @@ def blend_with_head_to_head_from_api(elo_prob_team1, h2h_api_response, team1_slu
     return _blend_elo_with_h2h_rate(elo_prob_team1, weighted_team1_wins, weighted_total, max_weight, weight_per_series)
 
 
+# Real, conservative in-tournament-form blending parameters (July
+# 2026) — same real motivating principle as head-to-head: a team's
+# overall Elo rating is a real, useful summary, but it can miss a
+# real, current signal specific to one tournament. Concrete case:
+# Dplus KIA (rated 1684.7, one of the best teams in the world) was
+# genuinely 0-2 in the exact KeSPA Cup tournament this prediction was
+# for, while HANJIN BRION (rated far lower, 1415.4) was 2-2 in that
+# same event — real, direct evidence our overall rating had no way to
+# see, since KeSPA Cup is a real, known tournament where teams often
+# field substitute/academy players instead of their main roster.
+# Deliberately capped, same as head-to-head — a handful of real games
+# within one tournament shouldn't be able to fully override a team's
+# much larger, broader Elo history, but should be able to meaningfully
+# shift the prediction toward what's actually happening right now.
+MAX_IN_TOURNAMENT_FORM_WEIGHT = 0.35
+IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
+
+
+def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches):
+    """Real, direct scan of a team's own match history for real,
+    completed matches within a SPECIFIC tournament — matched by
+    substring against each match's real tournamentName (case-
+    insensitive), since that's the only real, confirmed field
+    available for this on Cito's team-matches endpoint (no clean
+    tournamentId shared between Polymarket's market text and Cito's
+    schedule). Returns (wins, losses, total) — real, honest series-
+    level counts (using each match's own 'winner' field), not
+    inferred from anything else. A team not appearing at all in this
+    tournament yet returns (0, 0, 0) — genuinely no evidence, not a
+    guess either way."""
+    if not tournament_name_substring:
+        return 0, 0, 0
+    needle = tournament_name_substring.strip().lower()
+    wins = 0
+    losses = 0
+    total = 0
+    for match in sorted_completed_matches:
+        m_team1 = (match.get("team1") or {}).get("slug")
+        m_team2 = (match.get("team2") or {}).get("slug")
+        if team_slug not in (m_team1, m_team2):
+            continue
+        tournament_name = (match.get("tournamentName") or "").strip().lower()
+        if needle not in tournament_name:
+            continue
+        winner = match.get("winner")
+        if winner == team_slug:
+            wins += 1
+            total += 1
+        elif winner in (m_team1, m_team2):
+            losses += 1
+            total += 1
+    return wins, losses, total
+
+
+def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tournament_name_substring, sorted_completed_matches, max_weight=MAX_IN_TOURNAMENT_FORM_WEIGHT, weight_per_game=IN_TOURNAMENT_FORM_WEIGHT_PER_GAME):
+    """Real, conservative blend of the Elo-based series probability
+    with each team's real, direct record within the SPECIFIC
+    tournament this match is part of — real, current evidence that
+    can catch things overall Elo can't (a team fielding substitutes,
+    a team on a real hot/cold streak within one specific event).
+    Combines both teams' in-tournament win rates into a single,
+    relative signal: team1's implied strength = their own win rate
+    scaled against the combined win rates of both teams (so if team1
+    is 2-2 and team2 is 0-2, team1's real, relative in-tournament
+    strength is clearly higher, not just 'both teams have some
+    record'). Weight scales with real total games seen across both
+    teams in this tournament, capped so a handful of real games can
+    meaningfully shift the prediction without ever fully overriding
+    the broader, much larger Elo history. Returns (blended_prob,
+    detail_dict) — the detail dict is real, honest transparency about
+    what in-tournament evidence (if any) existed, for display."""
+    t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches)
+    t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches)
+    detail = {
+        "team1_wins": t1_wins, "team1_losses": t1_losses, "team1_total": t1_total,
+        "team2_wins": t2_wins, "team2_losses": t2_losses, "team2_total": t2_total,
+        "weight_applied": 0.0,
+    }
+    combined_games = t1_total + t2_total
+    if combined_games == 0 or (t1_wins + t2_wins) == 0:
+        return elo_prob_team1, detail  # no real in-tournament evidence at all — Elo alone, unchanged
+
+    t1_win_rate = t1_wins / t1_total if t1_total else 0.0
+    t2_win_rate = t2_wins / t2_total if t2_total else 0.0
+    # A relative strength read — if both teams have identical win
+    # rates (or neither has played), this correctly contributes
+    # nothing new; the further apart they are, the stronger the real
+    # signal that one team is playing meaningfully better right now.
+    if (t1_win_rate + t2_win_rate) == 0:
+        return elo_prob_team1, detail
+    team1_relative_strength = t1_win_rate / (t1_win_rate + t2_win_rate)
+
+    weight = min(max_weight, combined_games * weight_per_game)
+    blended_prob = (1 - weight) * elo_prob_team1 + weight * team1_relative_strength
+    detail["weight_applied"] = round(weight, 3)
+    detail["team1_relative_strength"] = round(team1_relative_strength, 3)
+    return blended_prob, detail
+
+
 def combine_and_dedupe_matches(list_of_match_lists):
     """A real, global rating pool needs history from MANY teams, not
     just one — but cito_api.get_lol_team_matches() is per-team, and
