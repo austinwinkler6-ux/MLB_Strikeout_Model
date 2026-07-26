@@ -2029,28 +2029,6 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         elif cv < 0.50: confidence_tier = "🟠 Volatile"
         else: confidence_tier = "🔴 Uncertain Workload"
 
-        last3_pitches = round(df['pitches'].head(3).mean(), 1)
-        last10_pitches = round(df['pitches'].head(10).mean(), 1)
-        season_avg_pitches = round(df['pitches'].mean(), 1)
-        career_high_pitches = df['pitches'].max()
-        pitches_per_inning = round(df['pitches_per_inning'].head(10).mean(), 2)
-
-        if use_pitch_count:
-            expected_pitch_count = round((season_avg_pitches * 0.30) + (last10_pitches * 0.30) + (last3_pitches * 0.40), 1)
-            if last3_pitches < season_avg_pitches * 0.80:
-                expected_pitch_count = min(expected_pitch_count, last3_pitches * 1.05)
-            elif last3_pitches > season_avg_pitches * 1.10:
-                expected_pitch_count = min(expected_pitch_count * 1.05, career_high_pitches)
-            elif len(df) > 0 and df['pitches'].iloc[0] > season_avg_pitches * 1.15:
-                expected_pitch_count = min(expected_pitch_count, season_avg_pitches)
-            pitch_based_ip = round(expected_pitch_count / pitches_per_inning, 2)
-        else:
-            expected_pitch_count = season_avg_pitches
-            pitch_based_ip = season_avg_ip
-
-        pitcher_skill = round((season_k_pct * 0.70) + (last10_k_pct * 0.15) + (last5_k_pct * 0.15), 3)
-        last3_starter = (last3_avg_ip >= 4.8) or (sum(df['innings'].head(3) >= 5.0) >= 2)
-
         # Real fix (July 2026) — found via two independent real cases.
         # The old logic counted an UNBROKEN streak of 5+ IP starts
         # starting from the most recent game, breaking entirely the
@@ -2069,9 +2047,44 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         # regardless of whether they're an unbroken streak — resilient
         # to exactly one fluke (short OR long) sitting anywhere in the
         # window, while still requiring a real, genuine pattern (not
-        # just one or two good starts) before trusting it.
+        # just one or two good starts) before trusting it. Computed
+        # here (moved earlier) so the pitch-count logic below can also
+        # use it — see the real, second fix immediately below.
         last5_ip_values = df['innings'].head(5)
         recent_5ip_starts_count = int((last5_ip_values >= 5.0).sum())
+
+        last3_pitches = round(df['pitches'].head(3).mean(), 1)
+        last10_pitches = round(df['pitches'].head(10).mean(), 1)
+        season_avg_pitches = round(df['pitches'].mean(), 1)
+        career_high_pitches = df['pitches'].max()
+        pitches_per_inning = round(df['pitches_per_inning'].head(10).mean(), 2)
+
+        if use_pitch_count:
+            expected_pitch_count = round((season_avg_pitches * 0.30) + (last10_pitches * 0.30) + (last3_pitches * 0.40), 1)
+            # Real fix (July 2026) — this downward cap used to fire
+            # purely off last3_pitches (just 3 starts), so the SAME
+            # single fluke outing that broke the old IP-streak logic
+            # (e.g. Valdez's 0.2 IP outing) would also drag last3_pitches
+            # down and cap the projection here too — via the min() below,
+            # this was still clamping the final number down even after
+            # the IP-weighting fix above, which is why that fix alone
+            # didn't visibly change anything. Now skipped when there's
+            # already strong, real evidence (recent_5ip_starts_count >= 4)
+            # of an established starter role — a fluke shouldn't cap a
+            # projection we already have real reason to trust.
+            if last3_pitches < season_avg_pitches * 0.80 and recent_5ip_starts_count < 4:
+                expected_pitch_count = min(expected_pitch_count, last3_pitches * 1.05)
+            elif last3_pitches > season_avg_pitches * 1.10:
+                expected_pitch_count = min(expected_pitch_count * 1.05, career_high_pitches)
+            elif len(df) > 0 and df['pitches'].iloc[0] > season_avg_pitches * 1.15:
+                expected_pitch_count = min(expected_pitch_count, season_avg_pitches)
+            pitch_based_ip = round(expected_pitch_count / pitches_per_inning, 2)
+        else:
+            expected_pitch_count = season_avg_pitches
+            pitch_based_ip = season_avg_ip
+
+        pitcher_skill = round((season_k_pct * 0.70) + (last10_k_pct * 0.15) + (last5_k_pct * 0.15), 3)
+        last3_starter = (last3_avg_ip >= 4.8) or (sum(df['innings'].head(3) >= 5.0) >= 2)
 
         if recent_5ip_starts_count >= 4:
             # Strong, consistent recent starter role (allows for exactly one real fluke)
