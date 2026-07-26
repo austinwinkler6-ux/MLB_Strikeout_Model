@@ -1733,9 +1733,17 @@ def get_published_model_performance(sport_key):
 
 def cached_run_projection(pitcher_name, opponent_team, home_team, season, cache_date_str):
     """Shared-cache wrapper around run_projection(). Reuses a cached result unless
-    it's a provisional (pre-lineup) MLB entry old enough to be worth re-checking."""
+    it's a provisional (pre-lineup) MLB entry old enough to be worth re-checking,
+    OR it was computed by an older version of the model logic (see
+    MLB_PROJECTION_MODEL_VERSION) — a real fix (July 2026) for a real problem:
+    without this, a genuine fix to the calculation itself had zero visible effect
+    on any pitcher already cached for today, and only a manual, per-pitcher
+    force-refresh worked. Now any real model-logic change automatically
+    invalidates every stale cached entry, with no manual intervention needed."""
     cached = get_cached_projection(cache_date_str, 'MLB', pitcher_name)
-    if cached and not _cache_is_stale_provisional(cached):
+    cached_version = (cached.get('projection_data') or {}).get('_model_version') if cached else None
+    is_stale_model_version = cached is not None and cached_version != MLB_PROJECTION_MODEL_VERSION
+    if cached and not _cache_is_stale_provisional(cached) and not is_stale_model_version:
         return cached['projection_data']
 
     result = run_projection(pitcher_name, opponent_team, home_team, season)
@@ -1955,6 +1963,31 @@ def get_actual_strikeouts(game_pk, pitcher_name):
 
 
 # ---- MLB PROJECTION ENGINE ----
+# Real fix (July 2026) — a real, general solution to a real problem
+# found today: the shared cache (daily_cache table) has no way to know
+# when the underlying MODEL LOGIC itself changes, only when a given
+# pitcher/day combination was last computed. This meant real fixes to
+# run_projection() (the streak-counting fix, the stale-season-baseline
+# fix, the pitches-per-inning fix) had zero visible effect on any
+# pitcher who already had a cached entry for today — every "Run All
+# Projections" click just kept reusing the old, pre-fix result, and
+# only a manual, per-pitcher "▶️ Run" click forced a fresh recompute.
+# That's not a sustainable fix — it shouldn't require manually
+# re-running every single prop after a real model change.
+#
+# MLB_PROJECTION_MODEL_VERSION is tagged onto every real result run_
+# projection() produces (see the '_model_version' key near the end of
+# the function). cached_run_projection() below now checks this tag
+# against the CURRENT version before trusting a cached entry — any
+# cached entry from an older model version (including every existing
+# entry today, which has no tag at all) is automatically treated as
+# stale and recomputed fresh, with no manual intervention needed.
+# Bump this string any time a real, meaningful change is made to the
+# actual calculation logic inside run_projection() — a cosmetic/
+# display-only change doesn't need a bump, but anything that changes
+# what number gets computed does.
+MLB_PROJECTION_MODEL_VERSION = "2026-07-26-v3-workload-fixes"
+
 def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1.0, before_date=None,
                    use_umpire=True, use_park=True, use_lineup=True, use_pitch_count=True, use_total=True):
     try:
@@ -2258,6 +2291,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'last10_avg_ip': last10_avg_ip,
             'season_ip_looks_stale': season_ip_looks_stale,
             'ip_season_w': ip_season_w, 'ip_last10_w': ip_last10_w, 'ip_last5_w': ip_last5_w,
+            '_model_version': MLB_PROJECTION_MODEL_VERSION,
         }
     except Exception as e:
         import traceback
