@@ -549,22 +549,33 @@ def calculate_roster_continuity(roster_history_response, reference_date=None, lo
     Elo rating still built entirely from games played before that
     roster change.
 
-    Real bug found and fixed (July 2026, via live testing against the
-    full real RED Canids dataset): an earlier version naively counted
-    every roster entry with status=='current', but the SAME real
-    player can have multiple entries labeled 'current' representing
-    different, non-overlapping historical stints — Cito's data doesn't
-    always mark an earlier stint 'former' when a newer one begins for
-    the same player (confirmed real example: Kaze has one 'current'
-    entry from Feb 1, and a SEPARATE 'former' entry for March 8-July
-    15 — the same real player, counted as if they were still on the
-    roster from the stale, superseded entry). This inflated a real
-    roster count from 5 real current players to 15 counted rows. Now
-    groups every entry by real lolPlayerId first, and uses ONLY each
-    player's single most recent stint (by joinDate) to determine
-    whether they're truly current — a stale, superseded 'current' row
-    for a player whose real most recent stint is 'former' no longer
-    counts.
+    Real bugs found and fixed via live testing against the FULL, exact
+    real RED Canids dataset (28 real entries, July 2026) — two
+    separate, genuine data-quality issues, not one:
+
+    1. SAME-JOINDATE TIES: the same real player (confirmed example:
+       'cadu') can have two entries with the IDENTICAL joinDate, one
+       'current' and one 'former' with a real leaveDate — picking
+       "most recent by joinDate" alone has no way to break this tie
+       and arbitrarily kept whichever entry appeared first in the
+       list. Fixed by preferring the entry with a leaveDate as the
+       tiebreaker — a 'former' record with an explicit leaveDate is
+       more informative than a stale 'current' one from the exact same
+       date.
+
+    2. MISSING 'FORMER' RECORDS ENTIRELY: a deeper, real gap — some
+       players (confirmed real examples: Fuuu, frosty, zynts, STEPZ)
+       remain marked 'current' with NO corresponding 'former' entry
+       ever created for them at all, even though a newer player
+       clearly replaced them (each of these four shares an exact ROLE
+       with a newer, July 15-joined player: Fuuu/MID overlaps Nukenin,
+       frosty/SUPPORT overlaps Manel, zynts/TOP overlaps jmz, STEPZ/
+       JUNGLE overlaps smooth). Status alone cannot catch this since
+       there's genuinely no 'former' record to signal it. Fixed using
+       ROLE as an additional real signal: when multiple players are
+       all marked 'current' for the exact same role, only the one with
+       the latest joinDate is treated as genuinely current — the
+       others are stale, superseded entries Cito never marked as such.
 
     Uses a real, set-based comparison of which currently-active real
     players were ALSO active lookback_days ago. A continuity of 1.0
@@ -592,9 +603,16 @@ def calculate_roster_continuity(roster_history_response, reference_date=None, lo
         except (ValueError, TypeError):
             return None
 
-    # Real fix: group every entry by real player ID first, so we can
-    # find each player's single most recent stint rather than treating
-    # every 'current'-labeled row as a separate, real roster slot.
+    def _sort_key(entry):
+        # Real fix #1: when joinDates tie, prefer the entry WITH a
+        # leaveDate (a 'former' record) — it's more informative than a
+        # stale 'current' entry from the exact same date.
+        join_date = _parse_date(entry.get("joinDate")) or datetime.min.replace(tzinfo=timezone.utc)
+        has_leave_date = 1 if entry.get("leaveDate") else 0
+        return (join_date, has_leave_date)
+
+    # Group every entry by real player ID, find each player's single
+    # most recent stint (with the same-date tiebreak above).
     entries_by_player = {}
     for entry in roster_entries:
         if not isinstance(entry, dict):
@@ -604,14 +622,30 @@ def calculate_roster_continuity(roster_history_response, reference_date=None, lo
             continue
         entries_by_player.setdefault(player_id, []).append(entry)
 
+    most_recent_stint_by_player = {
+        player_id: max(entries, key=_sort_key)
+        for player_id, entries in entries_by_player.items()
+    }
+
+    # Real fix #2: among players whose most recent stint says
+    # 'current', group by role — only the latest joinDate per role is
+    # genuinely current; any other 'current'-labeled player sharing
+    # that same role is a stale entry Cito never marked 'former'.
+    current_by_role = {}
+    for player_id, entry in most_recent_stint_by_player.items():
+        if entry.get("status") == "current" and entry.get("isActive"):
+            role = entry.get("role")
+            current_by_role.setdefault(role, []).append((player_id, entry))
+
     current_ids = set()
-    most_recent_stint_by_player = {}
-    for player_id, entries in entries_by_player.items():
-        # The real, single most recent stint for this player, by join date
-        most_recent = max(entries, key=lambda e: _parse_date(e.get("joinDate")) or datetime.min.replace(tzinfo=timezone.utc))
-        most_recent_stint_by_player[player_id] = most_recent
-        if most_recent.get("status") == "current" and most_recent.get("isActive"):
-            current_ids.add(player_id)
+    for role, players in current_by_role.items():
+        if role is None:
+            # No real role info to disambiguate with — keep all
+            # (a real, honest limitation, not a guess).
+            current_ids.update(player_id for player_id, _ in players)
+            continue
+        latest_for_role = max(players, key=lambda p: _parse_date(p[1].get("joinDate")) or datetime.min.replace(tzinfo=timezone.utc))
+        current_ids.add(latest_for_role[0])
 
     if not current_ids:
         return {"continuity_pct": 1.0, "current_roster_size": 0, "retained_from_lookback": 0, "new_since_lookback": 0}
