@@ -9865,10 +9865,23 @@ The gap between two teams' ratings is what turns into the win probability you se
                             total_h2h = round(h2h.get("total_h2h_series", 0), 1)
                             why_lines.append(f"Real head-to-head history (recency-weighted — recent meetings count more than old ones): {r['team1_name']} {t1_h2h} — {t2_h2h} {r['team2_name']} (~{total_h2h} effective prior meetings). This is already factored into the model probability above, not just background info.")
                         in_tourn = r.get("in_tournament_form") or {}
+                        combined_tournament_games = in_tourn.get("team1_total", 0) + in_tourn.get("team2_total", 0)
                         if in_tourn.get("team1_total", 0) > 0 or in_tourn.get("team2_total", 0) > 0:
                             t1_rec = f"{in_tourn.get('team1_wins', 0)}-{in_tourn.get('team1_losses', 0)}"
                             t2_rec = f"{in_tourn.get('team2_wins', 0)}-{in_tourn.get('team2_losses', 0)}"
                             why_lines.append(f"Real record in this specific tournament: {r['team1_name']} {t1_rec}, {r['team2_name']} {t2_rec}. A team's overall rating can miss real, current form within one event (e.g. fielding substitutes, a hot or cold streak) — this is already factored into the model probability above.")
+                        # Real addition (July 2026) — reuses the same
+                        # in-tournament data already computed above, no
+                        # new fetching needed. Also fixes a real gap:
+                        # the line above only shows when at least one
+                        # team already has 1+ games in this tournament
+                        # — meaning the very first games of a brand new
+                        # split/season (zero real games for EITHER
+                        # team yet) previously showed nothing about this
+                        # at all, when that's exactly the case that
+                        # most needs a real, honest heads-up.
+                        if combined_tournament_games < 4:
+                            why_lines.append(f"⚠️ Early in this tournament/split — only {combined_tournament_games} real game{'s' if combined_tournament_games != 1 else ''} played so far between both teams in this specific event. The overall rating leans more on past splits/tournaments until more real data exists here — treat with extra caution.")
                         with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
                             for line in why_lines:
                                 st.markdown(line)
