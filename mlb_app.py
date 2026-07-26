@@ -2244,6 +2244,8 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'ip_season_w': ip_season_w, 'ip_last10_w': ip_last10_w, 'ip_last5_w': ip_last5_w,
         }
     except Exception as e:
+        import traceback
+        log_failure_reason('RUN_PROJECTION_EXCEPTION', f"{pitcher_name}: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return None
 
 NBA_API_TIMEOUT = 20  # seconds — fail fast instead of hanging indefinitely on a stalled request
@@ -8652,6 +8654,13 @@ elif nav == "⚾ MLB Models":
                             "workload_tier": result.get("workload_tier"),
                             "ip_cv": result.get("ip_cv"),
                         })
+                        failure_log = st.session_state.get('_failure_log', [])
+                        real_failures_for_this_pitcher = [f for f in failure_log if pitcher in f.get('detail', '')]
+                        if real_failures_for_this_pitcher:
+                            st.markdown("---")
+                            st.error(f"🔧 Debug — {len(real_failures_for_this_pitcher)} real, logged exception(s) for {pitcher}:")
+                            for fail in real_failures_for_this_pitcher[-3:]:
+                                st.code(fail['detail'], language=None)
                         if ANTHROPIC_API_KEY:
                             if st.button("🧠 Generate Model Insight", key=f"insight_btn_{pitcher}"):
                                 with st.spinner("🧠 Generating model insight..."):
