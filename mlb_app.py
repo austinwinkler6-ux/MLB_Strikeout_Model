@@ -1333,6 +1333,7 @@ SAVE_LABEL_TO_MODEL_KEY = {
     'NFL': 'nfl_pass_attempts',
     'NFL_COMPLETIONS': 'nfl_pass_completions',
     'NFL_RECEPTIONS': 'nfl_receptions',
+    'LOL': 'lol_moneyline',
 }
 MODEL_KEY_TO_SAVE_LABEL = {v: k for k, v in SAVE_LABEL_TO_MODEL_KEY.items()}
 
@@ -1784,9 +1785,21 @@ def force_run_and_cache_nba(run_fn, sport_label, player_name, opp_abbrev, home_t
     return result
 
 def build_todays_card_entries():
-    """Pulls together whatever's currently loaded in session state (MLB + both NBA
-    prop types) into one unified, ranked list. Shared by Today's Card and the Home
-    page 'Today's Highest Rated Bet' section so they never show different data."""
+    """Pulls together whatever's currently loaded in session state (every
+    model in the app — MLB, both NBA prop types, all three NFL prop
+    types, and LoL) into one unified, ranked list. Shared by Today's
+    Card and the Home page 'Today's Highest Rated Bet' section so they
+    never show different data.
+
+    Real fix (July 2026) — originally only included MLB + NBA; NFL and
+    LoL existed as real, working models elsewhere in the app but were
+    invisible here, meaning Today's Card wasn't actually showing every
+    model's real output. NFL follows the exact same player-prop shape
+    already used for MLB/NBA (session_state[f'{key}_results'], 'Projection'/
+    'MM Tier'/etc on the info dict). LoL is structurally different — a
+    real matchup (two teams, a recommended side, model vs market
+    probability) rather than a player + line — so it's mapped into the
+    same card-entry shape rather than reusing the player-prop loop."""
     card_entries = []
 
     mlb_pitchers = st.session_state.get('all_pitchers', {})
@@ -1824,6 +1837,48 @@ def build_todays_card_entries():
                 'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
                 'info': info, 'result': nba_ast_results.get(name),
             })
+
+    # Real addition (July 2026) — all three NFL prop models, same
+    # player-prop pattern as MLB/NBA above. Session-state keys confirmed
+    # from run_nfl_display()'s real call sites for each model.
+    nfl_models = [
+        ('all_qbs', 'nfl_attempts_results', '🏈 NFL Att', 'nfl_pass_attempts'),
+        ('all_qbs_completions', 'nfl_completions_results', '🏈 NFL Comp', 'nfl_pass_completions'),
+        ('all_receivers', 'nfl_receptions_results', '🏈 NFL Rec', 'nfl_receptions'),
+    ]
+    for all_players_key, results_key, sport_label, sport_key in nfl_models:
+        nfl_players = st.session_state.get(all_players_key, {})
+        nfl_results = st.session_state.get(results_key, {})
+        for name, info in nfl_players.items():
+            if info.get('Projection') is not None and info.get('MM Tier'):
+                card_entries.append({
+                    'sport_label': sport_label, 'sport_key': sport_key, 'name': name,
+                    'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                    'play': info.get('Play'), 'edge': info.get('Edge'),
+                    'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                    'info': info, 'result': nfl_results.get(name),
+                })
+
+    # Real addition (July 2026) — LoL, mapped from its real, matchup-
+    # based shape (cito_api/lol_elo pipeline output) into the same
+    # card-entry shape used everywhere else. 'name' becomes the real
+    # matchup ("Team A vs Team B"), 'play' becomes the model's real
+    # recommended side, and 'edge' uses the real edge_pct (model vs
+    # market probability gap in percentage points) since there's no
+    # over/under line concept for a moneyline matchup.
+    lol_pipeline_output = st.session_state.get('lol_pipeline_output') or {}
+    lol_results = lol_pipeline_output.get('results') or []
+    for r in lol_results:
+        if r.get('ev_pct') is not None and r.get('mm_tier'):
+            card_entries.append({
+                'sport_label': '🎮 LoL', 'sport_key': 'lol_moneyline',
+                'name': f"{r.get('team1_name')} vs {r.get('team2_name')}",
+                'line': r.get('recommended_odds'),
+                'play': r.get('recommended_team_name'), 'edge': r.get('edge_pct'),
+                'ev_pct': r.get('ev_pct'), 'tier': r.get('mm_tier'),
+                'info': r, 'result': r,
+            })
+
     return card_entries
 
 def top_ranked_entry(card_entries):
@@ -8685,32 +8740,6 @@ elif nav == "⚾ MLB Models":
                     with st.expander(f"💡 Why this bet? — {pitcher}"):
                         for line in why_lines:
                             st.markdown(line)
-                        st.markdown("---")
-                        st.caption("🔧 Debug — real, raw intermediate values used in this calculation:")
-                        st.json({
-                            "season_avg_ip": result.get("season_avg_ip"),
-                            "last10_avg_ip": result.get("last10_avg_ip"),
-                            "last5_avg_ip": result.get("last5_avg_ip"),
-                            "recent_5ip_starts_count": result.get("recent_5ip_starts_count"),
-                            "season_ip_looks_stale": result.get("season_ip_looks_stale"),
-                            "ip_season_w": result.get("ip_season_w"),
-                            "ip_last10_w": result.get("ip_last10_w"),
-                            "ip_last5_w": result.get("ip_last5_w"),
-                            "pitch_count_factor (pitch_based_ip)": result.get("pitch_count_factor"),
-                            "expected_innings (final)": result.get("expected_innings"),
-                            "expected_pitch_count": result.get("expected_pitch_count"),
-                            "last3_pitches": result.get("last3_pitches"),
-                            "season_avg_pitches": result.get("season_avg_pitches"),
-                            "workload_tier": result.get("workload_tier"),
-                            "ip_cv": result.get("ip_cv"),
-                        })
-                        failure_log = st.session_state.get('_failure_log', [])
-                        real_failures_for_this_pitcher = [f for f in failure_log if pitcher in f.get('detail', '')]
-                        if real_failures_for_this_pitcher:
-                            st.markdown("---")
-                            st.error(f"🔧 Debug — {len(real_failures_for_this_pitcher)} real, logged exception(s) for {pitcher}:")
-                            for fail in real_failures_for_this_pitcher[-3:]:
-                                st.code(fail['detail'], language=None)
                         if ANTHROPIC_API_KEY:
                             if st.button("🧠 Generate Model Insight", key=f"insight_btn_{pitcher}"):
                                 with st.spinner("🧠 Generating model insight..."):
