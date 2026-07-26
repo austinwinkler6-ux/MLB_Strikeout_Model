@@ -9237,51 +9237,82 @@ elif nav == "📊 Model Performance":
 elif nav == "📒 Bet Tracker":
     st.title("📒 Bet Tracker")
 
-    sport_filter = st.selectbox("Filter by Sport", ["All", "MLB", "NBA", "NBA_AST"], key="bet_sport_filter")
+    sport_filter = st.selectbox("Filter by Sport", ["All", "MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="bet_sport_filter")
     sport_query = None if sport_filter == "All" else sport_filter
 
     st.markdown("---")
     with st.expander("➕ Log a Bet Manually", expanded=False):
-        st.caption("For bets outside today's model run (backfilling, or a prop not pulled from MLB/NBA Models). For anything you ran through the models, use the 📝 Log button on that row instead — it auto-fills everything and includes your MM Stake recommendation.")
+        st.caption("For bets outside today's model run (backfilling, or a prop not pulled from the models). For anything you ran through the models, use the 📝 Log button on that row instead — it auto-fills everything and includes your MM Stake recommendation.")
 
-        bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST"], key="new_bet_sport")
+        bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="new_bet_sport")
+        # Real fix (July 2026) — LoL is structurally different (a real
+        # matchup between two teams with win probabilities, not a
+        # single player against an over/under line), so it needs its
+        # own real branch rather than being forced into the same
+        # fields as every other sport.
+        is_lol = bet_sport == "LOL"
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            if bet_sport == "MLB":
+            if is_lol:
+                bt_team1 = st.text_input("Team 1", placeholder="e.g. T1")
+                bt_team2 = st.text_input("Team 2", placeholder="e.g. Gen.G")
+                bt_player = f"{bt_team1} vs {bt_team2}" if bt_team1 or bt_team2 else ""
+                bt_projection = st.number_input("Model Win Probability (%)", value=None, placeholder="e.g. 62.5", min_value=0.0, max_value=100.0)
+            elif bet_sport == "MLB":
                 bt_player = st.selectbox("Pitcher", pitchers_list, index=0)
+                bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
             else:
                 bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
-            bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
-            bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
+                bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
+            if is_lol:
+                bt_opening_line = st.number_input("Market Implied Probability (%)", value=None, placeholder="e.g. 55.0", min_value=0.0, max_value=100.0)
+            else:
+                bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
             bt_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f")
-            bt_model_edge = st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
+            bt_model_edge = None if is_lol else st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
         with col2:
             bt_date = st.date_input("Date")
-            bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
+            if is_lol:
+                bt_over_under = st.text_input("Team You Bet On", placeholder="e.g. T1")
+            else:
+                bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
             bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
-            bt_actual = st.number_input("Actual Statistic", value=None, placeholder="e.g. 7")
+            bt_actual = None if is_lol else st.number_input("Actual Statistic", value=None, placeholder="e.g. 7")
             bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
         with col3:
             bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
-            bt_confidence_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
-            bt_no_vig_prob = st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
+            if is_lol:
+                bt_tier = st.selectbox("MM Tier", ["", "🟢 Best Bet", "🔵 Worth a Look", "🟡 Lean", "🔴 Pass"])
+            else:
+                bt_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
+            bt_no_vig_prob = None if is_lol else st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
             bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
 
         if st.button("Log Bet"):
             odds_val = bt_odds or -110
             bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
             profit = calc_profit(bet_val, odds_val, bt_result)
-            save_bet({
+            bet_payload = {
                 'date': str(bt_date), 'pitcher': bt_player,
-                'projection': bt_projection or 0, 'opening_line': bt_opening_line or 0,
+                'projection': (bt_projection / 100 if is_lol and bt_projection else bt_projection) or 0,
+                'opening_line': (bt_opening_line / 100 if is_lol and bt_opening_line else bt_opening_line) or 0,
                 'over_under': bt_over_under, 'odds': odds_val,
                 'bet_amount': bet_val, 'result': bt_result,
                 'actual': bt_actual or 0, 'profit': profit,
                 'sport': bet_sport, 'ev_pct': bt_ev_pct,
-                'model_edge': bt_model_edge, 'no_vig_prob': bt_no_vig_prob,
-                'model_prob': bt_model_prob, 'confidence_tier': bt_confidence_tier or None,
-            })
+                'model_prob': (bt_model_prob / 100 if bt_model_prob else None),
+            }
+            if is_lol:
+                # Matches the exact real field convention the LoL
+                # page's own Log button already uses — mm_tier instead
+                # of confidence_tier, no no_vig_prob/model_edge at all.
+                bet_payload['mm_tier'] = bt_tier or None
+            else:
+                bet_payload['confidence_tier'] = bt_tier or None
+                bet_payload['model_edge'] = bt_model_edge
+                bet_payload['no_vig_prob'] = bt_no_vig_prob
+            save_bet(bet_payload)
             st.rerun()
 
     bets = load_bets(sport_query)
@@ -9368,9 +9399,19 @@ elif nav == "📒 Bet Tracker":
         st.markdown("---")
         st.subheader("🎯 Closing Line Tracker")
         today_str = mm_today_str()
+        # Real fix (July 2026) — NFL (all 3 variants) added: the
+        # backend (get_odds_api_sport_and_market) already fully
+        # supports NFL closing lines, this filter just never included
+        # them, so NFL bets silently never got closing-line data even
+        # though the real capability existed. LoL is deliberately left
+        # out — fetch_closing_line() is built entirely around an
+        # over/under prop structure (a specific player, a direction),
+        # which doesn't map to a real moneyline bet (two teams, no
+        # line at all) without real, separate work.
+        CLOSING_LINE_SUPPORTED_SPORTS = ('MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS')
         all_settled_for_closing = [
             b for b in bets
-            if b.get('date') and b['date'] < today_str and b.get('sport') in ('MLB', 'NBA', 'NBA_AST')
+            if b.get('date') and b['date'] < today_str and b.get('sport') in CLOSING_LINE_SUPPORTED_SPORTS
         ]
         missing_closing = [b for b in all_settled_for_closing if not b.get('closing_line')]
 
@@ -9514,7 +9555,13 @@ elif nav == "📒 Bet Tracker":
 
         st.markdown("---")
         st.subheader("📝 All Bets")
-        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'mm_tier'] if c in bets_df.columns], errors='ignore')
+        # Real fix (July 2026) — mm_tier used to be dropped
+        # unconditionally, on the assumption that confidence_tier
+        # already covers tier/reliability info. That's true for MLB/
+        # NBA/NFL, but LoL never sets confidence_tier at all — mm_tier
+        # is the only real tier field LoL bets have, so dropping it
+        # hid that information completely for every LoL bet.
+        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score'] if c in bets_df.columns], errors='ignore')
         if 'no_vig_prob' in display_df.columns:
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
@@ -9551,11 +9598,12 @@ elif nav == "📒 Bet Tracker":
                 'odds': st.column_config.NumberColumn('Odds', format="%+d"),
                 'profit': st.column_config.NumberColumn('Profit ($)'),
                 'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
-                'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL']),
+                'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS', 'LOL']),
                 'ev_pct': st.column_config.NumberColumn('EV%'),
                 'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
                 'confidence_tier': st.column_config.SelectboxColumn('Reliability', options=['🟢 Reliable', '🟠 Volatile', '🔴 Uncertain Workload']),
+                'mm_tier': st.column_config.SelectboxColumn('MM Tier', options=['🟢 Best Bet', '🔵 Worth a Look', '🟡 Lean', '🔴 Pass']),
                 'closing_line': st.column_config.TextColumn('Closing Line', disabled=True),
                 'clv': st.column_config.TextColumn('Line CLV', disabled=True, help="Positive = line moved in your favor after you bet"),
                 'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
@@ -9600,7 +9648,8 @@ elif nav == "📒 Bet Tracker":
                         'model_edge': b.get('model_edge'),
                         'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
                         'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
-                        'confidence_tier': b.get('confidence_tier')
+                        'confidence_tier': b.get('confidence_tier'),
+                        'mm_tier': b.get('mm_tier'),
                     })
                 if removed_ids:
                     st.success(f"✅ Deleted {len(removed_ids)} bet(s).")
