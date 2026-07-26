@@ -260,11 +260,11 @@ def workload_evidence_line(result):
     season_avg_ip = result.get('season_avg_ip')
     last5_avg_ip = result.get('last5_avg_ip')
     expected_innings = result.get('expected_innings')
-    streak = result.get('consecutive_5ip_starts')
+    recent_5ip_count = result.get('recent_5ip_starts_count')
 
     if "Stable" in workload_tier:
-        if streak is not None and streak >= 3 and last5_avg_ip is not None and season_avg_ip is not None:
-            return f"✅ {streak} straight starts of 5+ IP — averaging **{last5_avg_ip} IP** over that stretch, in line with his **{season_avg_ip} IP** season average"
+        if recent_5ip_count is not None and recent_5ip_count >= 3 and last5_avg_ip is not None and season_avg_ip is not None:
+            return f"✅ {recent_5ip_count} of his last 5 starts have gone 5+ IP — averaging **{last5_avg_ip} IP** over that stretch, in line with his **{season_avg_ip} IP** season average"
         elif season_avg_ip is not None:
             return f"✅ Workhorse role — averaging **{season_avg_ip} IP** across the season"
     elif "Changing" in workload_tier:
@@ -1445,7 +1445,7 @@ def classify_thesis(info, result, sport):
         last5_k = result.get('last5_k')
         last10_k = result.get('last10_k')
         expected_bf = result.get('expected_bf')
-        consecutive = result.get('consecutive_5ip_starts')
+        recent_5ip_count = result.get('recent_5ip_starts_count')
         last5_avg_ip = result.get('last5_avg_ip')
         season_avg_ip = result.get('season_avg_ip')
         opp_factor = result.get('opp_factor')
@@ -1456,7 +1456,7 @@ def classify_thesis(info, result, sport):
 
         season_implied_k_per_start = (season_k_pct * expected_bf) if (season_k_pct and expected_bf) else None
         workload_recovering = (
-            consecutive is not None and consecutive >= 2 and
+            recent_5ip_count is not None and recent_5ip_count >= 2 and
             last5_avg_ip is not None and season_avg_ip is not None and
             last5_avg_ip >= season_avg_ip * 0.85
         )
@@ -1475,7 +1475,7 @@ def classify_thesis(info, result, sport):
         if (direction == 'over' and edge and edge > 1.0 and
                 last5_avg_ip is not None and season_avg_ip is not None and
                 last5_avg_ip < season_avg_ip * 0.70 and
-                (consecutive is None or consecutive <= 1)):
+                (recent_5ip_count is None or recent_5ip_count <= 1)):
             return "💰 Market Overreaction"
 
         # Matchup/environment-driven theses
@@ -1518,8 +1518,8 @@ def build_insight_facts(pitcher_name, info, result, sport):
             facts.append(f"Innings pitched, last 5 starts (avg): {result['last5_avg_ip']}")
         if result.get('season_avg_ip') is not None:
             facts.append(f"Innings pitched, season average: {result['season_avg_ip']}")
-        if result.get('consecutive_5ip_starts') is not None:
-            facts.append(f"Consecutive starts of 5+ IP (most recent streak): {result['consecutive_5ip_starts']}")
+        if result.get('recent_5ip_starts_count') is not None:
+            facts.append(f"Starts of 5+ IP in his last 5 outings: {result['recent_5ip_starts_count']}")
         if result.get('workload_tier'):
             facts.append(f"Workload/role stability tier: {result['workload_tier']}")
         if result.get('confidence_tier'):
@@ -2051,20 +2051,33 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         pitcher_skill = round((season_k_pct * 0.70) + (last10_k_pct * 0.15) + (last5_k_pct * 0.15), 3)
         last3_starter = (last3_avg_ip >= 4.8) or (sum(df['innings'].head(3) >= 5.0) >= 2)
 
-        # Count consecutive recent starts (most recent first) with 5+ IP,
-        # so a pitcher moving back into a normal starter role is recognized quickly.
-        consecutive_5ip_starts = 0
-        for ip in df['innings']:
-            if ip >= 5.0:
-                consecutive_5ip_starts += 1
-            else:
-                break
+        # Real fix (July 2026) — found via two independent real cases.
+        # The old logic counted an UNBROKEN streak of 5+ IP starts
+        # starting from the most recent game, breaking entirely the
+        # instant it hit one start under 5 IP. This meant a single
+        # fluke start — in either direction — could completely erase
+        # a real, otherwise-consistent pattern:
+        #   - Framber Valdez: 8+ consecutive 5+ IP starts, then one bad
+        #     outing (0.2 IP, got hit around) reset the streak to 0,
+        #     dragging his projection down to 2.3 IP despite being a
+        #     clear, established workhorse who just had one rough game.
+        #   - Luinder Avila: last 5 starts were 6.1/5/5/4/5 IP — a
+        #     real, consistent starter workload — but the single 4-IP
+        #     start (itself not even that short) still broke the
+        #     streak logic's confidence in his role.
+        # Now counts how many of the last 5 starts were 5+ IP,
+        # regardless of whether they're an unbroken streak — resilient
+        # to exactly one fluke (short OR long) sitting anywhere in the
+        # window, while still requiring a real, genuine pattern (not
+        # just one or two good starts) before trusting it.
+        last5_ip_values = df['innings'].head(5)
+        recent_5ip_starts_count = int((last5_ip_values >= 5.0).sum())
 
-        if consecutive_5ip_starts >= 3:
-            # Confirmed back to a normal starter role — trust season/role baseline again
+        if recent_5ip_starts_count >= 4:
+            # Strong, consistent recent starter role (allows for exactly one real fluke)
             ip_season_w, ip_last10_w, ip_last5_w = 0.35, 0.40, 0.25
-        elif consecutive_5ip_starts == 2:
-            # Role change likely underway — lean harder into recent workload
+        elif recent_5ip_starts_count == 3:
+            # Solid majority, but less certain — lean harder into recent workload
             ip_season_w, ip_last10_w, ip_last5_w = 0.15, 0.25, 0.60
         elif last3_starter:
             ip_season_w, ip_last10_w, ip_last5_w = 0.20, 0.30, 0.50
@@ -2189,7 +2202,7 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
             'pitch_count_factor': round(pitch_based_ip, 2),
             'lineup_factor': round(lineup_k_pct, 3) if lineup_k_pct else None,
             'ip_cv': ip_cv, 'workload_tier': workload_tier,
-            'consecutive_5ip_starts': consecutive_5ip_starts,
+            'recent_5ip_starts_count': recent_5ip_starts_count,
         }
     except Exception as e:
         return None
