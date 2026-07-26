@@ -549,17 +549,30 @@ def calculate_roster_continuity(roster_history_response, reference_date=None, lo
     Elo rating still built entirely from games played before that
     roster change.
 
-    Uses a real, set-based comparison (deliberately simple, chosen to
-    be robust to real, confirmed data messiness in Cito's roster/
-    history endpoint — some players show overlapping 'current' entries
-    at the same role, which would make precise "starting five at any
-    exact moment" reconstruction unreliable): what fraction of the
-    players CURRENTLY active on the roster were ALSO active
-    lookback_days ago. A continuity of 1.0 means the entire current
-    roster was already there a month ago (real, stable roster,
-    existing rating should be trusted normally). A continuity near 0
-    means the roster is almost entirely new since then (existing
-    rating reflects players who may no longer even be on the team).
+    Real bug found and fixed (July 2026, via live testing against the
+    full real RED Canids dataset): an earlier version naively counted
+    every roster entry with status=='current', but the SAME real
+    player can have multiple entries labeled 'current' representing
+    different, non-overlapping historical stints — Cito's data doesn't
+    always mark an earlier stint 'former' when a newer one begins for
+    the same player (confirmed real example: Kaze has one 'current'
+    entry from Feb 1, and a SEPARATE 'former' entry for March 8-July
+    15 — the same real player, counted as if they were still on the
+    roster from the stale, superseded entry). This inflated a real
+    roster count from 5 real current players to 15 counted rows. Now
+    groups every entry by real lolPlayerId first, and uses ONLY each
+    player's single most recent stint (by joinDate) to determine
+    whether they're truly current — a stale, superseded 'current' row
+    for a player whose real most recent stint is 'former' no longer
+    counts.
+
+    Uses a real, set-based comparison of which currently-active real
+    players were ALSO active lookback_days ago. A continuity of 1.0
+    means the entire current roster was already there a month ago
+    (real, stable roster, existing rating should be trusted normally).
+    A continuity near 0 means the roster is almost entirely new since
+    then (existing rating reflects players who may no longer even be
+    on the team).
 
     Returns a real dict: {"continuity_pct": float 0-1, "current_roster_size":
     int, "retained_from_lookback": int, "new_since_lookback": int}.
@@ -572,38 +585,45 @@ def calculate_roster_continuity(roster_history_response, reference_date=None, lo
     cutoff = reference_date - timedelta(days=lookback_days)
 
     roster_entries = (roster_history_response or {}).get("roster") or []
-    current_ids = set()
+
+    def _parse_date(date_str):
+        try:
+            return datetime.fromisoformat(date_str.replace("Z", "+00:00")) if date_str else None
+        except (ValueError, TypeError):
+            return None
+
+    # Real fix: group every entry by real player ID first, so we can
+    # find each player's single most recent stint rather than treating
+    # every 'current'-labeled row as a separate, real roster slot.
+    entries_by_player = {}
     for entry in roster_entries:
         if not isinstance(entry, dict):
             continue
-        if entry.get("status") == "current" and entry.get("isActive"):
-            player_id = entry.get("lolPlayerId")
-            if player_id:
-                current_ids.add(player_id)
+        player_id = entry.get("lolPlayerId")
+        if not player_id:
+            continue
+        entries_by_player.setdefault(player_id, []).append(entry)
+
+    current_ids = set()
+    most_recent_stint_by_player = {}
+    for player_id, entries in entries_by_player.items():
+        # The real, single most recent stint for this player, by join date
+        most_recent = max(entries, key=lambda e: _parse_date(e.get("joinDate")) or datetime.min.replace(tzinfo=timezone.utc))
+        most_recent_stint_by_player[player_id] = most_recent
+        if most_recent.get("status") == "current" and most_recent.get("isActive"):
+            current_ids.add(player_id)
 
     if not current_ids:
         return {"continuity_pct": 1.0, "current_roster_size": 0, "retained_from_lookback": 0, "new_since_lookback": 0}
 
     retained_ids = set()
-    for entry in roster_entries:
-        if not isinstance(entry, dict):
-            continue
-        player_id = entry.get("lolPlayerId")
-        if not player_id or player_id not in current_ids:
-            continue
-        join_date_str = entry.get("joinDate")
-        leave_date_str = entry.get("leaveDate")
-        try:
-            join_date = datetime.fromisoformat(join_date_str.replace("Z", "+00:00")) if join_date_str else None
-        except (ValueError, TypeError):
-            join_date = None
-        try:
-            leave_date = datetime.fromisoformat(leave_date_str.replace("Z", "+00:00")) if leave_date_str else None
-        except (ValueError, TypeError):
-            leave_date = None
-        # This player counts as "retained from lookback" if some real
-        # roster stint of theirs covers the cutoff date — joined on or
-        # before cutoff, and (still active, or left after cutoff).
+    for player_id in current_ids:
+        entry = most_recent_stint_by_player[player_id]
+        join_date = _parse_date(entry.get("joinDate"))
+        leave_date = _parse_date(entry.get("leaveDate"))
+        # This player counts as "retained from lookback" if their real,
+        # current stint covers the cutoff date — joined on or before
+        # cutoff, and (still active, or left after cutoff).
         if join_date and join_date <= cutoff and (leave_date is None or leave_date > cutoff):
             retained_ids.add(player_id)
 
