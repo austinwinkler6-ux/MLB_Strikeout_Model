@@ -2086,15 +2086,38 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         pitcher_skill = round((season_k_pct * 0.70) + (last10_k_pct * 0.15) + (last5_k_pct * 0.15), 3)
         last3_starter = (last3_avg_ip >= 4.8) or (sum(df['innings'].head(3) >= 5.0) >= 2)
 
-        if recent_5ip_starts_count >= 4:
-            # Strong, consistent recent starter role (allows for exactly one real fluke)
+        # Real fix (July 2026) — found via a second real case (Luinder
+        # Avila) even after the streak-counting fix above. His last 5
+        # starts (6.1/5/5/4/5 IP) correctly trigger recent_5ip_starts_
+        # count >= 4, but his season_avg_ip is itself contaminated —
+        # he started the season as a reliever (short, 1-2 IP outings)
+        # before genuinely becoming a starter. The OLD tier ordering
+        # meant that once >=4 matched, the code never checked whether
+        # season_avg_ip was even reliable — it just applied 35% weight
+        # to it regardless, which was enough to drag a real, strong
+        # recent projection back down toward a stale, role-mismatched
+        # season baseline. Now checks BOTH conditions together: a
+        # confirmed strong recent role does NOT automatically mean the
+        # season baseline is trustworthy too — those are two separate,
+        # independent questions.
+        season_ip_looks_stale = last5_avg_ip > season_avg_ip * 1.5 or last5_avg_ip < season_avg_ip * 0.6
+
+        if recent_5ip_starts_count >= 4 and not season_ip_looks_stale:
+            # Strong, consistent recent starter role, AND the season
+            # baseline still looks like it reflects the same role —
+            # safe to blend in some of that broader, lower-variance data.
             ip_season_w, ip_last10_w, ip_last5_w = 0.35, 0.40, 0.25
+        elif recent_5ip_starts_count >= 4 and season_ip_looks_stale:
+            # Strong recent role, but the season average reflects a
+            # genuinely different prior role (e.g. reliever -> starter)
+            # — don't blend in data that doesn't describe who he is now.
+            ip_season_w, ip_last10_w, ip_last5_w = 0.10, 0.20, 0.70
         elif recent_5ip_starts_count == 3:
             # Solid majority, but less certain — lean harder into recent workload
             ip_season_w, ip_last10_w, ip_last5_w = 0.15, 0.25, 0.60
         elif last3_starter:
             ip_season_w, ip_last10_w, ip_last5_w = 0.20, 0.30, 0.50
-        elif last5_avg_ip > season_avg_ip * 1.5 or last5_avg_ip < season_avg_ip * 0.6:
+        elif season_ip_looks_stale:
             ip_season_w, ip_last10_w, ip_last5_w = 0.20, 0.30, 0.50
         else:
             ip_season_w, ip_last10_w, ip_last5_w = 0.30, 0.40, 0.30
