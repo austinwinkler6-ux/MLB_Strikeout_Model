@@ -9657,16 +9657,36 @@ elif nav == "📒 Bet Tracker":
         # which genuinely have no actual-statistic concept at all
         # (a moneyline bet just wins or loses) — now shows "—" instead,
         # matching this app's existing convention for real N/A values.
+        # Real fix (July 2026) — found via a real, confirmed report:
+        # 'actual' (and the same issue applies to 'projection'/
+        # 'opening_line') was declared as a TextColumn in column_config
+        # below, but the LoL-specific string formatting only ran
+        # conditionally (only if the CURRENT FILTERED VIEW happened to
+        # contain at least one LoL row). Filtering to just 'MLB', or
+        # simply having no LoL bets logged yet, left these columns as
+        # pure, numeric float64 dtype underneath — while column_config
+        # still declared them as TextColumn regardless. That mismatch
+        # between the real, underlying pandas dtype and the declared
+        # column type is what broke editability, not a disabled flag.
+        # Now unconditionally casts these three columns to real string
+        # values (still just the plain number as text for non-LoL
+        # rows, e.g. "5.0"), so the actual dtype always matches what
+        # column_config declares, regardless of which sports happen to
+        # be in the current filtered view.
+        for _col in ['projection', 'opening_line', 'actual']:
+            if _col in display_df.columns:
+                display_df[_col] = display_df[_col].apply(lambda v: '' if pd.isna(v) else str(v))
+
         if 'sport' in display_df.columns:
             is_lol_row = display_df['sport'] == 'LOL'
             if is_lol_row.any():
                 if 'projection' in display_df.columns:
                     display_df['projection'] = display_df.apply(
-                        lambda row: f"{round(row['projection'] * 100, 1)}%" if row['sport'] == 'LOL' and pd.notna(row['projection']) else row['projection'],
+                        lambda row: f"{round(float(row['projection']) * 100, 1)}%" if row['sport'] == 'LOL' and row['projection'] not in (None, '') else row['projection'],
                         axis=1)
                 if 'opening_line' in display_df.columns:
                     display_df['opening_line'] = display_df.apply(
-                        lambda row: f"{round(row['opening_line'] * 100, 1)}%" if row['sport'] == 'LOL' and pd.notna(row['opening_line']) else row['opening_line'],
+                        lambda row: f"{round(float(row['opening_line']) * 100, 1)}%" if row['sport'] == 'LOL' and row['opening_line'] not in (None, '') else row['opening_line'],
                         axis=1)
                 if 'actual' in display_df.columns:
                     display_df['actual'] = display_df.apply(
