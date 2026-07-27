@@ -9818,14 +9818,33 @@ elif nav == "📒 Bet Tracker":
                                 return None
                         return v
 
+                    # Real fix (July 2026) — found via a real, direct
+                    # report: "Out of range float values are not JSON
+                    # compliant: nan". Several fields (odds, bet_amount,
+                    # ev_pct, model_edge) were being passed straight
+                    # through with no NaN-checking at all, unlike the
+                    # three fields already fixed above. A real NaN in
+                    # ANY of these (a very real possibility — a manually
+                    # logged bet that never set ev_pct, an older bet
+                    # missing odds, etc.) breaks the ENTIRE save, not
+                    # just that one field, since Supabase's API can't
+                    # serialize a raw NaN into JSON at all. This applies
+                    # real, general NaN-to-None safety to every numeric
+                    # field in this payload, not just the ones already
+                    # covered.
+                    def _nan_to_none(v):
+                        if isinstance(v, float) and pd.isna(v):
+                            return None
+                        return v
+
                     update_bet(row_id, {
                         'actual': _parse_display_value_back_to_number(b.get('actual')) or 0, 'result': b.get('result'),
-                        'odds': b.get('odds'), 'bet_amount': b.get('bet_amount'),
+                        'odds': _nan_to_none(b.get('odds')), 'bet_amount': _nan_to_none(b.get('bet_amount')),
                         'opening_line': _parse_display_value_back_to_number(b.get('opening_line')),
                         'projection': _parse_display_value_back_to_number(b.get('projection')), 'over_under': b.get('over_under'),
-                        'profit': b['profit'], 'sport': b.get('sport', 'MLB'),
-                        'ev_pct': b.get('ev_pct'),
-                        'model_edge': b.get('model_edge'),
+                        'profit': _nan_to_none(b.get('profit')) or 0, 'sport': b.get('sport', 'MLB'),
+                        'ev_pct': _nan_to_none(b.get('ev_pct')),
+                        'model_edge': _nan_to_none(b.get('model_edge')),
                         'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
                         'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
                         'confidence_tier': b.get('confidence_tier'),
