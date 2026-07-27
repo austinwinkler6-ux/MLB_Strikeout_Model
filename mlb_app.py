@@ -10210,17 +10210,25 @@ The gap between two teams' ratings is what turns into the win probability you se
                                     odds = int(log_odds) if log_odds else -110
                                     bet_val = round(float(log_bet), 2) if log_bet else 0.0
                                     profit = calc_profit(bet_val, odds, log_result)
-                                    # Real fix (July 2026, per direct user
-                                    # feedback) — the matchup text now
-                                    # leads with the real, picked team,
-                                    # with the opponent in parentheses,
-                                    # so it's immediately obvious which
-                                    # side was actually bet on, instead
-                                    # of just showing "Team A vs Team B"
-                                    # with no indication of the pick.
-                                    lol_opponent_name = r['team2_name'] if r['recommended_team_name'] == r['team1_name'] else r['team1_name']
+                                    # Real fix (July 2026, per direct
+                                    # user feedback) — uses real,
+                                    # already-short team identifiers
+                                    # (team1_slug/team2_slug, Cito's own
+                                    # real slugs — e.g. "dk" for Dplus
+                                    # KIA, "t1" for T1) via
+                                    # recommended_side, instead of the
+                                    # full team names, so the matchup
+                                    # text stays compact and fully
+                                    # visible instead of getting cut off
+                                    # by long full names.
+                                    if r.get('recommended_side') == 'team1':
+                                        lol_picked_abbrev = r['team1_slug'].upper()
+                                        lol_opponent_abbrev = r['team2_slug'].upper()
+                                    else:
+                                        lol_picked_abbrev = r['team2_slug'].upper()
+                                        lol_opponent_abbrev = r['team1_slug'].upper()
                                     save_bet({
-                                        'date': mm_today_str(), 'pitcher': f"{r['recommended_team_name']} (vs {lol_opponent_name})",
+                                        'date': mm_today_str(), 'pitcher': f"{lol_picked_abbrev} (vs {lol_opponent_abbrev})",
                                         'projection': r.get('recommended_model_prob'),
                                         'opening_line': r.get('recommended_market_prob'),
                                         # Real fix (July 2026) — over/
