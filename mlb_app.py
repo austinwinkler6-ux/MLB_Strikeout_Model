@@ -9351,11 +9351,23 @@ elif nav == "📒 Bet Tracker":
             odds_val = bt_odds or -110
             bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
             profit = calc_profit(bet_val, odds_val, bt_result)
+            # Real fix (July 2026, per direct user feedback) — for LoL,
+            # rebuild the matchup text here (now that both team names
+            # AND the pick are available) to lead with the real,
+            # picked team, so it's immediately obvious which side was
+            # bet on — same fix already applied to the LoL page's own
+            # Log button.
+            final_player = bt_player
+            final_over_under = bt_over_under
+            if is_lol and bt_over_under:
+                lol_other_team = bt_team2 if bt_over_under.strip().lower() == (bt_team1 or '').strip().lower() else bt_team1
+                final_player = f"{bt_over_under} (vs {lol_other_team})" if lol_other_team else bt_over_under
+                final_over_under = '-'  # over/under genuinely doesn't apply to a moneyline bet
             bet_payload = {
-                'date': str(bt_date), 'pitcher': bt_player,
+                'date': str(bt_date), 'pitcher': final_player,
                 'projection': (bt_projection / 100 if is_lol and bt_projection else bt_projection) or 0,
                 'opening_line': (bt_opening_line / 100 if is_lol and bt_opening_line else bt_opening_line) or 0,
-                'over_under': bt_over_under, 'odds': odds_val,
+                'over_under': final_over_under, 'odds': odds_val,
                 'bet_amount': bet_val, 'result': bt_result,
                 'actual': bt_actual or 0, 'profit': profit,
                 'sport': bet_sport, 'ev_pct': bt_ev_pct,
@@ -9779,7 +9791,7 @@ elif nav == "📒 Bet Tracker":
                 'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
                 'odds': st.column_config.NumberColumn('Odds', format="%+d"),
                 'profit': st.column_config.NumberColumn('Profit ($)'),
-                'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under']),
+                'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under', '-']),
                 'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS', 'LOL']),
                 'ev_pct': st.column_config.NumberColumn('EV%'),
                 'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
@@ -10198,11 +10210,31 @@ The gap between two teams' ratings is what turns into the win probability you se
                                     odds = int(log_odds) if log_odds else -110
                                     bet_val = round(float(log_bet), 2) if log_bet else 0.0
                                     profit = calc_profit(bet_val, odds, log_result)
+                                    # Real fix (July 2026, per direct user
+                                    # feedback) — the matchup text now
+                                    # leads with the real, picked team,
+                                    # with the opponent in parentheses,
+                                    # so it's immediately obvious which
+                                    # side was actually bet on, instead
+                                    # of just showing "Team A vs Team B"
+                                    # with no indication of the pick.
+                                    lol_opponent_name = r['team2_name'] if r['recommended_team_name'] == r['team1_name'] else r['team1_name']
                                     save_bet({
-                                        'date': mm_today_str(), 'pitcher': f"{r['team1_name']} vs {r['team2_name']}",
+                                        'date': mm_today_str(), 'pitcher': f"{r['recommended_team_name']} (vs {lol_opponent_name})",
                                         'projection': r.get('recommended_model_prob'),
                                         'opening_line': r.get('recommended_market_prob'),
-                                        'over_under': r['recommended_team_name'], 'odds': odds,
+                                        # Real fix (July 2026) — over/
+                                        # under genuinely doesn't apply
+                                        # to a moneyline bet. This used
+                                        # to store the picked team name
+                                        # here instead (which didn't
+                                        # even fit the Over/Under
+                                        # dropdown options), but now
+                                        # that the pick is shown clearly
+                                        # in the matchup text above,
+                                        # this can honestly just be a
+                                        # real "-" placeholder.
+                                        'over_under': '-', 'odds': odds,
                                         'bet_amount': bet_val, 'result': log_result,
                                         'actual': 0, 'profit': profit,
                                         'sport': 'LOL', 'ev_pct': r.get('ev_pct'),
