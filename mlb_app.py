@@ -9593,6 +9593,33 @@ elif nav == "📒 Bet Tracker":
                 if 'actual' in display_df.columns:
                     display_df['actual'] = display_df.apply(
                         lambda row: "—" if row['sport'] == 'LOL' else row['actual'], axis=1)
+                # Real fix (July 2026) — bets logged before the save-
+                # logic fix have the raw, ugly market_slug stored in
+                # 'pitcher' (e.g. 'lol-tl2-c9-2026-07-26') instead of a
+                # real, readable team matchup. Can't fully recover the
+                # original full team names from an abbreviated slug,
+                # but this real, best-effort cleanup at least strips
+                # the 'lol-' prefix and trailing date, turning it into
+                # something like 'TL2 vs C9' — genuinely cleaner, even
+                # if not a perfect match for the real, full names.
+                # Bets logged going forward already store the real,
+                # full matchup name and pass through unchanged here.
+                if 'pitcher' in display_df.columns:
+                    import re
+
+                    def _clean_lol_slug_for_display(value):
+                        if not isinstance(value, str) or not value.startswith("lol-"):
+                            return value
+                        stripped = re.sub(r"^lol-", "", value)
+                        stripped = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", stripped)
+                        parts = stripped.split("-")
+                        if len(parts) == 2:
+                            return f"{parts[0].upper()} vs {parts[1].upper()}"
+                        return stripped.replace("-", " ").upper()
+
+                    display_df['pitcher'] = display_df.apply(
+                        lambda row: _clean_lol_slug_for_display(row['pitcher']) if row['sport'] == 'LOL' else row['pitcher'],
+                        axis=1)
 
         if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
             display_df['Market Result'] = [
@@ -10026,7 +10053,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                                     bet_val = round(float(log_bet), 2) if log_bet else 0.0
                                     profit = calc_profit(bet_val, odds, log_result)
                                     save_bet({
-                                        'date': mm_today_str(), 'pitcher': matchup_key,
+                                        'date': mm_today_str(), 'pitcher': f"{r['team1_name']} vs {r['team2_name']}",
                                         'projection': r.get('recommended_model_prob'),
                                         'opening_line': r.get('recommended_market_prob'),
                                         'over_under': r['recommended_team_name'], 'odds': odds,
