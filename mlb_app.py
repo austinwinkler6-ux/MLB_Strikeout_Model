@@ -9567,6 +9567,33 @@ elif nav == "📒 Bet Tracker":
         if 'model_prob' in display_df.columns:
             display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
 
+        # Real fix (July 2026) — found via a real screenshot: LoL bets
+        # store real probabilities (0-1) in the SAME projection/
+        # opening_line columns MLB/NBA/NFL use for actual stat lines
+        # (e.g. 5.0 innings) — the shared 1-decimal numeric formatting
+        # crushed a real 62.5% model probability down to a
+        # meaningless-looking "0.6". Converts these two columns to a
+        # real percentage STRING for LoL rows only (e.g. "62.5%"),
+        # leaving every other sport's numeric values untouched. Also
+        # fixes 'actual' showing a real, misleading "0" for LoL bets,
+        # which genuinely have no actual-statistic concept at all
+        # (a moneyline bet just wins or loses) — now shows "—" instead,
+        # matching this app's existing convention for real N/A values.
+        if 'sport' in display_df.columns:
+            is_lol_row = display_df['sport'] == 'LOL'
+            if is_lol_row.any():
+                if 'projection' in display_df.columns:
+                    display_df['projection'] = display_df.apply(
+                        lambda row: f"{round(row['projection'] * 100, 1)}%" if row['sport'] == 'LOL' and pd.notna(row['projection']) else row['projection'],
+                        axis=1)
+                if 'opening_line' in display_df.columns:
+                    display_df['opening_line'] = display_df.apply(
+                        lambda row: f"{round(row['opening_line'] * 100, 1)}%" if row['sport'] == 'LOL' and pd.notna(row['opening_line']) else row['opening_line'],
+                        axis=1)
+                if 'actual' in display_df.columns:
+                    display_df['actual'] = display_df.apply(
+                        lambda row: "—" if row['sport'] == 'LOL' else row['actual'], axis=1)
+
         if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
             display_df['Market Result'] = [
                 market_result_label(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
@@ -9590,10 +9617,11 @@ elif nav == "📒 Bet Tracker":
             display_df, use_container_width=True, num_rows="dynamic",
             column_config={
                 'id': st.column_config.TextColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
+                'pitcher': st.column_config.TextColumn('Player / Matchup', help="A player name for MLB/NBA/NFL bets, or the full matchup (e.g. 'Team A vs Team B') for LoL bets"),
                 'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
-                'actual': st.column_config.NumberColumn('Actual Statistic', min_value=0),
-                'opening_line': st.column_config.NumberColumn('Book Line', min_value=0.0, step=0.5),
-                'projection': st.column_config.NumberColumn('Projection', min_value=0.0, step=0.1),
+                'actual': st.column_config.TextColumn('Actual Statistic', help="Shows — for LoL (moneyline bets have no actual-statistic concept)"),
+                'opening_line': st.column_config.TextColumn('Book Line / Market %', help="A number for stat props (e.g. 4.5 innings); a real percentage for LoL (market-implied win probability)"),
+                'projection': st.column_config.TextColumn('Projection / Model %', help="A number for stat props (e.g. 5.0 innings); a real percentage for LoL (model win probability)"),
                 'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
                 'odds': st.column_config.NumberColumn('Odds', format="%+d"),
                 'profit': st.column_config.NumberColumn('Profit ($)'),
@@ -9638,11 +9666,38 @@ elif nav == "📒 Bet Tracker":
                     b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
                     no_vig_val = b.get('no_vig_prob')
                     model_prob_val = b.get('model_prob')
+
+                    # Real fix (July 2026) — projection/opening_line/
+                    # actual can now be real percentage strings ('62.5%')
+                    # or the '—' placeholder for LoL rows, per the real
+                    # display fix above. Without converting these back
+                    # to real numbers here, saving table edits would
+                    # try to write a literal string into a numeric
+                    # database column, silently corrupting every edited
+                    # LoL row.
+                    def _parse_display_value_back_to_number(v):
+                        if v is None or (isinstance(v, float) and pd.isna(v)):
+                            return None
+                        if isinstance(v, str):
+                            v = v.strip()
+                            if v == "—" or v == "":
+                                return None
+                            if v.endswith("%"):
+                                try:
+                                    return round(float(v[:-1]) / 100, 4)
+                                except ValueError:
+                                    return None
+                            try:
+                                return float(v)
+                            except ValueError:
+                                return None
+                        return v
+
                     update_bet(row_id, {
-                        'actual': b.get('actual'), 'result': b.get('result'),
+                        'actual': _parse_display_value_back_to_number(b.get('actual')) or 0, 'result': b.get('result'),
                         'odds': b.get('odds'), 'bet_amount': b.get('bet_amount'),
-                        'opening_line': b.get('opening_line'),
-                        'projection': b.get('projection'), 'over_under': b.get('over_under'),
+                        'opening_line': _parse_display_value_back_to_number(b.get('opening_line')),
+                        'projection': _parse_display_value_back_to_number(b.get('projection')), 'over_under': b.get('over_under'),
                         'profit': b['profit'], 'sport': b.get('sport', 'MLB'),
                         'ev_pct': b.get('ev_pct'),
                         'model_edge': b.get('model_edge'),
