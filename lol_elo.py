@@ -498,7 +498,7 @@ MAX_IN_TOURNAMENT_FORM_WEIGHT = 0.35
 IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
 
 
-def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches):
+def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None):
     """Real, direct scan of a team's own match history for real,
     completed matches within a SPECIFIC tournament — matched by
     substring against each match's real tournamentName (case-
@@ -509,7 +509,16 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     level counts (using each match's own 'winner' field), not
     inferred from anything else. A team not appearing at all in this
     tournament yet returns (0, 0, 0) — genuinely no evidence, not a
-    guess either way."""
+    guess either way.
+
+    Real fix (July 2026, per external review) — exclude_opponent_slug
+    lets a caller exclude games against one specific opponent. Used by
+    blend_with_in_tournament_form() below to prevent double-counting:
+    if these two teams already played each other once within this
+    same tournament, that specific game is already, separately
+    captured by the head-to-head blend — counting it again here would
+    give that one result more real pull on the final probability than
+    either blend was individually designed to have."""
     if not tournament_name_substring:
         return 0, 0, 0
     needle = tournament_name_substring.strip().lower()
@@ -521,6 +530,8 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
         m_team2 = (match.get("team2") or {}).get("slug")
         if team_slug not in (m_team1, m_team2):
             continue
+        if exclude_opponent_slug and exclude_opponent_slug in (m_team1, m_team2):
+            continue  # a real rematch within this tournament — already captured by head-to-head, skip here
         tournament_name = (match.get("tournamentName") or "").strip().lower()
         if needle not in tournament_name:
             continue
@@ -550,9 +561,14 @@ def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tourna
     meaningfully shift the prediction without ever fully overriding
     the broader, much larger Elo history. Returns (blended_prob,
     detail_dict) — the detail dict is real, honest transparency about
-    what in-tournament evidence (if any) existed, for display."""
-    t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches)
-    t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches)
+    what in-tournament evidence (if any) existed, for display.
+
+    Real fix (July 2026, per external review) — each team's record now
+    excludes games against the OTHER team in this exact matchup, so a
+    direct rematch within the tournament isn't counted by both this
+    blend and the head-to-head blend at the same time."""
+    t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team2_slug)
+    t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team1_slug)
     detail = {
         "team1_wins": t1_wins, "team1_losses": t1_losses, "team1_total": t1_total,
         "team2_wins": t2_wins, "team2_losses": t2_losses, "team2_total": t2_total,
