@@ -1027,6 +1027,14 @@ def sport_key_to_bet_label(sport_key):
     return 'MLB' if sport_key == 'mlb_strikeouts' else nba_bet_sport_label(sport_key)
 
 def save_bet(bet):
+    # Real fix (July 2026) — same centralized NaN sanitization as
+    # update_bet below, applied here too since the same real risk
+    # exists at initial bet-logging time, not just on later updates.
+    def _sanitize_nan(v):
+        if isinstance(v, float) and pd.isna(v):
+            return None
+        return v
+    bet = {k: _sanitize_nan(v) for k, v in bet.items()}
     try:
         payload = {**bet, "user_id": user_id}
         supabase.table("bets").insert(payload).execute()
@@ -1034,6 +1042,24 @@ def save_bet(bet):
         st.error(f"Error saving bet: {e}")
 
 def update_bet(bet_id, updates):
+    # Real fix (July 2026) — found via a real, persistent error report
+    # ("Out of range float values are not JSON compliant: nan") that
+    # kept happening even after fixing the 'Save Table Changes' path
+    # specifically. Turned out there are multiple real update_bet call
+    # sites (Save Table Changes, the Closing Line Tracker, the new
+    # Refresh MLB Results feature) — patching each one individually is
+    # fragile, since it's easy to miss one (which is exactly what
+    # happened: the Closing Line Tracker's own CLV math had a real gap
+    # — `bet.get('opening_line') or 0` doesn't catch a genuine NaN
+    # float, since NaN is truthy in Python, not falsy). Sanitizing
+    # centrally here means every current AND future caller is
+    # automatically protected, with no need to remember to do this at
+    # each call site.
+    def _sanitize_nan(v):
+        if isinstance(v, float) and pd.isna(v):
+            return None
+        return v
+    updates = {k: _sanitize_nan(v) for k, v in updates.items()}
     try:
         supabase.table("bets").update(updates).eq("id", bet_id).eq("user_id", user_id).execute()
     except Exception as e:
@@ -9639,7 +9665,14 @@ elif nav == "📒 Bet Tracker":
         # model_version/ev_engine_version for internal tracking,
         # sportsbook as real metadata) — just no longer shown as
         # visible columns cluttering the day-to-day tracker view.
-        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'probability_waterfall', 'model_version', 'ev_engine_version', 'sportsbook', 'game_pk'] if c in bets_df.columns], errors='ignore')
+        # Real fix (July 2026, per direct user feedback) — 'actual' is
+        # now hidden from the visible table too. It's not used in any
+        # of the Bet Tracker's own stats (confirmed — only 'result'
+        # and 'profit' feed those), but it IS the real input the
+        # Refresh MLB Results feature compares against opening_line to
+        # auto-determine Win/Loss/Push — so it's still saved and used
+        # internally, just no longer a visible column.
+        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'probability_waterfall', 'model_version', 'ev_engine_version', 'sportsbook', 'game_pk', 'actual'] if c in bets_df.columns], errors='ignore')
         if 'no_vig_prob' in display_df.columns:
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
@@ -9688,9 +9721,6 @@ elif nav == "📒 Bet Tracker":
                     display_df['opening_line'] = display_df.apply(
                         lambda row: f"{round(float(row['opening_line']) * 100, 1)}%" if row['sport'] == 'LOL' and row['opening_line'] not in (None, '') else row['opening_line'],
                         axis=1)
-                if 'actual' in display_df.columns:
-                    display_df['actual'] = display_df.apply(
-                        lambda row: "—" if row['sport'] == 'LOL' else row['actual'], axis=1)
                 # Real fix (July 2026) — bets logged before the save-
                 # logic fix have the raw, ugly market_slug stored in
                 # 'pitcher' (e.g. 'lol-tl2-c9-2026-07-26') instead of a
@@ -9744,7 +9774,6 @@ elif nav == "📒 Bet Tracker":
                 'id': st.column_config.TextColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
                 'pitcher': st.column_config.TextColumn('Player / Matchup', help="A player name for MLB/NBA/NFL bets, or the full matchup (e.g. 'Team A vs Team B') for LoL bets"),
                 'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
-                'actual': st.column_config.TextColumn('Actual Statistic', help="Shows — for LoL (moneyline bets have no actual-statistic concept)"),
                 'opening_line': st.column_config.TextColumn('Book Line / Market %', help="A number for stat props (e.g. 4.5 innings); a real percentage for LoL (market-implied win probability)"),
                 'projection': st.column_config.TextColumn('Projection / Model %', help="A number for stat props (e.g. 5.0 innings); a real percentage for LoL (model win probability)"),
                 'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
@@ -9838,7 +9867,7 @@ elif nav == "📒 Bet Tracker":
                         return v
 
                     update_bet(row_id, {
-                        'actual': _parse_display_value_back_to_number(b.get('actual')) or 0, 'result': b.get('result'),
+                        'result': b.get('result'),
                         'odds': _nan_to_none(b.get('odds')), 'bet_amount': _nan_to_none(b.get('bet_amount')),
                         'opening_line': _parse_display_value_back_to_number(b.get('opening_line')),
                         'projection': _parse_display_value_back_to_number(b.get('projection')), 'over_under': b.get('over_under'),
