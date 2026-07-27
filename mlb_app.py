@@ -8022,6 +8022,15 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
 
     from lol_elo import predict_series, blend_with_head_to_head, blend_with_head_to_head_from_api, calculate_roster_continuity, apply_roster_continuity_discount
     model_prob_team1 = predict_series(ratings, m["team1_slug"], m["team2_slug"], best_of)
+    # Real addition (July 2026, per external review) — captures the
+    # real probability at each stage of the blending pipeline, not
+    # just the final number. Not shown to regular users by default,
+    # but logged so future analysis across many real bets can answer
+    # questions like "did the H2H blend actually improve calibration,
+    # or is it just adding noise/redundant with in-tournament form?" —
+    # answerable only with this real, step-by-step trail, not the
+    # final probability alone.
+    probability_waterfall = {"base_elo": round(model_prob_team1 * 100, 2)}
 
     # Real addition (July 2026, per direct user feedback and a real,
     # concrete case — Dignitas/Sentinels had two prior meetings, both
@@ -8051,6 +8060,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
                 model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
     elif sorted_history:
         model_prob_team1, h2h_detail = blend_with_head_to_head(model_prob_team1, m["team1_slug"], m["team2_slug"], sorted_history)
+    probability_waterfall["after_h2h"] = round(model_prob_team1 * 100, 2)
 
     # Real addition (July 2026) — found via a real, concrete case: a
     # KeSPA Cup match where Dplus KIA (rated 1684.7, one of the best
@@ -8071,6 +8081,8 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     if sorted_history and tournament_name_for_form:
         from lol_elo import blend_with_in_tournament_form
         model_prob_team1, in_tournament_detail = blend_with_in_tournament_form(model_prob_team1, m["team1_slug"], m["team2_slug"], tournament_name_for_form, sorted_history)
+    probability_waterfall["after_tournament_form"] = round(model_prob_team1 * 100, 2)
+    probability_waterfall["final"] = probability_waterfall["after_tournament_form"]
 
     edge = round((model_prob_team1 - market_prob_team1) * 100, 1)
 
@@ -8168,6 +8180,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "roster_continuity": roster_continuity_detail,
         "head_to_head": h2h_detail,
         "in_tournament_form": in_tournament_detail,
+        "probability_waterfall": probability_waterfall,
         "volume_confidence": round(volume_confidence, 3),
         "mm_tier": mm_tier,
     }
@@ -10063,6 +10076,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                                         'mm_tier': r.get('mm_tier'),
                                         'model_prob': r.get('recommended_model_prob'),
                                         'mm_stake_recommended': log_mm_stake_dollars,
+                                        'probability_waterfall': r.get('probability_waterfall'),
                                     })
                                     st.session_state[f'lol_log_modal_{matchup_key}'] = False
                                     st.success(f"✅ Bet logged for {r['recommended_team_name']}!")
