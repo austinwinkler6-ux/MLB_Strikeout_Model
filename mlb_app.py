@@ -9574,7 +9574,13 @@ elif nav == "📒 Bet Tracker":
         # NBA/NFL, but LoL never sets confidence_tier at all — mm_tier
         # is the only real tier field LoL bets have, so dropping it
         # hid that information completely for every LoL bet.
-        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score'] if c in bets_df.columns], errors='ignore')
+        # Real fix (July 2026, per direct user feedback) — these four
+        # fields are still saved to every bet (probability_waterfall
+        # for future calibration analysis across settled bets,
+        # model_version/ev_engine_version for internal tracking,
+        # sportsbook as real metadata) — just no longer shown as
+        # visible columns cluttering the day-to-day tracker view.
+        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'probability_waterfall', 'model_version', 'ev_engine_version', 'sportsbook'] if c in bets_df.columns], errors='ignore')
         if 'no_vig_prob' in display_df.columns:
             display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
         if 'model_prob' in display_df.columns:
