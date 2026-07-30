@@ -10097,7 +10097,8 @@ The gap between two teams' ratings is what turns into the win probability you se
                         _t2_abbrev = r['team2_slug'].upper()
                         already_bet_this_matchup = (
                             f"{_t1_abbrev} (vs {_t2_abbrev})" in already_bet_today_lol
-                            or f"{_t2_abbrev} (vs {_t1_abbrev})" in already_bet_today_lol)
+                            or f"{_t2_abbrev} (vs {_t1_abbrev})" in already_bet_today_lol
+                        )
                         if r.get("no_real_data"):
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
                         if r.get("is_low_volume"):
