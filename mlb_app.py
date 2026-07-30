@@ -10084,6 +10084,20 @@ The gap between two teams' ratings is what turns into the win probability you se
 
                     for r in sorted_lol_results:
                         matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
+                        # Real fix (July 2026) — bets are saved with pitcher =
+                        # "{TEAM_ABBREV} (vs {OPPONENT_ABBREV})" using real Cito
+                        # team slugs (see the Log Bet confirm button below), not
+                        # matchup_key (a market slug or full team-name string).
+                        # Comparing matchup_key against already_bet_today_lol
+                        # could never match, so "Already bet today" silently
+                        # never fired on this page. Build both possible real
+                        # save-format strings (whichever side was actually
+                        # picked) and check against either.
+                        _t1_abbrev = r['team1_slug'].upper()
+                        _t2_abbrev = r['team2_slug'].upper()
+                        already_bet_this_matchup = (
+                            f"{_t1_abbrev} (vs {_t2_abbrev})" in already_bet_today_lol
+                            or f"{_t2_abbrev} (vs {_t1_abbrev})" in already_bet_today_lol)
                         if r.get("no_real_data"):
                             st.caption("⚠️ Limited real match history for these teams yet — treat this one as lower-confidence.")
                         if r.get("is_low_volume"):
