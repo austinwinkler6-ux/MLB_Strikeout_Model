@@ -1021,10 +1021,24 @@ def get_already_bet_players_today_by_sport():
     """Sport-specific version for pages that mix MLB/NBA Points/NBA Assists in
     one list (Today's Card, Home) — betting a player's points shouldn't flag
     his separate assists prop (or vice versa) as already bet."""
-    return {sport: get_already_bet_players_today(sport) for sport in ('MLB', 'NBA', 'NBA_AST')}
+    # Real fix (July 2026) — now covers every real save-label sport (MLB,
+    # NBA, NBA_AST, NFL, NFL_COMPLETIONS, NFL_RECEPTIONS, LOL) via
+    # SAVE_LABEL_TO_MODEL_KEY's own keys, instead of a hardcoded 3-sport
+    # tuple that silently never checked NFL or LoL bets at all — meaning
+    # Today's Card and the Home page banner never showed "Already bet
+    # today" for any NFL or LoL pick, even if you'd already bet it.
+    return {sport: get_already_bet_players_today(sport) for sport in SAVE_LABEL_TO_MODEL_KEY.keys()}
 
 def sport_key_to_bet_label(sport_key):
-    return 'MLB' if sport_key == 'mlb_strikeouts' else nba_bet_sport_label(sport_key)
+    # Real fix (July 2026) — the old version only handled 'mlb_strikeouts'
+    # explicitly and routed everything else through nba_bet_sport_label(),
+    # which only recognizes 'nba_points'/'nba_assists' and silently falls
+    # through to 'NBA_AST' for anything else — meaning every NFL and LoL
+    # sport_key was being mislabeled as NBA_AST, which broke "already bet"
+    # checks and any other lookup keyed off this function for those sports.
+    # Now uses the already-existing, canonical MODEL_KEY_TO_SAVE_LABEL dict
+    # instead of hand-rolled branching.
+    return MODEL_KEY_TO_SAVE_LABEL.get(sport_key, 'MLB')
 
 def save_bet(bet):
     # Real fix (July 2026) — same centralized NaN sanitization as
@@ -10084,15 +10098,16 @@ The gap between two teams' ratings is what turns into the win probability you se
 
                     for r in sorted_lol_results:
                         matchup_key = r.get("market_slug") or f"{r['team1_name']}_{r['team2_name']}"
-                        # Real fix (July 2026) — bets are saved with pitcher =
-                        # "{TEAM_ABBREV} (vs {OPPONENT_ABBREV})" using real Cito
-                        # team slugs (see the Log Bet confirm button below), not
-                        # matchup_key (a market slug or full team-name string).
-                        # Comparing matchup_key against already_bet_today_lol
-                        # could never match, so "Already bet today" silently
-                        # never fired on this page. Build both possible real
-                        # save-format strings (whichever side was actually
-                        # picked) and check against either.
+                        # Real fix (July 2026) — bets are actually saved with
+                        # pitcher = "{TEAM_ABBREV} (vs {OPPONENT_ABBREV})" using
+                        # real Cito team slugs (see the Log Bet confirm button
+                        # below), NOT matchup_key (a market slug or full team-
+                        # name string). Comparing matchup_key against
+                        # already_bet_today_lol could never match, so "Already
+                        # bet today" silently never appeared on this page.
+                        # Builds both possible real save-format strings
+                        # (whichever side was actually picked) and checks
+                        # against either.
                         _t1_abbrev = r['team1_slug'].upper()
                         _t2_abbrev = r['team2_slug'].upper()
                         already_bet_this_matchup = (
