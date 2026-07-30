@@ -10119,7 +10119,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                             st.write(f"**{r['team1_name']}** vs **{r['team2_name']}**")
                             st.caption(f"{(r.get('event_title') or '').split(' - ')[-1]} — Bo{r['best_of']}")
                             st.caption(f"🕐 {format_lol_match_date(r.get('match_date'))}")
-                            if matchup_key in already_bet_today_lol:
+                            if already_bet_this_matchup:
                                 st.caption("✅ Already bet today")
                         with col2:
                             rec_rating = r['team1_rating'] if r['recommended_side'] == 'team1' else r['team2_rating']
