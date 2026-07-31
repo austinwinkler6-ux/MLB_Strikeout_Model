@@ -13109,20 +13109,6 @@ elif nav == "⚙️ Settings":
     st.subheader("Subscription")
     if not PAYWALL_ENABLED:
         st.info("💳 Subscription management coming soon — stay tuned!")
-        if is_admin:
-            with st.expander("🔧 Admin: Paywall Diagnostic"):
-                st.caption("Real, live check of exactly what this running app can currently see — not what you set in Railway, but what actually made it into st.secrets on THIS deployment. If any of these show ❌, the app genuinely never received that value (a startup-script issue, a typo in the variable name, or a deploy that hasn't picked up the change yet), regardless of what looks correct in Railway's dashboard.")
-                _diag_key = st.secrets.get("STRIPE_SECRET_KEY")
-                _diag_price = st.secrets.get("STRIPE_PRICE_ID")
-                _diag_url = st.secrets.get("APP_BASE_URL")
-                st.write(f"{'✅' if _diag_key else '❌'} STRIPE_SECRET_KEY — {'present, starts with ' + repr(_diag_key[:7]) + '...' if _diag_key else 'MISSING'}")
-                st.write(f"{'✅' if _diag_price else '❌'} STRIPE_PRICE_ID — {'present: ' + repr(_diag_price) if _diag_price else 'MISSING'}")
-                st.write(f"{'✅' if _diag_url else '❌'} APP_BASE_URL — {'present: ' + repr(_diag_url) if _diag_url else 'MISSING'}")
-                st.write(f"**PAYWALL_ENABLED = {PAYWALL_ENABLED}** (requires all three ✅ above)")
-                if _diag_key and not _diag_key.startswith("sk_"):
-                    st.warning("⚠️ STRIPE_SECRET_KEY is present but doesn't start with 'sk_' — this doesn't look like a real Stripe secret key. Check for stray quotes or whitespace pasted into the value.")
-                if _diag_price and not _diag_price.startswith("price_"):
-                    st.warning("⚠️ STRIPE_PRICE_ID is present but doesn't start with 'price_' — double check you copied the Price ID, not the Product ID (which starts with 'prod_').")
     elif subscription_status["status"] == "active":
         st.success("✅ You're subscribed — full access to every model.")
         try:
