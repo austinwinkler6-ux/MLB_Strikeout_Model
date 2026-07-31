@@ -6,3 +6,4 @@ supabase
 scipy
 streamlit-cookies-controller
 nflreadpy
+stripe
