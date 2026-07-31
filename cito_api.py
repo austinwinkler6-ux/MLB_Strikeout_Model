@@ -249,16 +249,17 @@ def get_lol_teams_list(api_key, timeout=20, max_pages=20):
     limit = 100
     offset = 0
     for page_num in range(max_pages):
-        # Real fix (July 2026) — this loop could previously fire up to
-        # max_pages (20) real, sequential requests with zero delay
-        # between them. On its own that's already a meaningful chunk of
-        # Cito's real 30-calls/min budget before the rest of the LoL
-        # pipeline (team match history, head-to-head, roster history)
-        # even starts — a real, direct contributor to hitting 429s on a
-        # run that also needed this fallback. Throttled the same way as
-        # every other real Cito call in this project.
+        # Real fix (July 2026, round 2) — the first version of this
+        # delay (2.0s/page) was correct in spirit but too heavy-handed
+        # for what's genuinely a rare fallback path (only fires when
+        # the cheap schedule-based team map leaves real teams
+        # unresolved). A lighter delay here still gives real protection
+        # (max_pages=20 pages -> ~6s worst case, not ~40s) without being
+        # the dominant source of a slow real run — the mlb_app.py side
+        # of this pipeline now uses an adaptive, rolling-window limiter
+        # instead of a flat per-call delay for the same reason.
         if page_num > 0:
-            time.sleep(2.0)
+            time.sleep(0.3)
         response = requests.get(
             f"{CITO_BASE_URL}/api/v1/lol/teams",
             headers=_cito_headers(api_key), params={"limit": limit, "offset": offset}, timeout=timeout,
