@@ -286,6 +286,36 @@ def workload_evidence_line(result):
 ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
 ADMIN_EMAIL = "austinwinkler6@icloud.com"
 
+# ---- PAYWALL / STRIPE ----
+# Real addition (July 2026) — optional, same pattern as ANTHROPIC_API_KEY/
+# CITO_API_KEY/BDL_API_KEY elsewhere in this app (st.secrets.get(...), not
+# a hard-required st.secrets[...]). This is deliberate: the paywall code
+# below can ship and deploy NOW, safely inert, without needing Stripe set
+# up yet — PAYWALL_ENABLED only flips to True once all three real secrets
+# (STRIPE_SECRET_KEY, STRIPE_PRICE_ID, APP_BASE_URL) are actually
+# configured. Until then, every user gets full, unrestricted access and
+# no paywall UI shows anywhere — a missing/incomplete Stripe setup should
+# never accidentally lock out every real user or crash the app on boot.
+STRIPE_SECRET_KEY = st.secrets.get("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = st.secrets.get("STRIPE_PRICE_ID")
+APP_BASE_URL = st.secrets.get("APP_BASE_URL")
+PAYWALL_ENABLED = bool(STRIPE_SECRET_KEY and STRIPE_PRICE_ID and APP_BASE_URL)
+if PAYWALL_ENABLED:
+    import stripe
+    stripe.api_key = STRIPE_SECRET_KEY
+
+TRIAL_LENGTH_DAYS = 7
+# Real, throttled re-verification interval against Stripe's own API for
+# any user with a real, currently-active subscription — this app uses a
+# Checkout-redirect-then-verify flow rather than a live webhook receiver
+# (Streamlit doesn't expose arbitrary custom routes the way a normal
+# backend would), so this periodic re-check is what catches a real
+# cancellation or failed renewal on Stripe's side without needing one.
+# 6 hours is a real, deliberate balance — frequent enough that a real
+# cancellation doesn't go unnoticed for long, infrequent enough that it
+# doesn't add a real Stripe API call to every single page load.
+STRIPE_RECHECK_INTERVAL_SECONDS = 6 * 60 * 60
+
 # ---- EV CALCULATOR ----
 EDGE_THRESHOLDS = {
     "mlb_strikeouts": 0.75,
@@ -960,6 +990,216 @@ user = st.session_state['user']
 user_id = user.id
 is_admin = user.email.lower() == ADMIN_EMAIL.lower()
 
+# ---- SUBSCRIPTION / PAYWALL ----
+def get_or_refresh_subscription(user_id, email):
+    """Real subscription/trial status for the current user, read from the
+    'subscriptions' table (see the required SQL migration). Creates a
+    fresh TRIAL_LENGTH_DAYS-day trial row on the very first real check for
+    any user who doesn't have one yet — this deliberately covers both a
+    brand-new sign-up AND every existing user's first load after this
+    feature shipped (every real user gets a real trial starting from when
+    they first see this, rather than being silently locked out or
+    silently grandfathered in with no trial at all).
+
+    Periodically re-verifies a real, currently-active subscription against
+    Stripe's own API (throttled to once per STRIPE_RECHECK_INTERVAL_
+    SECONDS) — this app uses a real Checkout-redirect-then-verify flow
+    rather than a live webhook receiver (Streamlit doesn't expose
+    arbitrary custom routes the way a normal backend does), so this
+    periodic re-check is what catches a real cancellation or failed
+    renewal on Stripe's side without one.
+
+    Returns {'status': 'trialing'|'active'|'expired', 'days_left_in_trial':
+    int or None, 'unlimited': bool}. Fails OPEN on any real Supabase/
+    Stripe error — treats the user as still-in-trial rather than crashing
+    the page or hard-locking a real, possibly-paying user out over a
+    transient error."""
+    if not PAYWALL_ENABLED:
+        return {"status": "active", "days_left_in_trial": None, "unlimited": True}
+
+    now = datetime.now(ZoneInfo("UTC"))
+    try:
+        res = supabase.table("subscriptions").select("*").eq("user_id", user_id).execute()
+        row = res.data[0] if res.data else None
+    except Exception:
+        return {"status": "trialing", "days_left_in_trial": TRIAL_LENGTH_DAYS, "unlimited": False}
+
+    if row is None:
+        trial_end = now + timedelta(days=TRIAL_LENGTH_DAYS)
+        try:
+            supabase.table("subscriptions").insert({
+                "user_id": user_id, "status": "trialing",
+                "trial_start_date": now.isoformat(), "trial_end_date": trial_end.isoformat(),
+            }).execute()
+        except Exception:
+            pass  # real, honest fallback — still treat this load as a fresh trial even if the insert failed
+        return {"status": "trialing", "days_left_in_trial": TRIAL_LENGTH_DAYS, "unlimited": False}
+
+    status = row.get("status") or "trialing"
+    stripe_subscription_id = row.get("stripe_subscription_id")
+    last_check = row.get("last_stripe_check")
+
+    if stripe_subscription_id and status in ("active", "past_due"):
+        should_recheck = True
+        if last_check:
+            try:
+                last_check_dt = datetime.fromisoformat(str(last_check).replace("Z", "+00:00"))
+                should_recheck = (now - last_check_dt).total_seconds() > STRIPE_RECHECK_INTERVAL_SECONDS
+            except Exception:
+                should_recheck = True
+        if should_recheck:
+            try:
+                sub = stripe.Subscription.retrieve(stripe_subscription_id)
+                new_status = "active" if sub.status in ("active", "trialing") else "expired"
+                period_end = datetime.fromtimestamp(sub.current_period_end, tz=ZoneInfo("UTC")).isoformat()
+                supabase.table("subscriptions").update({
+                    "status": new_status, "current_period_end": period_end,
+                    "last_stripe_check": now.isoformat(),
+                }).eq("user_id", user_id).execute()
+                status = new_status
+            except Exception:
+                pass  # real, honest fallback — keep the last-known cached status rather than fail the page
+
+    if status == "active":
+        return {"status": "active", "days_left_in_trial": None, "unlimited": True}
+
+    if status == "trialing":
+        trial_end_raw = row.get("trial_end_date")
+        try:
+            trial_end_dt = datetime.fromisoformat(str(trial_end_raw).replace("Z", "+00:00"))
+        except Exception:
+            trial_end_dt = now + timedelta(days=TRIAL_LENGTH_DAYS)
+        if trial_end_dt <= now:
+            try:
+                supabase.table("subscriptions").update({"status": "expired"}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return {"status": "expired", "days_left_in_trial": 0, "unlimited": False}
+        # Rounds UP to the nearest whole day — a trial with 2 hours left
+        # still honestly reads as "1 day left," not "0 days left."
+        days_left = max(1, int((trial_end_dt - now).total_seconds() // 86400) + 1)
+        return {"status": "trialing", "days_left_in_trial": days_left, "unlimited": False}
+
+    return {"status": "expired", "days_left_in_trial": 0, "unlimited": False}
+
+
+def create_stripe_checkout_url(user_id, email):
+    """Creates a real Stripe Checkout Session in subscription mode and
+    returns its real, hosted checkout URL, or None if creation failed (a
+    real Stripe/network error) — callers must handle a None return
+    gracefully rather than assume success."""
+    if not PAYWALL_ENABLED:
+        return None
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+            client_reference_id=user_id,
+            customer_email=email,
+            success_url=f"{APP_BASE_URL}?checkout=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{APP_BASE_URL}?checkout=cancelled",
+        )
+        return checkout_session.url
+    except Exception as e:
+        st.session_state['_stripe_checkout_error'] = str(e)
+        return None
+
+
+def create_stripe_billing_portal_url(stripe_customer_id):
+    """Real, standard self-service subscription management — creates a
+    real Stripe Billing Portal session so a real, active subscriber can
+    update their payment method or cancel on their own, without needing
+    you to do it manually on their behalf. Returns None (not an error) if
+    there's no real stripe_customer_id yet (e.g. never subscribed) or the
+    real session creation call fails."""
+    if not PAYWALL_ENABLED or not stripe_customer_id:
+        return None
+    try:
+        portal_session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id,
+            return_url=APP_BASE_URL,
+        )
+        return portal_session.url
+    except Exception:
+        return None
+
+
+def handle_stripe_checkout_return(user_id):
+    """Real, honest handling of the redirect back from Stripe Checkout —
+    this app has no live webhook receiver (Streamlit doesn't expose
+    arbitrary custom routes the way a normal backend does), so a real,
+    successful subscription is confirmed HERE: by verifying the real
+    checkout session directly against Stripe's own API when the person
+    lands back on this app with ?checkout=success&session_id=... in the
+    URL, rather than trusting the redirect alone (a bare redirect can be
+    spoofed; a verified, real Stripe API lookup can't)."""
+    if not PAYWALL_ENABLED:
+        return
+    params = st.query_params
+    if params.get("checkout") == "success" and params.get("session_id"):
+        try:
+            checkout_session = stripe.checkout.Session.retrieve(params["session_id"])
+            if checkout_session.payment_status == "paid" or checkout_session.status == "complete":
+                now = datetime.now(ZoneInfo("UTC"))
+                subscription_id = checkout_session.subscription
+                period_end_iso = None
+                if subscription_id:
+                    sub = stripe.Subscription.retrieve(subscription_id)
+                    period_end_iso = datetime.fromtimestamp(sub.current_period_end, tz=ZoneInfo("UTC")).isoformat()
+                supabase.table("subscriptions").upsert({
+                    "user_id": user_id, "status": "active",
+                    "stripe_customer_id": checkout_session.customer,
+                    "stripe_subscription_id": subscription_id,
+                    "current_period_end": period_end_iso,
+                    "last_stripe_check": now.isoformat(),
+                }, on_conflict="user_id").execute()
+                st.session_state.pop('_subscription_status', None)
+                st.session_state['_just_subscribed'] = True
+            else:
+                st.session_state['_stripe_checkout_error'] = f"Real checkout session status was '{checkout_session.status}' / payment_status '{checkout_session.payment_status}' — not confirmed as paid."
+        except Exception as e:
+            st.session_state['_stripe_checkout_error'] = str(e)
+        finally:
+            st.query_params.clear()
+            st.rerun()
+    elif params.get("checkout") == "cancelled":
+        st.query_params.clear()
+
+
+def render_trial_banner(subscription_status, user_id, email):
+    """Real, soft banner shown at the top of the main content area on
+    EVERY page (per direct product decision) — a real trial countdown
+    while trialing, a real 'trial ended' nudge once expired (though an
+    expired user only ever reaches Home anyway, per the real hard-block
+    in the sidebar above), and nothing at all for a real, active
+    subscriber or when the paywall isn't configured yet."""
+    if not PAYWALL_ENABLED or subscription_status["status"] == "active":
+        return
+    if st.session_state.pop('_just_subscribed', False):
+        st.success("✅ You're subscribed! Full access unlocked.")
+        return
+    checkout_url = None
+    if st.session_state.get('_show_checkout_link') or subscription_status["status"] == "expired":
+        checkout_url = create_stripe_checkout_url(user_id, email)
+    if subscription_status["status"] == "trialing":
+        days_left = subscription_status["days_left_in_trial"]
+        col_msg, col_btn = st.columns([4, 1])
+        with col_msg:
+            st.info(f"🎉 {days_left} day{'s' if days_left != 1 else ''} left in your free trial — subscribe now to keep full access after it ends.")
+        with col_btn:
+            st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+            if st.button("Subscribe", key="banner_subscribe_trial", use_container_width=True):
+                st.session_state['_show_checkout_link'] = True
+                st.rerun()
+    elif subscription_status["status"] == "expired":
+        st.warning("🔒 Your free trial has ended. Subscribe to unlock full access to every model, Bet Tracker, and more.")
+    if checkout_url:
+        st.link_button("🔓 Continue to Checkout", checkout_url, use_container_width=True)
+    elif st.session_state.get('_stripe_checkout_error'):
+        st.error(f"Couldn't start checkout — real error: {st.session_state['_stripe_checkout_error']}")
+        st.session_state.pop('_stripe_checkout_error', None)
+
+
 def refresh_supabase_session_if_needed():
     """Supabase access tokens expire (typically ~1 hour) — without this, any
     session left open longer than that starts throwing 'JWT expired' on every
@@ -994,6 +1234,23 @@ def refresh_supabase_session_if_needed():
 
 refresh_supabase_session_if_needed()
 supabase.postgrest.auth(st.session_state['session'].access_token)
+
+# Real, deliberate order: handle any real return-from-Stripe-Checkout
+# redirect FIRST (before anything else renders, since a successful real
+# subscription triggers its own st.rerun() to refresh state cleanly),
+# then compute the real subscription/trial status once per session
+# (cached in session_state, not recomputed on every single rerun — this
+# still calls Stripe at most once per STRIPE_RECHECK_INTERVAL_SECONDS
+# regardless, but avoids a redundant real Supabase read on every rerun
+# too). The admin account always gets real, full access regardless of
+# real trial/subscription state — they need it to manage and test the
+# site itself.
+handle_stripe_checkout_return(user_id)
+if '_subscription_status' not in st.session_state:
+    st.session_state['_subscription_status'] = get_or_refresh_subscription(user_id, user.email)
+subscription_status = st.session_state['_subscription_status']
+if is_admin:
+    subscription_status = {"status": "active", "days_left_in_trial": None, "unlimited": True}
 
 # ---- DATABASE FUNCTIONS ----
 def load_bets(sport=None):
@@ -4537,7 +4794,16 @@ with st.sidebar:
 
     st.markdown("---")
     admin_nav = ["🔬 Model Lab", "🧪 Backtest"] if is_admin else []
-    nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "🎮 Esports (LoL)", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
+    full_nav_options = ["🏠 Home", "🎯 Today's Card", "⚾ MLB Models", "🏈 NFL Models", "🏀 NBA Models", "🎮 Esports (LoL)", "📒 Bet Tracker", "📊 Model Performance"] + admin_nav + ["⚙️ Settings"]
+    # Real fix (July 2026) — a real, expired-trial user with no active
+    # subscription only ever sees "🏠 Home" as a real, selectable nav
+    # option, per the real, deliberate product decision behind this
+    # paywall: Home still shows real value (today's highest-rated pick)
+    # and carries the real Subscribe CTA, everything else is locked.
+    if subscription_status["status"] == "expired":
+        nav_options = ["🏠 Home"]
+    else:
+        nav_options = full_nav_options
     if st.session_state.get('nav_redirect') in nav_options:
         st.session_state['main_nav_radio'] = st.session_state['nav_redirect']
         del st.session_state['nav_redirect']
@@ -4547,11 +4813,29 @@ with st.sidebar:
         key="main_nav_radio",
         label_visibility="collapsed"
     )
+    if PAYWALL_ENABLED:
+        st.markdown("---")
+        if subscription_status["status"] == "trialing":
+            days_left = subscription_status["days_left_in_trial"]
+            st.caption(f"🎉 {days_left} day{'s' if days_left != 1 else ''} left in your free trial")
+        elif subscription_status["status"] == "expired":
+            st.caption("🔒 Your trial has ended")
+        elif subscription_status["status"] == "active" and not is_admin:
+            st.caption("✅ Subscribed")
     st.markdown("---")
     st.caption(f"Logged in as {user.email}")
     if st.button("Logout", use_container_width=True):
         sign_out()
         st.rerun()
+
+# Real, deliberate hard block — defense-in-depth on top of nav_options
+# itself only ever including locked pages when the status genuinely
+# allows it. Even if `nav` somehow ends up set to a locked page (a stale
+# session_state value from before the trial expired, a leftover
+# nav_redirect, etc.), this forces it back to Home before ANY page
+# content below gets a chance to render.
+if subscription_status["status"] == "expired" and nav != "🏠 Home":
+    nav = "🏠 Home"
 
 # ---- NFL DATA LAYER ----
 league_avg_plays_per_game = 64.0  # rough NFL-wide baseline, refined by real data at runtime where possible
@@ -8587,6 +8871,11 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     debug_info["low_volume_results_discounted_not_filtered"] = low_volume_results
     return {"debug": debug_info, "results": results}
 
+# Real, soft banner shown on every page — a hard block (via the sidebar
+# nav trim + the nav-override above) already handles the "premium stuff"
+# side of this; this is the "everywhere" side.
+render_trial_banner(subscription_status, user_id, user.email)
+
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
     _bankroll_settings = get_user_settings()
@@ -8674,6 +8963,36 @@ if nav == "🏠 Home":
                 <p style='color: var(--mm-text-dim); margin: 0;'>No games on the board right now — check back once today's slate is up.</p>
             </div>
         """, unsafe_allow_html=True)
+
+    # Real, deliberate stop point (July 2026) — per the real product
+    # decision behind this paywall, an expired-trial user with no active
+    # subscription sees ONLY the hero header and today's single highest-
+    # rated pick above (both already rendered by this point), plus a real
+    # Subscribe CTA here — nothing else on Home (bankroll teaser, feature
+    # grid, AI thesis blurb, About section) renders for them. This is on
+    # top of the sidebar already only offering "🏠 Home" as a real,
+    # selectable nav option, and the hard-block right after the sidebar
+    # that forces nav back to Home regardless of how it got set.
+    if subscription_status["status"] == "expired":
+        st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
+        expired_cta_col1, expired_cta_col2, expired_cta_col3 = st.columns([1, 1.4, 1])
+        with expired_cta_col2:
+            st.markdown("""
+                <div class='mm-card' style='text-align: center; border-color: var(--mm-accent);'>
+                    <div style='font-size: 1.6rem; margin-bottom: 8px;'>🔓</div>
+                    <h3 style='margin: 0 0 8px 0; font-size: 1.2rem;'>Unlock Every Model</h3>
+                    <p style='color: var(--mm-text-dim); font-size: 0.92rem; margin-bottom: 4px;'>
+                        Your free trial has ended. Subscribe to get every pick, every sport, Today's Card, Bet Tracker, and MM Stake — not just today's top play.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+            st.markdown("<div style='padding-top: 10px;'></div>", unsafe_allow_html=True)
+            _home_checkout_url = create_stripe_checkout_url(user_id, user.email)
+            if _home_checkout_url:
+                st.link_button("🔓 Subscribe Now", _home_checkout_url, use_container_width=True, type="primary")
+            else:
+                st.button("🔓 Subscribe Now", use_container_width=True, disabled=True, help="Checkout isn't available right now — try again shortly.")
+        st.stop()
 
     cta_col1, cta_col2, cta_col3 = st.columns([1, 1, 1])
     with cta_col2:
@@ -12788,7 +13107,50 @@ elif nav == "⚙️ Settings":
 
     st.markdown("---")
     st.subheader("Subscription")
-    st.info("💳 Subscription management coming soon — stay tuned!")
+    if not PAYWALL_ENABLED:
+        st.info("💳 Subscription management coming soon — stay tuned!")
+        if is_admin:
+            with st.expander("🔧 Admin: Paywall Diagnostic"):
+                st.caption("Real, live check of exactly what this running app can currently see — not what you set in Railway, but what actually made it into st.secrets on THIS deployment. If any of these show ❌, the app genuinely never received that value (a startup-script issue, a typo in the variable name, or a deploy that hasn't picked up the change yet), regardless of what looks correct in Railway's dashboard.")
+                _diag_key = st.secrets.get("STRIPE_SECRET_KEY")
+                _diag_price = st.secrets.get("STRIPE_PRICE_ID")
+                _diag_url = st.secrets.get("APP_BASE_URL")
+                st.write(f"{'✅' if _diag_key else '❌'} STRIPE_SECRET_KEY — {'present, starts with ' + repr(_diag_key[:7]) + '...' if _diag_key else 'MISSING'}")
+                st.write(f"{'✅' if _diag_price else '❌'} STRIPE_PRICE_ID — {'present: ' + repr(_diag_price) if _diag_price else 'MISSING'}")
+                st.write(f"{'✅' if _diag_url else '❌'} APP_BASE_URL — {'present: ' + repr(_diag_url) if _diag_url else 'MISSING'}")
+                st.write(f"**PAYWALL_ENABLED = {PAYWALL_ENABLED}** (requires all three ✅ above)")
+                if _diag_key and not _diag_key.startswith("sk_"):
+                    st.warning("⚠️ STRIPE_SECRET_KEY is present but doesn't start with 'sk_' — this doesn't look like a real Stripe secret key. Check for stray quotes or whitespace pasted into the value.")
+                if _diag_price and not _diag_price.startswith("price_"):
+                    st.warning("⚠️ STRIPE_PRICE_ID is present but doesn't start with 'price_' — double check you copied the Price ID, not the Product ID (which starts with 'prod_').")
+    elif subscription_status["status"] == "active":
+        st.success("✅ You're subscribed — full access to every model.")
+        try:
+            _sub_row_res = supabase.table("subscriptions").select("stripe_customer_id, current_period_end").eq("user_id", user_id).execute()
+            _sub_row = _sub_row_res.data[0] if _sub_row_res.data else None
+        except Exception:
+            _sub_row = None
+        if _sub_row and _sub_row.get("current_period_end"):
+            try:
+                _period_end_dt = datetime.fromisoformat(str(_sub_row["current_period_end"]).replace("Z", "+00:00"))
+                st.caption(f"Renews {_period_end_dt.strftime('%B %d, %Y')}")
+            except Exception:
+                pass
+        if _sub_row and _sub_row.get("stripe_customer_id"):
+            _portal_url = create_stripe_billing_portal_url(_sub_row["stripe_customer_id"])
+            if _portal_url:
+                st.link_button("Manage Subscription", _portal_url, use_container_width=True)
+    elif subscription_status["status"] == "trialing":
+        _days_left = subscription_status["days_left_in_trial"]
+        st.info(f"🎉 {_days_left} day{'s' if _days_left != 1 else ''} left in your free trial.")
+        _settings_checkout_url = create_stripe_checkout_url(user_id, user.email)
+        if _settings_checkout_url:
+            st.link_button("🔓 Subscribe Now", _settings_checkout_url, use_container_width=True, type="primary")
+    else:
+        st.warning("🔒 Your free trial has ended.")
+        _settings_checkout_url = create_stripe_checkout_url(user_id, user.email)
+        if _settings_checkout_url:
+            st.link_button("🔓 Subscribe Now", _settings_checkout_url, use_container_width=True, type="primary")
     st.markdown("---")
     st.subheader("Danger Zone")
     if st.button("🚪 Logout", use_container_width=True):
