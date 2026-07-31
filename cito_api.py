@@ -39,6 +39,7 @@ future version wants game-level rather than series-level ratings.
 """
 
 import requests
+import time
 from datetime import datetime, timezone
 
 CITO_BASE_URL = "https://api.citoapi.com"
@@ -247,7 +248,17 @@ def get_lol_teams_list(api_key, timeout=20, max_pages=20):
     all_teams = []
     limit = 100
     offset = 0
-    for _ in range(max_pages):
+    for page_num in range(max_pages):
+        # Real fix (July 2026) — this loop could previously fire up to
+        # max_pages (20) real, sequential requests with zero delay
+        # between them. On its own that's already a meaningful chunk of
+        # Cito's real 30-calls/min budget before the rest of the LoL
+        # pipeline (team match history, head-to-head, roster history)
+        # even starts — a real, direct contributor to hitting 429s on a
+        # run that also needed this fallback. Throttled the same way as
+        # every other real Cito call in this project.
+        if page_num > 0:
+            time.sleep(2.0)
         response = requests.get(
             f"{CITO_BASE_URL}/api/v1/lol/teams",
             headers=_cito_headers(api_key), params={"limit": limit, "offset": offset}, timeout=timeout,
