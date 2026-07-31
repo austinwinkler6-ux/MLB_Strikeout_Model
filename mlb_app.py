@@ -8365,7 +8365,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     """Real extraction (code split #3) — fetches real match history for
     every unique team across all resolved matchups, then combines,
     dedupes, and chronologically sorts it into one dataset ready for
-    Elo. Returns (sorted_history, fetch_errors).
+    Elo. Returns (sorted_history, fetch_errors, per_team_fetch_counts).
 
     Real fix (July 2026) — also applies infer_missing_game_winners()
     to the combined history before returning it. A real, confirmed data
@@ -8394,7 +8394,22 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     own copy), and on_step(label), if given, is called before each
     real per-team fetch — real, honest progress feedback for a real
     run that can take a while, instead of one static spinner that
-    looks frozen the whole time."""
+    looks frozen the whole time.
+
+    Real fix (July 2026, round 6, per direct user report — a team
+    showing a suspicious, unmoved default 1500 Elo rating despite its
+    own underlying Cito data being confirmed completely healthy via the
+    separate admin coverage tool) — an EXCEPTION during this fetch
+    already gets recorded in fetch_errors, but a real, quieter failure
+    mode wasn't visible anywhere: a call that returns successfully (no
+    exception) but with zero or fewer completed matches than the team
+    actually has, for any real reason (a transient, malformed real
+    response, a real caching edge case, etc.). per_team_fetch_counts
+    records the REAL number of completed matches this specific live
+    run actually received for every team, so that can be checked
+    directly against the separate coverage tool's own independent
+    count — if they disagree, that's real, direct evidence the live
+    run itself received bad data, even with zero exceptions raised."""
     from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
     from lol_elo import combine_and_dedupe_matches
 
@@ -8403,6 +8418,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
 
     all_team_histories = []
     fetch_errors = []
+    per_team_fetch_counts = {}
     for slug in unique_slugs:
         if on_step:
             on_step(f"Match history: {slug}")
@@ -8410,13 +8426,15 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
             team_matches = _cached_lol_team_matches(api_key, slug)
             completed = extract_completed_matches(team_matches)
             all_team_histories.append(completed)
+            per_team_fetch_counts[slug] = len(completed)
         except Exception as e:
             fetch_errors.append(f"{slug}: {e}")
+            per_team_fetch_counts[slug] = None  # a real, honest "we don't know" — the fetch itself failed
 
     combined_history = combine_and_dedupe_matches(all_team_histories)
     combined_history = infer_missing_game_winners(combined_history)
     sorted_history = sort_matches_chronologically(combined_history)
-    return sorted_history, fetch_errors
+    return sorted_history, fetch_errors, per_team_fetch_counts
 
 
 def _fetch_lol_team_rosters(unique_slugs, api_key, on_step=None):
@@ -8989,10 +9007,29 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
             step_counter[0] += 1
             progress_callback(step_counter[0], total_steps, label)
 
-    sorted_history, fetch_errors = _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=unique_slugs, on_step=_tick)
+    sorted_history, fetch_errors, per_team_fetch_counts = _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=unique_slugs, on_step=_tick)
     ratings = build_team_ratings_from_history(sorted_history, team_region_map=team_region_map)
     from lol_elo import count_international_matches
     international_counts = count_international_matches(sorted_history, team_region_map)
+
+    # Real diagnostic (July 2026, round 6, per direct user report) — a
+    # real, direct record of exactly what happened to every unique
+    # team's real history during THIS live run: how many completed
+    # matches this run actually received for them (None if the fetch
+    # itself raised an exception — see fetch_errors), and whether they
+    # ended up with any real Elo rating movement at all afterward. A
+    # team showing real_completed_matches_this_run > 0 but never_moved_
+    # from_default=True would be direct, real evidence of a bug further
+    # downstream (combine/dedupe, or build_team_ratings_from_history
+    # itself) — not a Cito data problem, since the data clearly arrived.
+    team_history_diagnostics = {
+        slug: {
+            "real_completed_matches_this_run": per_team_fetch_counts.get(slug),
+            "ended_up_in_ratings": slug in ratings,
+            "final_rating": round(ratings[slug], 1) if slug in ratings else None,
+        }
+        for slug in unique_slugs
+    }
 
     # Real fix (July 2026) — real roster history is now fetched ONCE per
     # unique team (throttled, with retry-on-429, and cached across
@@ -9066,6 +9103,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     debug_info["filtered_as_already_started"] = filtered_as_already_started
     debug_info["low_volume_results_discounted_not_filtered"] = low_volume_results
     debug_info["matchups_missing_exact_time_no_cito_schedule_match"] = matchups_missing_exact_time
+    debug_info["team_history_diagnostics"] = team_history_diagnostics
     return {"debug": debug_info, "results": results}
 
 # Real, soft banner shown on every page — a hard block (via the sidebar
@@ -11302,6 +11340,25 @@ The gap between two teams' ratings is what turns into the win probability you se
                             _slug_lookup_rows.append({"Team Name": _r.get(_name_key), "Real Resolved Slug": _r.get(_slug_key)})
                 with st.expander(f"Real team_name → slug lookup from the last run ({len(_slug_lookup_rows)} teams)"):
                     st.dataframe(pd.DataFrame(_slug_lookup_rows), use_container_width=True)
+                # Real addition (July 2026, per direct user report) — the
+                # real fetch_errors list from _fetch_lol_team_histories()
+                # was already being attached to every real result dict
+                # (result["fetch_errors"] = fetch_errors), but never
+                # actually surfaced anywhere in the UI — meaning a real,
+                # transient failure fetching one specific team's match
+                # history during a real run (which would leave that team
+                # stuck at the default 1500 rating despite their real,
+                # underlying Cito data being completely healthy) was
+                # invisible without this. Same fetch_errors list is
+                # shared across every result from one run, so grabbing
+                # it from the first result is enough.
+                _run_fetch_errors = (_last_lol_output["results"][0].get("fetch_errors") or []) if _last_lol_output["results"] else []
+                if _run_fetch_errors:
+                    st.error(f"⚠️ {len(_run_fetch_errors)} real fetch error(s) occurred during the last run's team-history fetch — any team listed here had ZERO real games processed for it (stuck at the default 1500 rating), even if its underlying Cito data is completely fine:")
+                    for _err in _run_fetch_errors:
+                        st.code(_err)
+                else:
+                    st.caption("✅ No fetch errors recorded during the last run's team-history fetch phase.")
             else:
                 st.caption("Run the projections above at least once first to populate a real team_name → slug lookup here.")
             diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
