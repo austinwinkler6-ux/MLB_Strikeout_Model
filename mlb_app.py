@@ -1087,7 +1087,18 @@ def create_stripe_checkout_url(user_id, email):
     """Creates a real Stripe Checkout Session in subscription mode and
     returns its real, hosted checkout URL, or None if creation failed (a
     real Stripe/network error) — callers must handle a None return
-    gracefully rather than assume success."""
+    gracefully rather than assume success.
+
+    Real addition (July 2026) — allow_promotion_codes=True adds a real,
+    Stripe-hosted "Add promotion code" field directly on the Checkout
+    page. This is Stripe's own native discount-code mechanism, not
+    something built here: real Coupons (the actual discount — a percent
+    off, a flat amount off, free/100% off) and real Promotion Codes (the
+    customer-facing string tied to a Coupon, e.g. "FRIENDS100" or
+    "HOLIDAY25") are both created and managed entirely in the Stripe
+    Dashboard (Product catalog → Coupons), with zero code changes needed
+    per code — expiration dates, max redemption counts, and which coupon
+    a given code maps to are all real, first-class Stripe settings."""
     if not PAYWALL_ENABLED:
         return None
     try:
@@ -1096,6 +1107,7 @@ def create_stripe_checkout_url(user_id, email):
             line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
             client_reference_id=user_id,
             customer_email=email,
+            allow_promotion_codes=True,
             success_url=f"{APP_BASE_URL}?checkout=success&session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{APP_BASE_URL}?checkout=cancelled",
         )
