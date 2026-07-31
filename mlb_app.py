@@ -11065,32 +11065,41 @@ The gap between two teams' ratings is what turns into the win probability you se
 
             st.markdown("---")
             st.subheader("🔍 Raw Market/Event Field Inspector")
-            st.caption("Answers 'why isn't the real match time available?' with real data instead of another guess — dumps the COMPLETE raw event and market objects for one real, individual scheduled matchup (specifically a 'Match Winner' market, not a season-long futures market like 'LCK 2026 Season Winner' — a real bug in an earlier version of this tool grabbed whatever event came first, which gave a misleading picture since futures markets and single matches carry very different fields). The real time field (if one exists) will be visible here, or its genuine absence will be confirmed.")
-            if st.button("Fetch and show raw event data", key="lol_raw_inspector_btn"):
+            st.caption("Answers 'why isn't the real match time available?' with real data instead of another guess — real fix (July 2026): now fetches EVERY real 'Match Winner' market (not season-long futures markets like 'LCK 2026 Season Winner') and lets you pick a SPECIFIC one to inspect, instead of always grabbing whichever came first. Useful for checking a real matchup you already know is missing an exact time from the Pipeline Diagnostics panel above.")
+            if st.button("Fetch all real Match Winner markets", key="lol_raw_inspector_fetch_btn"):
                 with st.spinner("Fetching raw Polymarket data..."):
                     try:
                         from polymarket_api import get_all_polymarket_events
                         raw_events = get_all_polymarket_events(tag_slug="league-of-legends", closed=False)
-                        real_match_event = None
-                        real_match_market = None
+                        real_match_pairs = []
                         for event in raw_events:
                             for market in event.get("markets", []):
                                 if (market.get("groupItemTitle") or "").strip().lower() == "match winner":
-                                    real_match_event = event
-                                    real_match_market = market
-                                    break
-                            if real_match_market:
-                                break
-                        if real_match_market:
-                            st.success(f"✅ Found a real, individual 'Match Winner' market (out of {len(raw_events)} total events) — showing its complete raw fields:")
-                            st.write("**Complete, raw market object:**")
-                            st.json(real_match_market)
-                            st.write("**Complete, raw parent event object (top-level fields only, not the full nested markets list):**")
-                            st.json({k: v for k, v in real_match_event.items() if k != "markets"})
-                        else:
-                            st.warning("No real 'Match Winner' markets found in this fetch to inspect.")
+                                    real_match_pairs.append({"event": event, "market": market})
+                        st.session_state['_lol_raw_inspector_matches'] = real_match_pairs
+                        st.success(f"✅ Found {len(real_match_pairs)} real 'Match Winner' market(s) out of {len(raw_events)} total events fetched.")
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
+
+            _inspector_matches = st.session_state.get('_lol_raw_inspector_matches', [])
+            if _inspector_matches:
+                def _inspector_label(idx):
+                    _m = _inspector_matches[idx]["market"]
+                    _e = _inspector_matches[idx]["event"]
+                    _label_text = _m.get("question") or _e.get("title") or "Unknown matchup"
+                    return f"{idx}: {_label_text}"
+
+                selected_idx = st.selectbox(
+                    "Pick a specific real matchup to inspect",
+                    options=list(range(len(_inspector_matches))),
+                    format_func=_inspector_label,
+                    key="lol_raw_inspector_select",
+                )
+                _selected = _inspector_matches[selected_idx]
+                st.write("**Complete, raw market object:**")
+                st.json(_selected["market"])
+                st.write("**Complete, raw parent event object (top-level fields only, not the full nested markets list):**")
+                st.json({k: v for k, v in _selected["event"].items() if k != "markets"})
 
             st.markdown("---")
             st.subheader("🧪 Live Cito API Safety Check")
