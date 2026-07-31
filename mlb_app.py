@@ -8900,12 +8900,30 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         for r in results if r.get("is_low_volume")
     ]
 
+    # Real diagnostic (July 2026, per direct user report) — real,
+    # exact match times only ever come from Cito's own schedule/today +
+    # schedule/upcoming data (via match_time_map); a matchup whose real
+    # team-pair wasn't found there falls back to a date-only display
+    # (see format_lol_match_date's "exact time not available" branch),
+    # even when Polymarket's own site happens to show a time elsewhere.
+    # A real Cito time is always a full ISO timestamp (contains "T");
+    # the date-only fallback never does — this distinguishes the two
+    # without needing any new real API calls, purely from data already
+    # fetched. Surfaces exactly which real matchups are missing Cito
+    # schedule coverage, so a real, evidence-based next fix (rather than
+    # a guess) can be built once we see the pattern.
+    matchups_missing_exact_time = [
+        {"team1": r["team1_name"], "team2": r["team2_name"], "date_only_value": r.get("match_date")}
+        for r in results if r.get("match_date") and "T" not in str(r.get("match_date"))
+    ]
+
     debug_info["final_result_count"] = len(results)
     debug_info["filtered_as_illiquid"] = filtered_as_illiquid
     debug_info["filtered_bad_price_data"] = filtered_bad_price_data
     debug_info["filtered_as_too_far_ahead"] = filtered_as_too_far_ahead
     debug_info["filtered_as_already_started"] = filtered_as_already_started
     debug_info["low_volume_results_discounted_not_filtered"] = low_volume_results
+    debug_info["matchups_missing_exact_time_no_cito_schedule_match"] = matchups_missing_exact_time
     return {"debug": debug_info, "results": results}
 
 # Real, soft banner shown on every page — a hard block (via the sidebar
