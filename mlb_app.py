@@ -8438,7 +8438,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     return result, None
 
 
-def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=2, progress_callback=None):
+def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=1, progress_callback=None):
     """The real, full pipeline — now a thin orchestrator over the real,
     focused helper functions above (code split, July 2026, per external
     review: the original single ~330-line function was flagged as
@@ -8457,6 +8457,15 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     to display and log a bet — or an 'error' key if something failed,
     following the same honest-failure pattern used throughout this
     project rather than silently returning an empty result.
+
+    Real fix (July 2026, round 4, per direct user feedback) —
+    max_days_ahead default narrowed from 2 to 1: real matchups more
+    than a day out weren't just less useful for betting right now,
+    they were also directly inflating the real Cito call count (every
+    extra matchup means one more real head-to-head call, plus more
+    unique teams needing real match-history/roster fetches) — fewer
+    real matchups in scope means fewer real calls needed, which also
+    helps the real, honest speed cost described below.
 
     Real fix (July 2026, round 3) — progress_callback(current, total,
     label), if given, is called before every real Cito call across all
