@@ -7816,6 +7816,47 @@ def _call_cito_with_backoff(fn, *args, max_retries=2, base_backoff=5.0, **kwargs
     raise last_error
 
 
+# Real fix (July 2026, round 3) — even with the flat-delay problem
+# fixed, a genuinely busy real LoL slate (many concurrent leagues —
+# LCK, LPL, LEC, LCS, CBLOL, etc — all under one "league-of-legends"
+# tag) can legitimately need well over 100 real, sequential Cito calls
+# in one run (2 unique-team calls each for match history + roster,
+# plus 1 head-to-head call per matchup). Against a real 30-calls/min
+# limit, that volume alone can genuinely take several real minutes —
+# not a bug, just the honest cost of respecting a real rate limit on a
+# pipeline that needs that many calls. The single biggest real lever
+# available without a bigger concurrency rewrite: a team's real match
+# history and roster don't change meaningfully within a few minutes,
+# so re-clicking "Load Latest Matchups" again shortly after (very
+# common while testing, or just re-checking later) shouldn't force a
+# full, real re-fetch of every unique team from scratch every time.
+# These three wrappers cache each real call's result for a real,
+# bounded TTL, shared across the whole Streamlit session — a second
+# real run within the TTL window skips the network entirely for any
+# team/matchup already seen, which is where the real, meaningful speed
+# win comes from for anyone iterating on this page.
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_lol_team_matches(api_key, team_slug):
+    from cito_api import get_lol_team_matches
+    return _call_cito_with_backoff(get_lol_team_matches, api_key, team_slug)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_lol_team_roster(api_key, team_slug):
+    from cito_api import get_lol_team_roster_history
+    return _call_cito_with_backoff(get_lol_team_roster_history, api_key, team_slug)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_lol_head_to_head(api_key, team1_slug, team2_slug):
+    # Shorter TTL than team history/roster (5 min, not 10) — there are
+    # fewer of these real calls to begin with (one per real matchup,
+    # not per team), so a slightly fresher real refresh cadence is
+    # affordable without meaningfully hurting the real speed win.
+    from cito_api import get_lol_head_to_head
+    return _call_cito_with_backoff(get_lol_head_to_head, api_key, team1_slug, team2_slug)
+
+
 def _fetch_lol_match_markets(tag_slug):
     """Real extraction (July 2026, per external review — code split #1
     of several) — fetches live Polymarket events and extracts real
@@ -7999,7 +8040,7 @@ def _get_unique_lol_team_slugs(resolved_matchups):
     return unique_slugs
 
 
-def _fetch_lol_team_histories(resolved_matchups, api_key):
+def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_step=None):
     """Real extraction (code split #3) — fetches real match history for
     every unique team across all resolved matchups, then combines,
     dedupes, and chronologically sorts it into one dataset ready for
@@ -8024,17 +8065,28 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     start. Now wrapped with _call_cito_with_backoff, which applies the
     real, adaptive rate-limit guard (_throttle_cito_call) before every
     real attempt, matching the same pattern used everywhere else in
-    this fix."""
-    from cito_api import get_lol_team_matches, extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
+    this fix.
+
+    Real fix (July 2026, round 3) — unique_slugs can now be passed in
+    directly (computed once by the caller and shared with
+    _fetch_lol_team_rosters, rather than each function recomputing its
+    own copy), and on_step(label), if given, is called before each
+    real per-team fetch — real, honest progress feedback for a real
+    run that can take a while, instead of one static spinner that
+    looks frozen the whole time."""
+    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
     from lol_elo import combine_and_dedupe_matches
 
-    unique_slugs = _get_unique_lol_team_slugs(resolved_matchups)
+    if unique_slugs is None:
+        unique_slugs = _get_unique_lol_team_slugs(resolved_matchups)
 
     all_team_histories = []
     fetch_errors = []
     for slug in unique_slugs:
+        if on_step:
+            on_step(f"Match history: {slug}")
         try:
-            team_matches = _call_cito_with_backoff(get_lol_team_matches, api_key, slug)
+            team_matches = _cached_lol_team_matches(api_key, slug)
             completed = extract_completed_matches(team_matches)
             all_team_histories.append(completed)
         except Exception as e:
@@ -8046,7 +8098,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     return sorted_history, fetch_errors
 
 
-def _fetch_lol_team_rosters(unique_slugs, api_key):
+def _fetch_lol_team_rosters(unique_slugs, api_key, on_step=None):
     """Real, new fix (July 2026) — builds a real {team_slug: roster_
     history_response} cache ONCE per pipeline run, fetched a single
     time per unique team. Previously, _price_and_tier_lol_matchup()
@@ -8060,13 +8112,17 @@ def _fetch_lol_team_rosters(unique_slugs, api_key):
     limit partway through a run. Returns a dict; a team whose real
     fetch fails is simply absent from the dict (caller already treats
     a missing/failed roster fetch as a safe, honest "no discount"
-    fallback — see _price_and_tier_lol_matchup)."""
-    from cito_api import get_lol_team_roster_history
+    fallback — see _price_and_tier_lol_matchup).
 
+    Real fix (July 2026, round 3) — on_step(label), if given, is
+    called before each real per-team fetch, feeding a real progress
+    indicator on the LoL page instead of a single static spinner."""
     roster_cache = {}
     for slug in unique_slugs:
+        if on_step:
+            on_step(f"Roster history: {slug}")
         try:
-            roster_cache[slug] = _call_cito_with_backoff(get_lol_team_roster_history, api_key, slug)
+            roster_cache[slug] = _cached_lol_team_roster(api_key, slug)
         except Exception:
             pass  # real, honest fallback — this team simply won't have a roster-continuity discount applied
     return roster_cache
@@ -8227,14 +8283,12 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     h2h_detail = {"total_h2h_series": 0}
     if api_key:
         try:
-            from cito_api import get_lol_head_to_head
-            # Real fix (July 2026) — wrapped with _call_cito_with_backoff
-            # so a real, transient 429 here (this fires once per real
-            # matchup, on top of the throttled team-history and roster
-            # fetches already spacing out calls elsewhere) gets a real
-            # retry instead of immediately falling back to the less-
-            # complete reconstruction approach.
-            h2h_api_response = _call_cito_with_backoff(get_lol_head_to_head, api_key, m["team1_slug"], m["team2_slug"])
+            # Real fix (July 2026) — now uses the cached wrapper
+            # (_cached_lol_head_to_head), so a repeat run within the
+            # cache TTL skips this real network call entirely for any
+            # matchup already seen, on top of the existing retry-on-429
+            # protection built into _call_cito_with_backoff underneath.
+            h2h_api_response = _cached_lol_head_to_head(api_key, m["team1_slug"], m["team2_slug"])
             model_prob_team1, h2h_detail = blend_with_head_to_head_from_api(model_prob_team1, h2h_api_response, m["team1_slug"])
         except Exception:
             if sorted_history:
@@ -8384,7 +8438,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     return result, None
 
 
-def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=2):
+def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=2, progress_callback=None):
     """The real, full pipeline — now a thin orchestrator over the real,
     focused helper functions above (code split, July 2026, per external
     review: the original single ~330-line function was flagged as
@@ -8402,7 +8456,19 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     Returns a list of dicts, one per matchup, with everything needed
     to display and log a bet — or an 'error' key if something failed,
     following the same honest-failure pattern used throughout this
-    project rather than silently returning an empty result."""
+    project rather than silently returning an empty result.
+
+    Real fix (July 2026, round 3) — progress_callback(current, total,
+    label), if given, is called before every real Cito call across all
+    three real phases (team match history, roster history, per-matchup
+    pricing/head-to-head) with a single, real, monotonically
+    increasing step count spanning the WHOLE pipeline — not per-phase.
+    A genuinely busy real slate (many concurrent leagues) can need
+    well over 100 real, sequential Cito calls, which, respecting a
+    real 30-calls/min rate limit, can honestly take several real
+    minutes — this doesn't make that faster, but it means the caller
+    can show real, honest progress instead of one static spinner that
+    looks identical whether it's 10 seconds in or frozen entirely."""
     from lol_elo import build_team_ratings_from_history
 
     events, match_markets, error_result = _fetch_lol_match_markets(tag_slug)
@@ -8441,20 +8507,31 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     if not resolved_matchups:
         return {"debug": debug_info, "results": []}
 
-    sorted_history, fetch_errors = _fetch_lol_team_histories(resolved_matchups, api_key)
+    # Real fix (July 2026, round 3) — unique_slugs computed ONCE here
+    # and shared with both _fetch_lol_team_histories and _fetch_lol_
+    # team_rosters, instead of each function separately recomputing
+    # its own copy. Also drives the real, single progress counter
+    # spanning all three phases below.
+    unique_slugs = _get_unique_lol_team_slugs(resolved_matchups)
+    total_steps = (len(unique_slugs) * 2) + len(resolved_matchups)
+    step_counter = [0]
+
+    def _tick(label):
+        if progress_callback:
+            step_counter[0] += 1
+            progress_callback(step_counter[0], total_steps, label)
+
+    sorted_history, fetch_errors = _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=unique_slugs, on_step=_tick)
     ratings = build_team_ratings_from_history(sorted_history, team_region_map=team_region_map)
     from lol_elo import count_international_matches
     international_counts = count_international_matches(sorted_history, team_region_map)
 
     # Real fix (July 2026) — real roster history is now fetched ONCE per
-    # unique team (throttled, with retry-on-429), instead of twice per
-    # matchup with no caching at all — see _fetch_lol_team_rosters()'s
-    # own docstring for the full real reasoning. unique_slugs is the
-    # same real set _fetch_lol_team_histories() computes internally,
-    # recomputed here via the shared _get_unique_lol_team_slugs() helper
-    # rather than threading it through that function's return signature.
-    unique_slugs = _get_unique_lol_team_slugs(resolved_matchups)
-    roster_cache = _fetch_lol_team_rosters(unique_slugs, api_key)
+    # unique team (throttled, with retry-on-429, and cached across
+    # repeat runs), instead of twice per matchup with no caching at all
+    # — see _fetch_lol_team_rosters()'s own docstring for the full real
+    # reasoning.
+    roster_cache = _fetch_lol_team_rosters(unique_slugs, api_key, on_step=_tick)
 
     results = []
     filtered_as_illiquid = []
@@ -8466,10 +8543,10 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         # Real fix (July 2026, round 2) — no manual sleep needed here.
         # This loop's one real head-to-head Cito call per matchup
         # (roster history is cached above, no longer called here at
-        # all) already goes through _call_cito_with_backoff() inside
-        # _price_and_tier_lol_matchup(), which applies the real,
-        # adaptive rate-limit guard itself — an extra fixed sleep here
-        # on top of that was pure, unnecessary slowness.
+        # all) already goes through the cached wrapper / _call_cito_
+        # with_backoff() inside _price_and_tier_lol_matchup(), which
+        # applies the real, adaptive rate-limit guard itself.
+        _tick(f"Pricing {m['team1_name']} vs {m['team2_name']}")
         result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history, api_key, roster_cache)
         if result is not None:
             result["fetch_errors"] = fetch_errors
@@ -10223,9 +10300,24 @@ elif nav == "🎮 Esports (LoL)":
         st.warning("⚠️ This model isn't fully configured yet — check back soon.")
     else:
         if st.button("🚀 Load Latest Matchups", use_container_width=True, key="run_lol_projections"):
-            with st.spinner("Pulling live matchups and building projections..."):
-                pipeline_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
-                st.session_state['lol_pipeline_output'] = pipeline_output
+            # Real fix (July 2026, round 3) — was a single static
+            # st.spinner() with no real progress info, so a genuinely
+            # busy real slate needing many Cito calls (each respecting a
+            # real 30-calls/min limit) looked identical whether it was
+            # 10 seconds in or fully frozen. Now shows a real progress
+            # bar and the actual step being worked on, same pattern
+            # already used for MLB/NBA/NFL's "Run All Projections."
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def _update_lol_progress(current, total, label):
+                status_text.text(f"Step {current} of {total}: {label}")
+                progress_bar.progress(min(1.0, current / total) if total else 0)
+
+            pipeline_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"], progress_callback=_update_lol_progress)
+            st.session_state['lol_pipeline_output'] = pipeline_output
+            progress_bar.empty()
+            status_text.empty()
 
         pipeline_output = st.session_state.get('lol_pipeline_output')
         if pipeline_output:
