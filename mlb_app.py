@@ -1181,18 +1181,56 @@ def handle_stripe_checkout_return(user_id):
 def render_trial_banner(subscription_status, user_id, email):
     """Real, soft banner shown at the top of the main content area on
     EVERY page (per direct product decision) — a real trial countdown
-    while trialing, a real 'trial ended' nudge once expired (though an
-    expired user only ever reaches Home anyway, per the real hard-block
-    in the sidebar above), and nothing at all for a real, active
-    subscriber or when the paywall isn't configured yet."""
+    with a Subscribe button while trialing, a real 'trial ended' nudge
+    once expired (Home's own dedicated CTA block handles the actual
+    subscribe click for that state, so no duplicate button here), and
+    nothing at all for a real, active subscriber or when the paywall
+    isn't configured yet.
+
+    Real fix (July 2026, per direct user report) — clicking "Subscribe"
+    used to just set a flag and rerun, after which the REST of the
+    current page (e.g. Home's full, multi-model background computation)
+    kept rendering below the resulting checkout link — a real, visibly
+    confusing "still churning in the background" mess right next to the
+    checkout button. It also created a brand-new real Stripe Checkout
+    Session on EVERY single page load for an expired user (since that
+    branch ran unconditionally), not just when they'd actually clicked
+    through — wasted real API calls.
+
+    Now, once someone has actually clicked "Subscribe," this renders a
+    minimal, real hand-off screen and stops the page entirely right
+    there via st.stop() — nothing else on the page gets a chance to
+    render underneath it, and it also attempts a real, best-effort
+    browser auto-redirect to Stripe (with a guaranteed manual button as
+    a fallback, since a meta-refresh tag isn't honored identically by
+    every browser). Tracks which real nav page the click happened on
+    (_checkout_flow_nav) so switching to a different sidebar page
+    correctly exits this flow instead of getting stuck on it forever."""
     if not PAYWALL_ENABLED or subscription_status["status"] == "active":
         return
     if st.session_state.pop('_just_subscribed', False):
         st.success("✅ You're subscribed! Full access unlocked.")
         return
-    checkout_url = None
-    if st.session_state.get('_show_checkout_link') or subscription_status["status"] == "expired":
+
+    current_nav = st.session_state.get('main_nav_radio')
+    checkout_flow_active = (
+        st.session_state.get('_show_checkout_link')
+        and st.session_state.get('_checkout_flow_nav') == current_nav
+    )
+
+    if checkout_flow_active:
+        st.session_state.pop('_show_checkout_link', None)
+        st.session_state.pop('_checkout_flow_nav', None)
         checkout_url = create_stripe_checkout_url(user_id, email)
+        if checkout_url:
+            st.success("🔓 Redirecting you to a secure Stripe checkout page...")
+            st.link_button("Continue to Checkout", checkout_url, use_container_width=True, type="primary")
+            st.caption("Didn't redirect automatically? Click the button above.")
+            st.markdown(f'<meta http-equiv="refresh" content="1; url={checkout_url}">', unsafe_allow_html=True)
+        else:
+            st.error(f"Couldn't start checkout — real error: {st.session_state.pop('_stripe_checkout_error', 'unknown error')}")
+        st.stop()
+
     if subscription_status["status"] == "trialing":
         days_left = subscription_status["days_left_in_trial"]
         col_msg, col_btn = st.columns([4, 1])
@@ -1202,14 +1240,10 @@ def render_trial_banner(subscription_status, user_id, email):
             st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
             if st.button("Subscribe", key="banner_subscribe_trial", use_container_width=True):
                 st.session_state['_show_checkout_link'] = True
+                st.session_state['_checkout_flow_nav'] = current_nav
                 st.rerun()
     elif subscription_status["status"] == "expired":
         st.warning("🔒 Your free trial has ended. Subscribe to unlock full access to every model, Bet Tracker, and more.")
-    if checkout_url:
-        st.link_button("🔓 Continue to Checkout", checkout_url, use_container_width=True)
-    elif st.session_state.get('_stripe_checkout_error'):
-        st.error(f"Couldn't start checkout — real error: {st.session_state['_stripe_checkout_error']}")
-        st.session_state.pop('_stripe_checkout_error', None)
 
 
 def refresh_supabase_session_if_needed():
