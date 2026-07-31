@@ -7753,6 +7753,49 @@ def format_lol_match_date(match_date_str):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
 
+# Real fix (July 2026) — the LoL pipeline was making a real, unthrottled
+# burst of Cito API calls with zero delay between them: schedule (2),
+# team match history (1 per unique team), head-to-head (1 per matchup),
+# AND roster history (2 per matchup, previously re-fetched even for a
+# team appearing in multiple matchups that day — see the new roster
+# cache below). Cito's own documented paid-tier limit is 30 calls/min
+# (see get_lol_teams_list's docstring in cito_api.py) — a real slate of
+# even 8-10 matchups could fire 40-50+ calls in under a second, which
+# would genuinely exceed that limit and start returning real 429s
+# partway through a run. This is the most likely real cause of "errors
+# in the data it's pulling." CITO_RATE_LIMIT_DELAY spaces real,
+# sequential Cito calls out enough to comfortably stay under 30/min
+# (60s / 2.0s ≈ 30 calls/min ceiling, with margin), matching the same
+# "throttle + retry-on-failure" pattern already used for balldontlie
+# (bdl_get) elsewhere in this app.
+CITO_RATE_LIMIT_DELAY = 2.0
+
+
+def _call_cito_with_backoff(fn, *args, max_retries=2, base_backoff=5.0, **kwargs):
+    """Real, shared wrapper for every Cito API call in the LoL pipeline
+    — calls fn(*args, **kwargs), and if it fails with a real 429 (rate
+    limit) specifically, waits and retries up to max_retries times
+    with real exponential backoff before giving up. A non-429 failure
+    (network error, 500, malformed response, etc.) is NOT retried here
+    — it's re-raised immediately so the caller's own existing
+    try/except handles it exactly as before, unchanged. This is a
+    second, defensive layer on top of CITO_RATE_LIMIT_DELAY's
+    between-call spacing — spacing calls out should mean this rarely
+    even needs to fire, but a real, temporary rate-limit hit (e.g. a
+    concurrent request from another session) shouldn't fail the whole
+    run when a short wait-and-retry would genuinely succeed."""
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_error = e
+            if "429" not in str(e) or attempt >= max_retries:
+                raise
+            time.sleep(base_backoff * (attempt + 1))
+    raise last_error
+
+
 def _fetch_lol_match_markets(tag_slug):
     """Real extraction (July 2026, per external review — code split #1
     of several) — fetches live Polymarket events and extracts real
@@ -7807,7 +7850,7 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
         build_team_name_to_slug_map, build_team_name_to_slug_map_from_teams_list, merge_name_to_slug_maps,
         build_team_region_map, build_match_time_map,
         match_polymarket_name_to_slug, build_team_candidates_map, resolve_team_with_league_context,
-        _find_prefix_candidates, _find_last_word_candidates,
+        _find_prefix_candidates, _find_last_word_candidates, _normalize_team_name,
     )
 
     try:
@@ -7863,8 +7906,19 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
     def _diagnose_unresolved(team_name):
         """Real diagnostic showing exactly what each resolution stage
         found for a team that failed to resolve — not just the final
-        exact-match lookup."""
-        key = team_name.strip().lower()
+        exact-match lookup.
+
+        Real fix (July 2026) — was using a plain .strip().lower() key,
+        while name_to_slug/candidates_map are both built (and looked up
+        during real resolution) using cito_api._normalize_team_name(),
+        which ALSO strips real, confirmed invisible Unicode characters
+        (e.g. the real U+2060 WORD JOINER found in "Movistar KOI
+        Fénix"). Actual team resolution was never affected by this —
+        match_polymarket_name_to_slug() already normalizes correctly
+        internally — but this diagnostic could show a misleading "no
+        candidates found" for a team whose real difference from a known
+        key was only an invisible character, confusing debugging."""
+        key = _normalize_team_name(team_name)
         return {
             "exact_match_candidates": name_to_slug.get(key),
             "candidates_map_exact": candidates_map.get(key, {}),
@@ -7875,6 +7929,14 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
     resolved_matchups = []
     unresolved_team_names = []
     unresolved_detail = {}
+    # Real fix (July 2026) — tracks real team-pair combinations already
+    # added, so the same real matchup listed under two different
+    # Polymarket events/markets (a real, possible occurrence — re-listed
+    # or mirrored markets) doesn't get priced and displayed twice. This
+    # also matters for API load: a duplicate matchup would otherwise
+    # double the real head-to-head/roster-history calls made for that
+    # exact team pair later in the pipeline.
+    seen_team_pairs = set()
     for market in match_markets:
         outcomes = market.get("outcomes_parsed", [])
         if len(outcomes) != 2:
@@ -7890,12 +7952,31 @@ def _resolve_lol_matchup_teams(match_markets, api_key):
             unresolved_detail[outcomes[1]] = {**_diagnose_unresolved(outcomes[1]), "market_text_checked": market_text}
         if not slug1 or not slug2:
             continue  # a real, unmatched team — skip rather than guess
+        pair_key = frozenset({slug1, slug2})
+        if pair_key in seen_team_pairs:
+            continue  # a real, already-resolved duplicate of this exact matchup — skip
+        seen_team_pairs.add(pair_key)
         resolved_matchups.append({
             "market": market, "team1_name": outcomes[0], "team2_name": outcomes[1],
             "team1_slug": slug1, "team2_slug": slug2,
         })
 
     return resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, match_time_map, None
+
+
+
+def _get_unique_lol_team_slugs(resolved_matchups):
+    """Real, shared helper (July 2026) — the same real set of unique
+    team slugs across a slate of matchups is needed by BOTH the match-
+    history fetch below and the new roster-history cache, so this is
+    computed once and reused, rather than each real fetch function
+    recomputing (and, previously, re-fetching per-matchup) it
+    separately."""
+    unique_slugs = set()
+    for m in resolved_matchups:
+        unique_slugs.add(m["team1_slug"])
+        unique_slugs.add(m["team2_slug"])
+    return unique_slugs
 
 
 def _fetch_lol_team_histories(resolved_matchups, api_key):
@@ -7913,20 +7994,28 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     missing games were previously invisible to the rating system
     entirely, silently under-crediting series winners. Applied here,
     after combining/deduping but before Elo ever sees the data, so
-    every downstream caller benefits automatically."""
+    every downstream caller benefits automatically.
+
+    Real fix (July 2026) — this loop fires one real Cito API call per
+    unique team with zero delay between them and no retry on a real,
+    transient 429. On a real slate with many unique teams, this alone
+    could already meaningfully eat into the real 30-calls/min budget
+    before the head-to-head/roster calls later in the pipeline even
+    start. Now throttled via CITO_RATE_LIMIT_DELAY and wrapped with
+    _call_cito_with_backoff, matching the same pattern used everywhere
+    else in this fix."""
     from cito_api import get_lol_team_matches, extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
     from lol_elo import combine_and_dedupe_matches
 
-    unique_slugs = set()
-    for m in resolved_matchups:
-        unique_slugs.add(m["team1_slug"])
-        unique_slugs.add(m["team2_slug"])
+    unique_slugs = _get_unique_lol_team_slugs(resolved_matchups)
 
     all_team_histories = []
     fetch_errors = []
-    for slug in unique_slugs:
+    for i, slug in enumerate(unique_slugs):
+        if i > 0:
+            time.sleep(CITO_RATE_LIMIT_DELAY)
         try:
-            team_matches = get_lol_team_matches(api_key, slug)
+            team_matches = _call_cito_with_backoff(get_lol_team_matches, api_key, slug)
             completed = extract_completed_matches(team_matches)
             all_team_histories.append(completed)
         except Exception as e:
@@ -7938,7 +8027,36 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     return sorted_history, fetch_errors
 
 
-def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None, sorted_history=None, api_key=None):
+def _fetch_lol_team_rosters(unique_slugs, api_key):
+    """Real, new fix (July 2026) — builds a real {team_slug: roster_
+    history_response} cache ONCE per pipeline run, fetched a single
+    time per unique team. Previously, _price_and_tier_lol_matchup()
+    called get_lol_team_roster_history() directly, TWICE PER MATCHUP
+    (once per side) with zero caching — meaning a team appearing in
+    multiple matchups on the same real slate had its roster history
+    re-fetched from scratch every single time, real API calls wasted
+    on data that hadn't changed since the last fetch a few seconds
+    earlier. Combined with the same lack of throttling, this was a
+    real, direct contributor to exceeding Cito's real 30-calls/min
+    limit partway through a run. Returns a dict; a team whose real
+    fetch fails is simply absent from the dict (caller already treats
+    a missing/failed roster fetch as a safe, honest "no discount"
+    fallback — see _price_and_tier_lol_matchup)."""
+    from cito_api import get_lol_team_roster_history
+
+    roster_cache = {}
+    for i, slug in enumerate(unique_slugs):
+        if i > 0:
+            time.sleep(CITO_RATE_LIMIT_DELAY)
+        try:
+            roster_cache[slug] = _call_cito_with_backoff(get_lol_team_roster_history, api_key, slug)
+        except Exception:
+            pass  # real, honest fallback — this team simply won't have a roster-continuity discount applied
+    return roster_cache
+
+
+
+def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts=None, match_time_map=None, sorted_history=None, api_key=None, roster_cache=None):
     """Real extraction (code split #4) — the real per-matchup pricing
     logic: date-cutoff filtering, price validation, illiquid-market
     filtering, model-vs-market probability, recommended side, real
@@ -8093,7 +8211,13 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     if api_key:
         try:
             from cito_api import get_lol_head_to_head
-            h2h_api_response = get_lol_head_to_head(api_key, m["team1_slug"], m["team2_slug"])
+            # Real fix (July 2026) — wrapped with _call_cito_with_backoff
+            # so a real, transient 429 here (this fires once per real
+            # matchup, on top of the throttled team-history and roster
+            # fetches already spacing out calls elsewhere) gets a real
+            # retry instead of immediately falling back to the less-
+            # complete reconstruction approach.
+            h2h_api_response = _call_cito_with_backoff(get_lol_head_to_head, api_key, m["team1_slug"], m["team2_slug"])
             model_prob_team1, h2h_detail = blend_with_head_to_head_from_api(model_prob_team1, h2h_api_response, m["team1_slug"])
         except Exception:
             if sorted_history:
@@ -8147,20 +8271,29 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     # found via a real, concrete case: RED Canids' current roster
     # showed 4 of 5 starters joining just 10 days before a real match,
     # with their Elo rating still built entirely from games played
-    # before that change. Fetches real roster history for BOTH teams,
-    # uses whichever team's continuity is worse (the weaker link
-    # determines how much to trust the whole prediction), and applies
-    # the same proportional-discount mechanism already proven for
-    # market volume. A real, honest fallback to no discount (1.0) if
-    # the roster fetch fails for either team — not silently losing the
-    # rest of the pipeline over one failed call.
+    # before that change. Uses whichever team's continuity is worse
+    # (the weaker link determines how much to trust the whole
+    # prediction), and applies the same proportional-discount
+    # mechanism already proven for market volume. A real, honest
+    # fallback to no discount (1.0) if roster data is unavailable for
+    # either team — not silently losing the rest of the pipeline over
+    # one missing lookup.
+    #
+    # Real fix (July 2026) — this used to call get_lol_team_roster_
+    # history() directly here, TWICE PER MATCHUP, with no caching —
+    # meaning a team appearing in several of today's matchups had its
+    # roster re-fetched fresh, from scratch, every single time, purely
+    # wasted real API calls (roster data doesn't change second to
+    # second) and a real, direct contributor to exceeding Cito's
+    # 30-calls/min limit on a busy slate. Now reads from roster_cache,
+    # built ONCE per unique team by _fetch_lol_team_rosters() before
+    # this per-matchup loop ever starts.
     roster_continuity_detail = {"team1": {"continuity_pct": 1.0}, "team2": {"continuity_pct": 1.0}, "worse_continuity_pct": 1.0}
-    if api_key:
+    if roster_cache:
         try:
-            from cito_api import get_lol_team_roster_history
-            team1_roster = get_lol_team_roster_history(api_key, m["team1_slug"])
+            team1_roster = roster_cache.get(m["team1_slug"])
+            team2_roster = roster_cache.get(m["team2_slug"])
             team1_continuity = calculate_roster_continuity(team1_roster)
-            team2_roster = get_lol_team_roster_history(api_key, m["team2_slug"])
             team2_continuity = calculate_roster_continuity(team2_roster)
             worse_continuity_pct = min(team1_continuity["continuity_pct"], team2_continuity["continuity_pct"])
             roster_continuity_detail = {
@@ -8206,7 +8339,14 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         "edge_pct": edge,
         "best_of": best_of,
         "market_odds_team1": polymarket_price_to_american_odds(market_prob_team1),
-        "no_real_data": m["team1_slug"] not in ratings and m["team2_slug"] not in ratings,
+        # Real fix (July 2026) — was "and", meaning this only warned when
+        # BOTH teams were unrated. A matchup where only ONE team is
+        # genuinely new (silently defaulting to a neutral 1500 rating)
+        # while the other has a real, established Elo is arguably the
+        # MORE misleading case — the prediction looks confident but is
+        # half built on a made-up number. Now warns if EITHER side lacks
+        # real match history.
+        "no_real_data": m["team1_slug"] not in ratings or m["team2_slug"] not in ratings,
         "team1_international_matches": (international_counts or {}).get(m["team1_slug"], 0),
         "team2_international_matches": (international_counts or {}).get(m["team2_slug"], 0),
         "recommended_side": rec_side,
@@ -8289,14 +8429,32 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     from lol_elo import count_international_matches
     international_counts = count_international_matches(sorted_history, team_region_map)
 
+    # Real fix (July 2026) — real roster history is now fetched ONCE per
+    # unique team (throttled, with retry-on-429), instead of twice per
+    # matchup with no caching at all — see _fetch_lol_team_rosters()'s
+    # own docstring for the full real reasoning. unique_slugs is the
+    # same real set _fetch_lol_team_histories() computes internally,
+    # recomputed here via the shared _get_unique_lol_team_slugs() helper
+    # rather than threading it through that function's return signature.
+    unique_slugs = _get_unique_lol_team_slugs(resolved_matchups)
+    roster_cache = _fetch_lol_team_rosters(unique_slugs, api_key)
+
     results = []
     filtered_as_illiquid = []
     filtered_bad_price_data = []
     filtered_as_too_far_ahead = []
     filtered_as_already_started = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
-    for m in resolved_matchups:
-        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history, api_key)
+    for i, m in enumerate(resolved_matchups):
+        if i > 0:
+            # Real fix (July 2026) — this loop makes one real head-to-
+            # head Cito call per matchup (roster history is now cached
+            # above, no longer called here at all). Throttled the same
+            # way as every other real Cito call in this pipeline, so a
+            # slate with many matchups doesn't burst past the real
+            # 30-calls/min limit on this loop alone.
+            time.sleep(CITO_RATE_LIMIT_DELAY)
+        result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history, api_key, roster_cache)
         if result is not None:
             result["fetch_errors"] = fetch_errors
             results.append(result)
