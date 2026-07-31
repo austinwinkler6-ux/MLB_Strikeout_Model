@@ -4825,15 +4825,6 @@ with st.sidebar:
         key="main_nav_radio",
         label_visibility="collapsed"
     )
-    if PAYWALL_ENABLED:
-        st.markdown("---")
-        if subscription_status["status"] == "trialing":
-            days_left = subscription_status["days_left_in_trial"]
-            st.caption(f"🎉 {days_left} day{'s' if days_left != 1 else ''} left in your free trial")
-        elif subscription_status["status"] == "expired":
-            st.caption("🔒 Your trial has ended")
-        elif subscription_status["status"] == "active" and not is_admin:
-            st.caption("✅ Subscribed")
     st.markdown("---")
     st.caption(f"Logged in as {user.email}")
     if st.button("Logout", use_container_width=True):
