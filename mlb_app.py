@@ -11281,6 +11281,29 @@ The gap between two teams' ratings is what turns into the win probability you se
 
             st.markdown("---")
             st.subheader("🔍 Team Match Coverage Diagnostic")
+            # Real addition (July 2026, per direct user report — C9 vs
+            # Dignitas both showing the default 1500 rating despite real,
+            # recent match results existing per the market's own context
+            # text) — this diagnostic needs the EXACT real Cito slug for
+            # a team, which isn't always the obvious guess (Polymarket's
+            # own abbreviation, e.g. "dig", may not match Cito's real
+            # slug at all). Pulls every real team_name -> resolved_slug
+            # pair straight from the LAST real pipeline run's own
+            # results — no new API calls, no guessing required.
+            _last_lol_output = st.session_state.get('lol_pipeline_output')
+            if isinstance(_last_lol_output, dict) and _last_lol_output.get("results"):
+                _slug_lookup_rows = []
+                _seen_slug_pairs = set()
+                for _r in _last_lol_output["results"]:
+                    for _name_key, _slug_key in [("team1_name", "team1_slug"), ("team2_name", "team2_slug")]:
+                        _pair = (_r.get(_name_key), _r.get(_slug_key))
+                        if _pair not in _seen_slug_pairs:
+                            _seen_slug_pairs.add(_pair)
+                            _slug_lookup_rows.append({"Team Name": _r.get(_name_key), "Real Resolved Slug": _r.get(_slug_key)})
+                with st.expander(f"Real team_name → slug lookup from the last run ({len(_slug_lookup_rows)} teams)"):
+                    st.dataframe(pd.DataFrame(_slug_lookup_rows), use_container_width=True)
+            else:
+                st.caption("Run the projections above at least once first to populate a real team_name → slug lookup here.")
             diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
             if st.button("Check coverage", key="lol_coverage_diag_btn"):
                 with st.spinner(f"Fetching real match history for {diag_team_slug}..."):
