@@ -8473,6 +8473,29 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     real_match_time = None
     if match_time_map:
         real_match_time = match_time_map.get(frozenset({m["team1_slug"], m["team2_slug"]}))
+
+    # Real fix (July 2026, round 2 — per direct user report, live-
+    # verified via the admin Raw Market/Event Field Inspector) — Cito's
+    # own schedule doesn't cover every real matchup (a real coverage
+    # gap, not a Cito bug — a match simply isn't in schedule/today +
+    # schedule/upcoming). Confirmed real case: a Cloud9 vs Dignitas
+    # match Cito's schedule was missing had market.eventStartTime =
+    # "2026-08-01T20:00:00Z" — directly verified CORRECT, matching the
+    # market's own description text ("initially scheduled for August 1
+    # at 4:00PM ET") exactly (20:00 UTC = 4PM EDT). This directly
+    # contradicts an earlier investigation that rejected this same
+    # field for returning wrong, past-dated values on OTHER real
+    # markets — real data quality on Polymarket's side appears to be
+    # genuinely inconsistent market-to-market, not uniformly bad. Used
+    # here as a real, HONEST second-tier fallback specifically for the
+    # gap Cito leaves — Cito's own schedule still gets priority
+    # whenever it actually has the match, and a genuinely bad value in
+    # this field on some other market is a real, accepted risk of
+    # showing SOME exact time (even if occasionally wrong) instead of
+    # no time at all for a match Cito's schedule doesn't cover.
+    if not real_match_time:
+        real_match_time = market.get("eventStartTime")
+
     match_date_display = real_match_time or market.get("match_date")
 
     # Real fix (July 2026, per direct user feedback) — a live/already-
@@ -8481,10 +8504,15 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     # events our model has no idea happened, making the comparison
     # meaningless. Same real pattern already used for MLB/NFL
     # (comparing commence_time against now_utc) — applied here using
-    # Cito's own confirmed startTime. Only checked when we have the
-    # PRECISE real timestamp, not the date-only slug fallback, since a
-    # bare date can't tell us whether a game already started earlier
-    # today.
+    # whichever real, exact source resolved real_match_time above
+    # (Cito's schedule first, Polymarket's own eventStartTime as a real
+    # fallback for matches Cito's schedule doesn't cover — see round 2
+    # fix above). A real, useful side effect of that fallback: this
+    # already-started check now also correctly applies to Cito-gap
+    # matches, which it silently skipped before (real_match_time was
+    # simply None for them). Only checked when we have the PRECISE
+    # real timestamp, not the date-only slug fallback, since a bare
+    # date can't tell us whether a game already started earlier today.
     if real_match_time and "T" in real_match_time:
         try:
             real_start_dt = datetime.fromisoformat(real_match_time.replace("Z", "+00:00"))
