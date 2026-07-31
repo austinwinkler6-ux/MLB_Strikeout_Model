@@ -8787,6 +8787,94 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     return result, None
 
 
+def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
+    """Real fix (July 2026, per direct user report — "why does the
+    pipeline need 265 steps to show 14 matches?"). The four real,
+    hard filters (already_started, too_far_ahead, bad_price_data,
+    illiquid) were previously only ever applied AFTER the expensive
+    per-unique-team match-history and roster-history fetch phase, even
+    though every one of these checks only needs data already sitting
+    in each matchup's own market dict (price, volume, event time) —
+    none of them need real Elo ratings, head-to-head, or roster
+    continuity to evaluate. That meant real API calls were being spent
+    fetching history/roster for teams whose ONLY real matchup(s) were
+    always going to get filtered out anyway, directly inflating the
+    real step count far beyond what the final, surviving match count
+    would suggest.
+
+    Applies the EXACT same real checks, in the same order, that
+    _price_and_tier_lol_matchup itself still performs — deliberately
+    kept there too, as a real, redundant safety net (not removed),
+    since a match's real price/volume could in principle shift in the
+    short window between this early pass and final pricing, and the
+    repeated check costs nothing extra (it's just comparing data
+    already in hand, no new real API calls). Returns (surviving_
+    matchups, filtered_dict) where filtered_dict uses the same four
+    real category names as the final pipeline output, so the two sets
+    of filtered results can be merged into one real, honest debug
+    total."""
+    surviving = []
+    filtered_as_illiquid = []
+    filtered_bad_price_data = []
+    filtered_as_too_far_ahead = []
+    filtered_as_already_started = []
+
+    for m in resolved_matchups:
+        market = m["market"]
+        prices = market.get("outcomePrices_parsed", [])
+
+        real_match_time = None
+        if match_time_map:
+            real_match_time = match_time_map.get(frozenset({m["team1_slug"], m["team2_slug"]}))
+        if not real_match_time:
+            real_match_time = market.get("eventStartTime")
+        match_date_display = real_match_time or market.get("match_date")
+
+        if real_match_time and "T" in real_match_time:
+            try:
+                real_start_dt = datetime.fromisoformat(real_match_time.replace("Z", "+00:00"))
+                now_utc = datetime.now(ZoneInfo("UTC"))
+                if real_start_dt <= now_utc:
+                    filtered_as_already_started.append({"team1": m["team1_name"], "team2": m["team2_name"], "match_date": real_match_time})
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        if match_date_display:
+            try:
+                if "T" in match_date_display:
+                    match_date = datetime.fromisoformat(match_date_display.replace("Z", "+00:00")).date()
+                else:
+                    match_date = datetime.strptime(match_date_display, "%Y-%m-%d").date()
+                if match_date > cutoff_date:
+                    filtered_as_too_far_ahead.append({"team1": m["team1_name"], "team2": m["team2_name"], "match_date": match_date_display})
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        if len(prices) != 2:
+            filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
+            continue
+        try:
+            market_prob_team1 = float(prices[0])
+        except (ValueError, TypeError):
+            filtered_bad_price_data.append({"team1": m["team1_name"], "team2": m["team2_name"], "prices": prices})
+            continue
+
+        if market_prob_team1 <= 0.01 or market_prob_team1 >= 0.99:
+            filtered_as_illiquid.append({"team1": m["team1_name"], "team2": m["team2_name"], "market_prob_team1": market_prob_team1, "question": market.get("question")})
+            continue
+
+        surviving.append(m)
+
+    return surviving, {
+        "filtered_as_illiquid": filtered_as_illiquid,
+        "filtered_bad_price_data": filtered_bad_price_data,
+        "filtered_as_too_far_ahead": filtered_as_too_far_ahead,
+        "filtered_as_already_started": filtered_as_already_started,
+    }
+
+
 def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_ahead=1, progress_callback=None):
     """The real, full pipeline — now a thin orchestrator over the real,
     focused helper functions above (code split, July 2026, per external
@@ -8865,6 +8953,28 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     if not resolved_matchups:
         return {"debug": debug_info, "results": []}
 
+    # Real fix (July 2026, round 5, per direct user report) — applies
+    # the same real hard filters (illiquid, bad price data, too far
+    # ahead, already started) EARLY, before any expensive per-team
+    # match-history/roster fetch happens — see _prefilter_lol_
+    # matchups()'s own docstring for the full real reasoning. Only
+    # teams involved in a matchup that actually SURVIVES this early
+    # pass get their real history/roster fetched at all, directly
+    # shrinking the real step count to match what viewers actually see,
+    # instead of paying for teams whose only real matchup was always
+    # going to get filtered out anyway.
+    cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
+    surviving_matchups, early_filtered = _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date)
+    debug_info["prefiltered_out_count"] = len(resolved_matchups) - len(surviving_matchups)
+    resolved_matchups = surviving_matchups
+    if not resolved_matchups:
+        debug_info["final_result_count"] = 0
+        debug_info["filtered_as_illiquid"] = early_filtered["filtered_as_illiquid"]
+        debug_info["filtered_bad_price_data"] = early_filtered["filtered_bad_price_data"]
+        debug_info["filtered_as_too_far_ahead"] = early_filtered["filtered_as_too_far_ahead"]
+        debug_info["filtered_as_already_started"] = early_filtered["filtered_as_already_started"]
+        return {"debug": debug_info, "results": []}
+
     # Real fix (July 2026, round 3) — unique_slugs computed ONCE here
     # and shared with both _fetch_lol_team_histories and _fetch_lol_
     # team_rosters, instead of each function separately recomputing
@@ -8892,11 +9002,15 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     roster_cache = _fetch_lol_team_rosters(unique_slugs, api_key, on_step=_tick)
 
     results = []
-    filtered_as_illiquid = []
-    filtered_bad_price_data = []
-    filtered_as_too_far_ahead = []
-    filtered_as_already_started = []
-    cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
+    # Real fix (July 2026, round 5) — seeded with whatever the early
+    # prefilter already caught, so the final debug totals reflect BOTH
+    # passes combined — a real matchup filtered early still shows up
+    # in the same real category a viewer would expect, just without
+    # having paid for a real history/roster fetch first.
+    filtered_as_illiquid = list(early_filtered["filtered_as_illiquid"])
+    filtered_bad_price_data = list(early_filtered["filtered_bad_price_data"])
+    filtered_as_too_far_ahead = list(early_filtered["filtered_as_too_far_ahead"])
+    filtered_as_already_started = list(early_filtered["filtered_as_already_started"])
     for m in resolved_matchups:
         # Real fix (July 2026, round 2) — no manual sleep needed here.
         # This loop's one real head-to-head Cito call per matchup
