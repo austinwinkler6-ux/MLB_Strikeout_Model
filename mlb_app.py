@@ -7753,39 +7753,59 @@ def format_lol_match_date(match_date_str):
         return match_date_str  # real, unparseable value — show it raw rather than hide it
 
 
-# Real fix (July 2026) — the LoL pipeline was making a real, unthrottled
-# burst of Cito API calls with zero delay between them: schedule (2),
-# team match history (1 per unique team), head-to-head (1 per matchup),
-# AND roster history (2 per matchup, previously re-fetched even for a
-# team appearing in multiple matchups that day — see the new roster
-# cache below). Cito's own documented paid-tier limit is 30 calls/min
-# (see get_lol_teams_list's docstring in cito_api.py) — a real slate of
-# even 8-10 matchups could fire 40-50+ calls in under a second, which
-# would genuinely exceed that limit and start returning real 429s
-# partway through a run. This is the most likely real cause of "errors
-# in the data it's pulling." CITO_RATE_LIMIT_DELAY spaces real,
-# sequential Cito calls out enough to comfortably stay under 30/min
-# (60s / 2.0s ≈ 30 calls/min ceiling, with margin), matching the same
-# "throttle + retry-on-failure" pattern already used for balldontlie
-# (bdl_get) elsewhere in this app.
-CITO_RATE_LIMIT_DELAY = 2.0
+# Real fix (July 2026, round 2 — the first fix was correct in principle
+# but badly over-cautious in practice). The original version added a
+# flat, unconditional 2-second sleep before EVERY real Cito call — that
+# genuinely does keep the pipeline under 30 calls/min, but it does so
+# by making EVERY run slow, even a small run with only a handful of
+# real calls that was never anywhere close to the real limit. A rate
+# limit like Cito's is a real ROLLING 60-second window, not "wait 2
+# seconds no matter what" — this replaces the flat delay with an
+# adaptive limiter that tracks the real timestamps of recent Cito calls
+# in this process and only sleeps the minimum real time actually needed
+# to stay under the limit. In practice: the first ~27 calls in any real
+# 60-second window fire back-to-back with NO added delay at all; only
+# once genuinely approaching the real limit does it pause, and only for
+# as long as actually necessary. CITO_RATE_LIMIT_MAX_CALLS uses a real,
+# deliberate safety margin (27, not the documented 30) since the exact
+# limit is documented, not independently verified.
+CITO_RATE_LIMIT_MAX_CALLS = 27
+CITO_RATE_LIMIT_WINDOW_SECONDS = 60
+_cito_call_timestamps = []
+
+
+def _throttle_cito_call():
+    """Real, adaptive rate-limit guard — call this immediately before
+    every real Cito network request. Prunes call timestamps older than
+    the real rolling window, and if the window is already at capacity,
+    sleeps only the real remaining time until the oldest call in the
+    window ages out (plus a small margin), then records this call.
+    Shared, module-level state is fine here — Streamlit runs one real
+    pipeline execution at a time per session, and this is meant to
+    protect the whole real run (not just one function), same as the
+    single, shared roster/history caches built elsewhere in this fix."""
+    now = time.time()
+    while _cito_call_timestamps and now - _cito_call_timestamps[0] > CITO_RATE_LIMIT_WINDOW_SECONDS:
+        _cito_call_timestamps.pop(0)
+    if len(_cito_call_timestamps) >= CITO_RATE_LIMIT_MAX_CALLS:
+        sleep_seconds = CITO_RATE_LIMIT_WINDOW_SECONDS - (now - _cito_call_timestamps[0]) + 0.1
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+    _cito_call_timestamps.append(time.time())
 
 
 def _call_cito_with_backoff(fn, *args, max_retries=2, base_backoff=5.0, **kwargs):
-    """Real, shared wrapper for every Cito API call in the LoL pipeline
-    — calls fn(*args, **kwargs), and if it fails with a real 429 (rate
-    limit) specifically, waits and retries up to max_retries times
-    with real exponential backoff before giving up. A non-429 failure
-    (network error, 500, malformed response, etc.) is NOT retried here
-    — it's re-raised immediately so the caller's own existing
-    try/except handles it exactly as before, unchanged. This is a
-    second, defensive layer on top of CITO_RATE_LIMIT_DELAY's
-    between-call spacing — spacing calls out should mean this rarely
-    even needs to fire, but a real, temporary rate-limit hit (e.g. a
-    concurrent request from another session) shouldn't fail the whole
-    run when a short wait-and-retry would genuinely succeed."""
+    """Real, shared wrapper for every Cito API call in the LoL pipeline.
+    Applies the real, adaptive rate-limit guard above before every real
+    attempt (including retries), then calls fn(*args, **kwargs). If it
+    fails with a real 429 (rate limit) specifically, waits and retries
+    up to max_retries times with real exponential backoff before giving
+    up. A non-429 failure (network error, 500, malformed response, etc.)
+    is NOT retried here — it's re-raised immediately so the caller's own
+    existing try/except handles it exactly as before, unchanged."""
     last_error = None
     for attempt in range(max_retries + 1):
+        _throttle_cito_call()
         try:
             return fn(*args, **kwargs)
         except Exception as e:
@@ -8001,9 +8021,10 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
     transient 429. On a real slate with many unique teams, this alone
     could already meaningfully eat into the real 30-calls/min budget
     before the head-to-head/roster calls later in the pipeline even
-    start. Now throttled via CITO_RATE_LIMIT_DELAY and wrapped with
-    _call_cito_with_backoff, matching the same pattern used everywhere
-    else in this fix."""
+    start. Now wrapped with _call_cito_with_backoff, which applies the
+    real, adaptive rate-limit guard (_throttle_cito_call) before every
+    real attempt, matching the same pattern used everywhere else in
+    this fix."""
     from cito_api import get_lol_team_matches, extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
     from lol_elo import combine_and_dedupe_matches
 
@@ -8011,9 +8032,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key):
 
     all_team_histories = []
     fetch_errors = []
-    for i, slug in enumerate(unique_slugs):
-        if i > 0:
-            time.sleep(CITO_RATE_LIMIT_DELAY)
+    for slug in unique_slugs:
         try:
             team_matches = _call_cito_with_backoff(get_lol_team_matches, api_key, slug)
             completed = extract_completed_matches(team_matches)
@@ -8045,9 +8064,7 @@ def _fetch_lol_team_rosters(unique_slugs, api_key):
     from cito_api import get_lol_team_roster_history
 
     roster_cache = {}
-    for i, slug in enumerate(unique_slugs):
-        if i > 0:
-            time.sleep(CITO_RATE_LIMIT_DELAY)
+    for slug in unique_slugs:
         try:
             roster_cache[slug] = _call_cito_with_backoff(get_lol_team_roster_history, api_key, slug)
         except Exception:
@@ -8445,15 +8462,14 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     filtered_as_too_far_ahead = []
     filtered_as_already_started = []
     cutoff_date = (datetime.now(ZoneInfo("UTC")) + timedelta(days=max_days_ahead)).date()
-    for i, m in enumerate(resolved_matchups):
-        if i > 0:
-            # Real fix (July 2026) — this loop makes one real head-to-
-            # head Cito call per matchup (roster history is now cached
-            # above, no longer called here at all). Throttled the same
-            # way as every other real Cito call in this pipeline, so a
-            # slate with many matchups doesn't burst past the real
-            # 30-calls/min limit on this loop alone.
-            time.sleep(CITO_RATE_LIMIT_DELAY)
+    for m in resolved_matchups:
+        # Real fix (July 2026, round 2) — no manual sleep needed here.
+        # This loop's one real head-to-head Cito call per matchup
+        # (roster history is cached above, no longer called here at
+        # all) already goes through _call_cito_with_backoff() inside
+        # _price_and_tier_lol_matchup(), which applies the real,
+        # adaptive rate-limit guard itself — an extra fixed sleep here
+        # on top of that was pure, unnecessary slowness.
         result, filter_info = _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, international_counts, match_time_map, sorted_history, api_key, roster_cache)
         if result is not None:
             result["fetch_errors"] = fetch_errors
