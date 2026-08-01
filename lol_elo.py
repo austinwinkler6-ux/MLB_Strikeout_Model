@@ -496,6 +496,19 @@ def blend_with_head_to_head_from_api(elo_prob_team1, h2h_api_response, team1_slu
 # shift the prediction toward what's actually happening right now.
 MAX_IN_TOURNAMENT_FORM_WEIGHT = 0.35
 IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
+# Real fix (July 2026, per direct user report) — a team's FULL split
+# record (which can span 40+ real games) can genuinely go stale
+# mid-split if the roster changes meaningfully — a real, concrete
+# example: a team that fully rebuilt its roster partway through a
+# split and has been playing noticeably better since. A cumulative
+# full-split record blends the old roster's real results together with
+# the new roster's real results, understating a team's actual CURRENT
+# form. Limits the in-tournament record to each team's most RECENT
+# games within the split instead of the entire split, matching the
+# same "last 10" recent-window convention already used throughout this
+# app's other real models (MLB, NBA) for exactly this kind of recency
+# concern.
+IN_TOURNAMENT_FORM_RECENT_GAMES_LIMIT = 10
 
 
 # Real, common stage/qualifier words that show up in real tournament
@@ -653,7 +666,7 @@ def _tournament_names_match(tournament_name_substring, tournament_name, tourname
     return bool(needle_tokens & haystack_tokens)
 
 
-def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None):
+def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None, recent_games_limit=IN_TOURNAMENT_FORM_RECENT_GAMES_LIMIT):
     """Real, direct scan of a team's own match history for real,
     completed matches within a SPECIFIC tournament — matched via
     _tournament_names_match() (a real, robust token-overlap comparison,
@@ -675,12 +688,26 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     same tournament, that specific game is already, separately
     captured by the head-to-head blend — counting it again here would
     give that one result more real pull on the final probability than
-    either blend was individually designed to have."""
+    either blend was individually designed to have.
+
+    Real fix (July 2026, round 6, per direct user report — "teams
+    change a good bit for LoL... IG kind of fully rebuilt their team
+    and have gotten a lot better recently"). A team's FULL cumulative
+    split record can genuinely go stale mid-split when the roster
+    changes meaningfully — blending an old roster's real results
+    together with a new roster's real results understates the team's
+    actual CURRENT form. Now only counts each team's most recent
+    recent_games_limit real games within the matched tournament
+    (sorted_completed_matches is already real, chronological order —
+    oldest to newest — so this simply keeps the tail end). Defaults to
+    10, matching the same "last 10" recent-window convention already
+    used throughout this app's other real models (MLB, NBA) for
+    exactly this kind of recency concern. A team with fewer real games
+    than the limit is unaffected — every real game they have still
+    counts."""
     if not tournament_name_substring:
         return 0, 0, 0
-    wins = 0
-    losses = 0
-    total = 0
+    matched_matches = []
     for match in sorted_completed_matches:
         m_team1 = (match.get("team1") or {}).get("slug")
         m_team2 = (match.get("team2") or {}).get("slug")
@@ -692,6 +719,17 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
         tournament_id = match.get("tournamentId") or ""
         if not _tournament_names_match(tournament_name_substring, tournament_name, tournament_id):
             continue
+        matched_matches.append(match)
+
+    if recent_games_limit and len(matched_matches) > recent_games_limit:
+        matched_matches = matched_matches[-recent_games_limit:]
+
+    wins = 0
+    losses = 0
+    total = 0
+    for match in matched_matches:
+        m_team1 = (match.get("team1") or {}).get("slug")
+        m_team2 = (match.get("team2") or {}).get("slug")
         winner = match.get("winner")
         if winner == team_slug:
             wins += 1
