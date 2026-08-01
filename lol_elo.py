@@ -777,7 +777,26 @@ def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tourna
     Real fix (July 2026, per external review) — each team's record now
     excludes games against the OTHER team in this exact matchup, so a
     direct rematch within the tournament isn't counted by both this
-    blend and the head-to-head blend at the same time."""
+    blend and the head-to-head blend at the same time.
+
+    Real fix (July 2026, round 5, per direct user question — "how is
+    [a team with a losing record] favored when their rating is way
+    below the opponent?"). Found a real, serious bug: when one team
+    has GENUINELY ZERO real games recorded in this tournament (real
+    "no data," e.g. a team this dataset has no history for at all),
+    their win rate defaulted to 0.0 — a literal zero, not "unknown."
+    That meant ANY positive win rate for the other team, however bad
+    (even a real, losing 6-14 record — 30%), computed to
+    0.30 / (0.30 + 0) = 1.0, a false 100% relative strength, at the
+    real, maximum blend weight. A losing record was being treated as
+    an near-lock purely because the opponent had no data to compare
+    against — a real, confirmed, and serious distortion, verified with
+    a real 6-14/0-0 case that jumped a team from a real Elo-implied
+    ~25% all the way to ~51%. Missing data for one side is NOT evidence
+    that side is weak — it's genuinely no evidence at all, and the
+    blend should leave Elo (and any other real, direct evidence like
+    head-to-head) untouched in that case, exactly like the existing
+    combined_games==0 guard already does when NEITHER team has data."""
     t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team2_slug)
     t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team1_slug)
     detail = {
@@ -788,13 +807,23 @@ def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tourna
     combined_games = t1_total + t2_total
     if combined_games == 0 or (t1_wins + t2_wins) == 0:
         return elo_prob_team1, detail  # no real in-tournament evidence at all — Elo alone, unchanged
+    if t1_total == 0 or t2_total == 0:
+        # Real fix — one team genuinely has zero real games recorded
+        # here. A missing real record is NOT the same real fact as a
+        # real, played, 0-win record — comparing a real win rate
+        # against a team with no data at all isn't a meaningful
+        # relative-strength signal, it's an artifact of missing data.
+        return elo_prob_team1, detail
 
     t1_win_rate = t1_wins / t1_total if t1_total else 0.0
     t2_win_rate = t2_wins / t2_total if t2_total else 0.0
     # A relative strength read — if both teams have identical win
-    # rates (or neither has played), this correctly contributes
-    # nothing new; the further apart they are, the stronger the real
-    # signal that one team is playing meaningfully better right now.
+    # rates, this correctly contributes nothing new; the further apart
+    # they are, the stronger the real signal that one team is playing
+    # meaningfully better right now. (Both teams are now guaranteed to
+    # have real, non-zero totals by the guard above, so this is always
+    # a genuine, real comparison — never a comparison against missing
+    # data.)
     if (t1_win_rate + t2_win_rate) == 0:
         return elo_prob_team1, detail
     team1_relative_strength = t1_win_rate / (t1_win_rate + t2_win_rate)
