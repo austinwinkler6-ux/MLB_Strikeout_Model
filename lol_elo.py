@@ -523,6 +523,34 @@ IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
 IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES = 4
 IN_TOURNAMENT_FORM_MAX_GAMES_CONSIDERED = 20
 
+# Real fix (July 2026, round 8, per direct user investigation — hand-
+# verified against a real team's full 38-game LPL history). Found a
+# real, serious bug: _tournament_names_match()'s token-overlap design
+# deliberately strips split numbers and years as noise (needed to fix
+# real cases like "Split 3 2026" needing to match "LPL Split 3 Group
+# Nirvana") — but that same stripping means "Split 3 2025" and "Split
+# 3 2026" reduce to the exact same token set {"lpl"} and look
+# identical to the matcher. Real, confirmed consequence: a team's
+# "in-tournament form" was blending FIVE separate real splits spanning
+# August 2025 through July 2026 — over a full year — instead of just
+# the current split, defeating the entire real purpose of this
+# feature (catching a team's CURRENT hot/cold streak or roster
+# change, not their full multi-season history).
+#
+# Rather than trying to parse split numbers from real, genuinely
+# inconsistent text across leagues (LCK's real text says "Round 3-4",
+# LPL's real text says "Split 3" — no clean, shared real convention to
+# parse), this adds a real, CALENDAR-based cutoff instead: only real
+# games within IN_TOURNAMENT_FORM_MAX_DAYS_BACK real days of the match
+# actually being priced are considered "in this tournament" at all —
+# independent of text matching, and immune to the same real
+# inconsistency problem. 120 days (~4 months) is a real, honest first
+# estimate matching a typical real LoL split's length, not a fully
+# tuned value — may need real calibration once more real evidence
+# exists, same as every other new threshold introduced in this
+# project.
+IN_TOURNAMENT_FORM_MAX_DAYS_BACK = 120
+
 
 def _games_ago_recency_weight(games_ago, half_life_games=IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES):
     """Real, game-index-based recency weight (as opposed to the real,
@@ -690,7 +718,7 @@ def _tournament_names_match(tournament_name_substring, tournament_name, tourname
     return bool(needle_tokens & haystack_tokens)
 
 
-def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None, half_life_games=IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES, max_games_considered=IN_TOURNAMENT_FORM_MAX_GAMES_CONSIDERED):
+def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None, half_life_games=IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES, max_games_considered=IN_TOURNAMENT_FORM_MAX_GAMES_CONSIDERED, reference_date=None, max_days_back=IN_TOURNAMENT_FORM_MAX_DAYS_BACK):
     """Real, direct scan of a team's own match history for real,
     completed matches within a SPECIFIC tournament — matched via
     _tournament_names_match() (a real, robust token-overlap comparison,
@@ -733,9 +761,26 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     elsewhere in this module, just weighted by real games-ago instead
     of real calendar days, since a split's games happen close together
     in time — games-ago is the more meaningful real recency unit
-    here."""
+    here.
+
+    Real fix (July 2026, round 8, per direct user investigation, hand-
+    verified against a real team's full match history) — found a real,
+    serious bug: _tournament_names_match()'s real token-overlap design
+    strips split numbers and years as noise (needed to fix real cross-
+    wording cases), which means "Split 3 2025" and "Split 3 2026"
+    reduce to the identical token set and match each other. Confirmed
+    real consequence: a team's "in-tournament form" was blending FIVE
+    separate real splits spanning over a full real year, not just the
+    current one. reference_date + max_days_back add a real, CALENDAR-
+    based cutoff — independent of text matching, so it's immune to the
+    same real cross-league wording inconsistency (LCK says "Round
+    3-4", LPL says "Split 3" — no clean shared convention to parse
+    reliably). reference_date defaults to real "now" (UTC) if not
+    provided by the caller."""
     if not tournament_name_substring:
         return 0.0, 0.0, 0.0
+    if reference_date is None:
+        reference_date = datetime.now(timezone.utc)
     matched_matches = []
     for match in sorted_completed_matches:
         m_team1 = (match.get("team1") or {}).get("slug")
@@ -748,6 +793,20 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
         tournament_id = match.get("tournamentId") or ""
         if not _tournament_names_match(tournament_name_substring, tournament_name, tournament_id):
             continue
+        # Real, calendar-based cutoff — a real game outside the recent
+        # window is excluded regardless of how well its text/ID tokens
+        # matched, since a shared league acronym alone can't prove two
+        # splits (potentially a real year apart) are the same event.
+        if max_days_back:
+            match_start = match.get("startTime")
+            if match_start:
+                try:
+                    match_dt = datetime.fromisoformat(match_start.replace("Z", "+00:00"))
+                    age_days = (reference_date - match_dt).total_seconds() / 86400
+                    if age_days > max_days_back or age_days < -1:
+                        continue  # too old (or, oddly, in the future) to be the current real split
+                except (ValueError, TypeError):
+                    pass  # a real, unparseable date — kept rather than excluded, matching this project's honest-default principle
         matched_matches.append(match)
 
     if max_games_considered and len(matched_matches) > max_games_considered:
@@ -775,7 +834,7 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     return weighted_wins, weighted_losses, weighted_total
 
 
-def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None):
+def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None, reference_date=None, max_days_back=IN_TOURNAMENT_FORM_MAX_DAYS_BACK):
     """Real diagnostic (July 2026, per direct user report — a team's
     in-tournament record looked internally inconsistent with real
     market context describing them as having "one of the league's
@@ -787,8 +846,11 @@ def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_
     that happens to share the same core token).
 
     Mirrors get_in_tournament_record()'s EXACT same real matching logic
-    (same function, same filters, same order) but returns the actual,
-    real matched match objects instead of just win/loss counts — so an
+    (same function, same filters, same order — including the round-8
+    calendar-based cutoff, added after this diagnostic itself helped
+    uncover a real, confirmed case of five real splits spanning over a
+    year getting blended together) but returns the actual, real
+    matched match objects instead of just win/loss counts — so an
     admin can directly SEE which real tournamentName values got pulled
     in and visually confirm whether they genuinely all represent the
     same real tournament/split, or whether the matching swept in
@@ -799,6 +861,8 @@ def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_
     for that), this is read-only, for-humans diagnostic output only."""
     if not tournament_name_substring:
         return []
+    if reference_date is None:
+        reference_date = datetime.now(timezone.utc)
     matched = []
     for match in sorted_completed_matches:
         m_team1 = (match.get("team1") or {}).get("slug")
@@ -811,6 +875,16 @@ def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_
         tournament_id = match.get("tournamentId") or ""
         if not _tournament_names_match(tournament_name_substring, tournament_name, tournament_id):
             continue
+        if max_days_back:
+            match_start = match.get("startTime")
+            if match_start:
+                try:
+                    match_dt = datetime.fromisoformat(match_start.replace("Z", "+00:00"))
+                    age_days = (reference_date - match_dt).total_seconds() / 86400
+                    if age_days > max_days_back or age_days < -1:
+                        continue
+                except (ValueError, TypeError):
+                    pass
         winner = match.get("winner")
         opponent_slug = m_team2 if m_team1 == team_slug else m_team1
         if winner == team_slug:
@@ -829,7 +903,7 @@ def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_
     return matched
 
 
-def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tournament_name_substring, sorted_completed_matches, max_weight=MAX_IN_TOURNAMENT_FORM_WEIGHT, weight_per_game=IN_TOURNAMENT_FORM_WEIGHT_PER_GAME):
+def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tournament_name_substring, sorted_completed_matches, max_weight=MAX_IN_TOURNAMENT_FORM_WEIGHT, weight_per_game=IN_TOURNAMENT_FORM_WEIGHT_PER_GAME, reference_date=None):
     """Real, conservative blend of the Elo-based series probability
     with each team's real, direct record within the SPECIFIC
     tournament this match is part of — real, current evidence that
@@ -869,9 +943,16 @@ def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tourna
     that side is weak — it's genuinely no evidence at all, and the
     blend should leave Elo (and any other real, direct evidence like
     head-to-head) untouched in that case, exactly like the existing
-    combined_games==0 guard already does when NEITHER team has data."""
-    t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team2_slug)
-    t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team1_slug)
+    combined_games==0 guard already does when NEITHER team has data.
+
+    Real fix (July 2026, round 8, per direct user investigation) —
+    reference_date threads through to get_in_tournament_record()'s new
+    real, calendar-based cutoff (see that function's own docstring),
+    so a team's in-tournament record can no longer blend multiple real
+    splits spanning over a year — defaults to real "now" if the caller
+    doesn't have the real match's own specific date handy."""
+    t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team2_slug, reference_date=reference_date)
+    t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team1_slug, reference_date=reference_date)
     # Real fix (July 2026, round 7) — get_in_tournament_record() now
     # returns real, recency-weighted floats (e.g. 6.4 wins), not clean
     # integers — rounded to 1 decimal here for real, honest display
