@@ -11076,7 +11076,6 @@ The gap between two teams' ratings is what turns into the win probability you se
                             quick_pills.append(_lol_pill("⚠️ Low volume", "lean"))
 
                         st.markdown("".join(quick_pills), unsafe_allow_html=True)
-                        st.markdown(f"**{r['recommended_team_name']}** — model {r['recommended_model_prob']*100:.1f}% vs market {r['recommended_market_prob']*100:.1f}%")
 
                         why_lines = [
                             f"**{r['recommended_team_name']}**'s real Elo rating is {r['team1_rating'] if r['recommended_side'] == 'team1' else r['team2_rating']}, vs {r['team2_rating'] if r['recommended_side'] == 'team1' else r['team1_rating']} for the opponent — built from real, completed match history.",
