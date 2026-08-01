@@ -304,7 +304,7 @@ if PAYWALL_ENABLED:
     import stripe
     stripe.api_key = STRIPE_SECRET_KEY
 
-TRIAL_LENGTH_DAYS = 7
+TRIAL_LENGTH_DAYS = 3
 # Real, throttled re-verification interval against Stripe's own API for
 # any user with a real, currently-active subscription — this app uses a
 # Checkout-redirect-then-verify flow rather than a live webhook receiver
