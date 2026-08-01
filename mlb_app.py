@@ -11445,7 +11445,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                             else:
                                 st.success(f"✅ {len(_matched)} real match(es) matched — check the 'Real Tournament Name' column below to confirm these all genuinely represent the same real tournament/split you expect, not something else that happened to share a token:")
                                 st.dataframe(pd.DataFrame([
-                                    {"Opponent Slug": m["opponent_slug"], "Real Tournament Name": m["tournament_name"], "Start Time": m["start_time"], "Result": m["result"]}
+                                    {"Opponent Slug": m["opponent_slug"], "Real Tournament Name": m["tournament_name"], "Real Tournament ID": m.get("tournament_id"), "Start Time": m["start_time"], "Result": m["result"]}
                                     for m in _matched
                                 ]), use_container_width=True)
             else:
