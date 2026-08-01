@@ -8410,7 +8410,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     directly against the separate coverage tool's own independent
     count — if they disagree, that's real, direct evidence the live
     run itself received bad data, even with zero exceptions raised."""
-    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners
+    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners, normalize_requested_team_slug, apply_slug_alias_map
     from lol_elo import combine_and_dedupe_matches
 
     if unique_slugs is None:
@@ -8419,12 +8419,39 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     all_team_histories = []
     fetch_errors = []
     per_team_fetch_counts = {}
+    # Real fix (July 2026, round 2, same real investigation) — tracks
+    # every real {old_slug: requested_slug} alias detected while
+    # fetching, so it can be applied ONE MORE TIME globally after
+    # combining (see apply_slug_alias_map's own docstring) — closing a
+    # real, remaining gap where deduping by matchId could keep an
+    # un-normalized copy of a shared match depending on real fetch
+    # order, even after each team's own per-fetch normalization.
+    slug_alias_map = {}
     for slug in unique_slugs:
         if on_step:
             on_step(f"Match history: {slug}")
         try:
             team_matches = _cached_lol_team_matches(api_key, slug)
             completed = extract_completed_matches(team_matches)
+            # Real fix (July 2026, per direct user report — a real,
+            # established team, paiN Gaming, showing zero processed
+            # games despite genuinely having 38 real completed matches)
+            # — see normalize_requested_team_slug()'s own docstring for
+            # the full real reasoning. Cito's own real slug aliasing
+            # (a schedule-resolved slug like "pain-gaming" that its
+            # own /matches endpoint accepts, but whose returned match
+            # objects still label the team as "pain" internally) meant
+            # every downstream slug comparison silently failed for any
+            # team hit by this. Normalizes at the source, right after
+            # fetching, so every function downstream of this point
+            # (Elo, in-tournament form, head-to-head) sees one
+            # consistent, real slug for this team.
+            for _match in completed:
+                for _side_key in ("team1", "team2"):
+                    _side = _match.get(_side_key)
+                    if isinstance(_side, dict) and _side.get("isRequested") and _side.get("slug") and _side.get("slug") != slug:
+                        slug_alias_map[_side["slug"]] = slug
+            completed = normalize_requested_team_slug(completed, slug)
             all_team_histories.append(completed)
             per_team_fetch_counts[slug] = len(completed)
         except Exception as e:
@@ -8432,6 +8459,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
             per_team_fetch_counts[slug] = None  # a real, honest "we don't know" — the fetch itself failed
 
     combined_history = combine_and_dedupe_matches(all_team_histories)
+    combined_history = apply_slug_alias_map(combined_history, slug_alias_map)
     combined_history = infer_missing_game_winners(combined_history)
     sorted_history = sort_matches_chronologically(combined_history)
     return sorted_history, fetch_errors, per_team_fetch_counts
