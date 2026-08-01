@@ -510,6 +510,13 @@ _TOURNAMENT_NAME_NOISE_WORDS = {
     "regular", "season", "group", "stage", "playoffs", "playoff",
     "finals", "final", "split", "summer", "spring", "winter", "fall",
     "qualifier", "qualifiers", "promotion", "main", "event", "round",
+    # "lol" added (round 3) — Cito's real tournamentId always starts
+    # with a "lol-" sport prefix (e.g. "lol-lpl_split_3_2026"), which
+    # would otherwise become a token on every single real match
+    # regardless of league — the exact same class of coincidental,
+    # meaningless-overlap risk the earlier number-stripping fix was
+    # built to close, just with a word instead of a digit this time.
+    "lol",
 }
 
 
@@ -536,10 +543,16 @@ def _normalize_tournament_name_for_matching(name):
     the time. Now strips EVERY standalone numeric token (not just
     4-digit years), so a match can only ever happen on a real,
     identifying word (a league acronym, "cup", a proper tournament
-    name), never on a coincidental number alone."""
+    name), never on a coincidental number alone.
+
+    Real fix (July 2026, round 3) — also splits on underscores, not
+    just hyphens/spaces, since Cito's real tournamentId field uses
+    underscore separators (e.g. "lol-lpl_split_3_2026") — this function
+    is now also called on that field (see _tournament_names_match),
+    not just tournamentName."""
     if not name:
         return set()
-    words = name.strip().lower().replace("-", " ").split()
+    words = name.strip().lower().replace("-", " ").replace("_", " ").split()
     tokens = set()
     for w in words:
         if w.isdigit():
@@ -550,7 +563,7 @@ def _normalize_tournament_name_for_matching(name):
     return tokens
 
 
-def _tournament_names_match(tournament_name_substring, tournament_name):
+def _tournament_names_match(tournament_name_substring, tournament_name, tournament_id=None):
     """Real, robust tournament-name match (July 2026) — replaces a pure
     substring check that fails whenever Polymarket's event_title and
     Cito's real tournamentName describe the same real tournament with
@@ -568,9 +581,26 @@ def _tournament_names_match(tournament_name_substring, tournament_name):
     permissive but honest heuristic (not a guaranteed-exact ID match,
     since neither data source actually shares one), which is a
     meaningfully better real signal than a strict substring check that
-    was demonstrably failing on real, live data."""
+    was demonstrably failing on real, live data.
+
+    Real fix (July 2026, round 3, per direct user report) — Cito's real
+    tournamentName can be genuinely, unhelpfully generic with NO league
+    identity in it at all — a real, confirmed case: LPL's real
+    tournamentName is literally "Split 3 2026", nothing else, making it
+    impossible for ANY tournamentName-only matching approach to ever
+    connect it to Polymarket's "LPL Split 3 Group Nirvana" text, since
+    the identifying word genuinely isn't there to find. Cito's real
+    tournamentId field IS reliably structured with the league embedded
+    (e.g. "lol-lpl_split_3_2026") — when provided, its tokens are
+    folded into the real haystack too, giving a genuine second real
+    source for the league identity when tournamentName alone can't
+    provide one. tournament_id is optional and defaults to None so
+    every existing real call site keeps working unchanged unless it's
+    deliberately updated to pass it."""
     needle_tokens = _normalize_tournament_name_for_matching(tournament_name_substring)
     haystack_tokens = _normalize_tournament_name_for_matching(tournament_name)
+    if tournament_id:
+        haystack_tokens = haystack_tokens | _normalize_tournament_name_for_matching(tournament_id)
     if not needle_tokens or not haystack_tokens:
         return False
     return bool(needle_tokens & haystack_tokens)
@@ -612,7 +642,8 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
         if exclude_opponent_slug and exclude_opponent_slug in (m_team1, m_team2):
             continue  # a real rematch within this tournament — already captured by head-to-head, skip here
         tournament_name = match.get("tournamentName") or ""
-        if not _tournament_names_match(tournament_name_substring, tournament_name):
+        tournament_id = match.get("tournamentId") or ""
+        if not _tournament_names_match(tournament_name_substring, tournament_name, tournament_id):
             continue
         winner = match.get("winner")
         if winner == team_slug:
@@ -657,7 +688,8 @@ def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_
         if exclude_opponent_slug and exclude_opponent_slug in (m_team1, m_team2):
             continue
         tournament_name = match.get("tournamentName") or ""
-        if not _tournament_names_match(tournament_name_substring, tournament_name):
+        tournament_id = match.get("tournamentId") or ""
+        if not _tournament_names_match(tournament_name_substring, tournament_name, tournament_id):
             continue
         winner = match.get("winner")
         opponent_slug = m_team2 if m_team1 == team_slug else m_team1
@@ -670,6 +702,7 @@ def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_
         matched.append({
             "opponent_slug": opponent_slug,
             "tournament_name": tournament_name,
+            "tournament_id": tournament_id,
             "start_time": match.get("startTime"),
             "result": result,
         })
