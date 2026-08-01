@@ -509,7 +509,7 @@ IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
 _TOURNAMENT_NAME_NOISE_WORDS = {
     "regular", "season", "group", "stage", "playoffs", "playoff",
     "finals", "final", "split", "summer", "spring", "winter", "fall",
-    "qualifier", "qualifiers", "promotion", "main", "event", "round",
+    "qualifier", "qualifiers", "main", "event", "round",
     # "lol" added (round 3) — Cito's real tournamentId always starts
     # with a "lol-" sport prefix (e.g. "lol-lpl_split_3_2026"), which
     # would otherwise become a token on every single real match
@@ -517,6 +517,33 @@ _TOURNAMENT_NAME_NOISE_WORDS = {
     # meaningless-overlap risk the earlier number-stripping fix was
     # built to close, just with a word instead of a digit this time.
     "lol",
+}
+
+# Real, hard dividers (July 2026, round 4, per direct user report — "make
+# sure this is good for EVERY tourney") — found by scanning the REAL,
+# full set of tournamentId/tournamentName pairs across every league in
+# a real run: "lol-lck_cl_split_2_2026" tokenizes to {"lck", "cl"} —
+# since it still contains "lck", it would match ANY real main-roster
+# LCK matchup too (whose needle also reduces to just "lck"), silently
+# pulling LCK CHALLENGERS LEAGUE (a real, genuinely different, lower
+# competitive tier — a team's actual B-team) results into a main-
+# roster team's in-tournament record. The EXACT same real class of bug
+# already fixed once tonight (a team's academy/B-team results bleeding
+# into their main-roster form), just reached via a different real path
+# this time. "promotion" moved here from the noise-word list above for
+# the same real reason — a real Promotion tournament is a genuinely
+# different, lower competitive tier too, not interchangeable with the
+# main league it happens to share an acronym with.
+#
+# Unlike ordinary noise words (silently stripped, contributing nothing
+# either way), these act as REAL, HARD DIVIDERS in _tournament_names_
+# match() below: if one side has ANY of these markers and the other
+# doesn't, that's real, deliberate evidence they're NOT the same real
+# tournament tier, and the match is forced to fail regardless of any
+# other token overlap (even a shared league acronym).
+_TOURNAMENT_SUBTIER_MARKERS = {
+    "cl", "challengers", "academy", "youth", "desafiante", "promotion",
+    "reserve", "amateur", "development",
 }
 
 
@@ -596,12 +623,32 @@ def _tournament_names_match(tournament_name_substring, tournament_name, tourname
     source for the league identity when tournamentName alone can't
     provide one. tournament_id is optional and defaults to None so
     every existing real call site keeps working unchanged unless it's
-    deliberately updated to pass it."""
+    deliberately updated to pass it.
+
+    Real fix (July 2026, round 4, per direct user report — "make sure
+    this is good for EVERY tourney") — found by scanning the real,
+    full set of tournamentId/tournamentName pairs across every league
+    in a real run: "lol-lck_cl_split_2_2026" still contains "lck" as a
+    token, so it would ALSO match a real, plain LCK main-roster
+    matchup — silently pulling LCK CHALLENGERS LEAGUE (a genuinely
+    different, lower competitive tier — a team's real B-team) results
+    into a main-roster team's in-tournament record. Now enforces
+    _TOURNAMENT_SUBTIER_MARKERS as a real, hard divider: if one side
+    has ANY subtier marker (challengers/cl/academy/youth/promotion/
+    etc.) and the other doesn't, the match is forced to fail regardless
+    of any other token overlap — a shared league acronym alone is no
+    longer enough when one side is clearly a different competitive
+    tier."""
     needle_tokens = _normalize_tournament_name_for_matching(tournament_name_substring)
     haystack_tokens = _normalize_tournament_name_for_matching(tournament_name)
     if tournament_id:
         haystack_tokens = haystack_tokens | _normalize_tournament_name_for_matching(tournament_id)
     if not needle_tokens or not haystack_tokens:
+        return False
+    # Real, hard divider — a subtier marker present on only ONE side is
+    # real, direct evidence these are genuinely different competitive
+    # tiers, even if they otherwise share a league acronym.
+    if bool(needle_tokens & _TOURNAMENT_SUBTIER_MARKERS) != bool(haystack_tokens & _TOURNAMENT_SUBTIER_MARKERS):
         return False
     return bool(needle_tokens & haystack_tokens)
 
