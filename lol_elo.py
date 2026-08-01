@@ -496,19 +496,43 @@ def blend_with_head_to_head_from_api(elo_prob_team1, h2h_api_response, team1_slu
 # shift the prediction toward what's actually happening right now.
 MAX_IN_TOURNAMENT_FORM_WEIGHT = 0.35
 IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
-# Real fix (July 2026, per direct user report) — a team's FULL split
-# record (which can span 40+ real games) can genuinely go stale
+# Real fix (July 2026, round 7, per direct user report — a team's FULL
+# split record (which can span 40+ real games) can genuinely go stale
 # mid-split if the roster changes meaningfully — a real, concrete
 # example: a team that fully rebuilt its roster partway through a
 # split and has been playing noticeably better since. A cumulative
 # full-split record blends the old roster's real results together with
 # the new roster's real results, understating a team's actual CURRENT
-# form. Limits the in-tournament record to each team's most RECENT
-# games within the split instead of the entire split, matching the
-# same "last 10" recent-window convention already used throughout this
-# app's other real models (MLB, NBA) for exactly this kind of recency
-# concern.
-IN_TOURNAMENT_FORM_RECENT_GAMES_LIMIT = 10
+# form.
+#
+# The first fix here used a hard cutoff (last 10 games only). Per
+# direct follow-up feedback, replaced with a smooth, real recency
+# decay instead: heavy weight on the last 3-5 real games, tapering off
+# gradually rather than a cliff where a team's 10th-most-recent game
+# counts fully and their 11th-most-recent game counts as zero.
+# IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES controls how fast that
+# taper happens — weight halves every this-many real games back from
+# the most recent one (games_ago=0). At half_life=4: the most recent
+# game weight 1.0, ~4 games back weight ~0.5, ~8 games back weight
+# ~0.25, ~12 games back weight ~0.125 — matching "heavy on the last
+# 3-5, chilling out by around game 10" almost exactly.
+# IN_TOURNAMENT_FORM_MAX_GAMES_CONSIDERED is a generous outer cap
+# (weight has already decayed to near-nothing well before this many
+# real games back, so it mostly just bounds real compute rather than
+# meaningfully shaping the result).
+IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES = 4
+IN_TOURNAMENT_FORM_MAX_GAMES_CONSIDERED = 20
+
+
+def _games_ago_recency_weight(games_ago, half_life_games=IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES):
+    """Real, game-index-based recency weight (as opposed to the real,
+    calendar-day-based decay already used for head-to-head elsewhere in
+    this module) — a split's games happen close together in real time,
+    so 'how many real games back' is the more meaningful recency unit
+    here than calendar days. weight = 0.5^(games_ago / half_life) — the
+    most recent real game (games_ago=0) always gets full weight 1.0,
+    tapering smoothly rather than a hard, all-or-nothing cutoff."""
+    return 0.5 ** (games_ago / half_life_games)
 
 
 # Real, common stage/qualifier words that show up in real tournament
@@ -666,7 +690,7 @@ def _tournament_names_match(tournament_name_substring, tournament_name, tourname
     return bool(needle_tokens & haystack_tokens)
 
 
-def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None, recent_games_limit=IN_TOURNAMENT_FORM_RECENT_GAMES_LIMIT):
+def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None, half_life_games=IN_TOURNAMENT_FORM_RECENCY_HALF_LIFE_GAMES, max_games_considered=IN_TOURNAMENT_FORM_MAX_GAMES_CONSIDERED):
     """Real, direct scan of a team's own match history for real,
     completed matches within a SPECIFIC tournament — matched via
     _tournament_names_match() (a real, robust token-overlap comparison,
@@ -675,11 +699,12 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     motivated it) against each match's real tournamentName, since
     that's the only real, confirmed field available for this on Cito's
     team-matches endpoint (no clean tournamentId shared between
-    Polymarket's market text and Cito's schedule). Returns (wins,
-    losses, total) — real, honest series-level counts (using each
-    match's own 'winner' field), not inferred from anything else. A
-    team not appearing at all in this tournament yet returns (0, 0, 0)
-    — genuinely no evidence, not a guess either way.
+    Polymarket's market text and Cito's schedule). Returns (weighted_
+    wins, weighted_losses, weighted_total) — REAL, recency-weighted
+    numbers (not necessarily whole integers), NOT inferred from
+    anything else. A team not appearing at all in this tournament yet
+    returns (0.0, 0.0, 0.0) — genuinely no evidence, not a guess
+    either way.
 
     Real fix (July 2026, per external review) — exclude_opponent_slug
     lets a caller exclude games against one specific opponent. Used by
@@ -690,23 +715,27 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     give that one result more real pull on the final probability than
     either blend was individually designed to have.
 
-    Real fix (July 2026, round 6, per direct user report — "teams
+    Real fix (July 2026, round 6 & 7, per direct user report — "teams
     change a good bit for LoL... IG kind of fully rebuilt their team
-    and have gotten a lot better recently"). A team's FULL cumulative
-    split record can genuinely go stale mid-split when the roster
-    changes meaningfully — blending an old roster's real results
-    together with a new roster's real results understates the team's
-    actual CURRENT form. Now only counts each team's most recent
-    recent_games_limit real games within the matched tournament
-    (sorted_completed_matches is already real, chronological order —
-    oldest to newest — so this simply keeps the tail end). Defaults to
-    10, matching the same "last 10" recent-window convention already
-    used throughout this app's other real models (MLB, NBA) for
-    exactly this kind of recency concern. A team with fewer real games
-    than the limit is unaffected — every real game they have still
-    counts."""
+    and have gotten a lot better recently", then "maybe weight the
+    stuff from their current split heaviest — last 3-5 heavy, then
+    chill out by around last 10"). A team's FULL cumulative split
+    record can genuinely go stale mid-split when the roster changes
+    meaningfully — blending an old roster's real results together with
+    a new roster's real results understates the team's actual CURRENT
+    form. A first version used a hard cutoff (last 10 games only, all
+    weighted equally); per direct follow-up, replaced with a real,
+    smooth game-index recency decay instead (_games_ago_recency_
+    weight) — the most recent real game always counts fully, weight
+    tapers gradually rather than a cliff where the 10th-most-recent
+    game counts fully and the 11th counts as zero. Matches the same
+    real recency-weighting PATTERN already used for head-to-head
+    elsewhere in this module, just weighted by real games-ago instead
+    of real calendar days, since a split's games happen close together
+    in time — games-ago is the more meaningful real recency unit
+    here."""
     if not tournament_name_substring:
-        return 0, 0, 0
+        return 0.0, 0.0, 0.0
     matched_matches = []
     for match in sorted_completed_matches:
         m_team1 = (match.get("team1") or {}).get("slug")
@@ -721,23 +750,29 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
             continue
         matched_matches.append(match)
 
-    if recent_games_limit and len(matched_matches) > recent_games_limit:
-        matched_matches = matched_matches[-recent_games_limit:]
+    if max_games_considered and len(matched_matches) > max_games_considered:
+        matched_matches = matched_matches[-max_games_considered:]
 
-    wins = 0
-    losses = 0
-    total = 0
-    for match in matched_matches:
+    weighted_wins = 0.0
+    weighted_losses = 0.0
+    weighted_total = 0.0
+    n = len(matched_matches)
+    for i, match in enumerate(matched_matches):
+        # matched_matches is real, chronological order (oldest to
+        # newest, inherited from sorted_completed_matches) — the LAST
+        # entry is the most recent real game, games_ago=0.
+        games_ago = (n - 1) - i
+        weight = _games_ago_recency_weight(games_ago, half_life_games)
         m_team1 = (match.get("team1") or {}).get("slug")
         m_team2 = (match.get("team2") or {}).get("slug")
         winner = match.get("winner")
         if winner == team_slug:
-            wins += 1
-            total += 1
+            weighted_wins += weight
+            weighted_total += weight
         elif winner in (m_team1, m_team2):
-            losses += 1
-            total += 1
-    return wins, losses, total
+            weighted_losses += weight
+            weighted_total += weight
+    return weighted_wins, weighted_losses, weighted_total
 
 
 def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None):
@@ -837,9 +872,13 @@ def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tourna
     combined_games==0 guard already does when NEITHER team has data."""
     t1_wins, t1_losses, t1_total = get_in_tournament_record(team1_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team2_slug)
     t2_wins, t2_losses, t2_total = get_in_tournament_record(team2_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=team1_slug)
+    # Real fix (July 2026, round 7) — get_in_tournament_record() now
+    # returns real, recency-weighted floats (e.g. 6.4 wins), not clean
+    # integers — rounded to 1 decimal here for real, honest display
+    # (the internal math below still uses the full, unrounded values).
     detail = {
-        "team1_wins": t1_wins, "team1_losses": t1_losses, "team1_total": t1_total,
-        "team2_wins": t2_wins, "team2_losses": t2_losses, "team2_total": t2_total,
+        "team1_wins": round(t1_wins, 1), "team1_losses": round(t1_losses, 1), "team1_total": round(t1_total, 1),
+        "team2_wins": round(t2_wins, 1), "team2_losses": round(t2_losses, 1), "team2_total": round(t2_total, 1),
         "weight_applied": 0.0,
     }
     combined_games = t1_total + t2_total
