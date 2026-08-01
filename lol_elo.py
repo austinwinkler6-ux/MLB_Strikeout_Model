@@ -607,6 +607,58 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     return wins, losses, total
 
 
+def diagnose_in_tournament_matches(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None):
+    """Real diagnostic (July 2026, per direct user report — a team's
+    in-tournament record looked internally inconsistent with real
+    market context describing them as having "one of the league's
+    strongest records," raising a real, legitimate concern that the
+    broadened _tournament_names_match() token-overlap matching (fixed
+    the same day, for a real, confirmed too-narrow bug) might now be
+    matching TOO broadly for a common, short league acronym — pulling
+    in real games from a genuinely different bracket, stage, or season
+    that happens to share the same core token).
+
+    Mirrors get_in_tournament_record()'s EXACT same real matching logic
+    (same function, same filters, same order) but returns the actual,
+    real matched match objects instead of just win/loss counts — so an
+    admin can directly SEE which real tournamentName values got pulled
+    in and visually confirm whether they genuinely all represent the
+    same real tournament/split, or whether the matching swept in
+    something it shouldn't have. Returns a list of dicts: {'opponent_
+    slug', 'tournament_name', 'start_time', 'result' ('win'/'loss'/
+    'unclear')} — deliberately NOT used by the real pricing pipeline
+    itself (get_in_tournament_record stays the single source of truth
+    for that), this is read-only, for-humans diagnostic output only."""
+    if not tournament_name_substring:
+        return []
+    matched = []
+    for match in sorted_completed_matches:
+        m_team1 = (match.get("team1") or {}).get("slug")
+        m_team2 = (match.get("team2") or {}).get("slug")
+        if team_slug not in (m_team1, m_team2):
+            continue
+        if exclude_opponent_slug and exclude_opponent_slug in (m_team1, m_team2):
+            continue
+        tournament_name = match.get("tournamentName") or ""
+        if not _tournament_names_match(tournament_name_substring, tournament_name):
+            continue
+        winner = match.get("winner")
+        opponent_slug = m_team2 if m_team1 == team_slug else m_team1
+        if winner == team_slug:
+            result = "win"
+        elif winner == opponent_slug:
+            result = "loss"
+        else:
+            result = "unclear"
+        matched.append({
+            "opponent_slug": opponent_slug,
+            "tournament_name": tournament_name,
+            "start_time": match.get("startTime"),
+            "result": result,
+        })
+    return matched
+
+
 def blend_with_in_tournament_form(elo_prob_team1, team1_slug, team2_slug, tournament_name_substring, sorted_completed_matches, max_weight=MAX_IN_TOURNAMENT_FORM_WEIGHT, weight_per_game=IN_TOURNAMENT_FORM_WEIGHT_PER_GAME):
     """Real, conservative blend of the Elo-based series probability
     with each team's real, direct record within the SPECIFIC
