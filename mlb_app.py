@@ -10988,6 +10988,55 @@ The gap between two teams' ratings is what turns into the win probability you se
                             if st.button("📝 Log", key=f"lol_log_btn_{matchup_key}"):
                                 st.session_state[f'lol_log_modal_{matchup_key}'] = True
 
+                        # Real fix (July 2026, per direct user report —
+                        # "this is all just so complicated to look at")
+                        # — replaces a wall of 5-7 full, verbose sentences
+                        # (always shown inside one expander) with a
+                        # compact, scannable row of short tags plus a
+                        # single headline sentence, always visible with no
+                        # click needed. The FULL detailed breakdown isn't
+                        # removed — it's still available on demand in a
+                        # separate "📋 Full Breakdown" expander right below
+                        # (Streamlit can't nest an expander inside another
+                        # one, so this uses two separate, sibling
+                        # expanders rather than one nested inside another).
+                        def _lol_pill(text, kind="neutral"):
+                            return f"<span class='mm-badge mm-badge-{kind}' style='margin-right:6px; margin-bottom:4px; display:inline-block;'>{text}</span>"
+
+                        rec_is_team1 = r['recommended_side'] == 'team1'
+                        rec_rating = r['team1_rating'] if rec_is_team1 else r['team2_rating']
+                        opp_rating = r['team2_rating'] if rec_is_team1 else r['team1_rating']
+                        edge_pp = round((r['recommended_model_prob'] - r['recommended_market_prob']) * 100, 1)
+
+                        quick_pills = [_lol_pill(f"📊 +{edge_pp}pp edge vs market", "best")]
+                        quick_pills.append(_lol_pill("📈 Higher rated" if rec_rating >= opp_rating else "📉 Lower rated (other signals outweigh)", "playable" if rec_rating >= opp_rating else "neutral"))
+
+                        h2h = r.get("head_to_head") or {}
+                        if h2h.get("total_h2h_series", 0) > 0:
+                            rec_h2h = h2h.get("team1_h2h_wins", 0) if rec_is_team1 else h2h.get("team2_h2h_wins", 0)
+                            opp_h2h = h2h.get("team2_h2h_wins", 0) if rec_is_team1 else h2h.get("team1_h2h_wins", 0)
+                            if rec_h2h > opp_h2h:
+                                quick_pills.append(_lol_pill("🤝 H2H favors pick", "playable"))
+                            elif rec_h2h < opp_h2h:
+                                quick_pills.append(_lol_pill("⚠️ H2H favors opponent", "lean"))
+
+                        in_tourn = r.get("in_tournament_form") or {}
+                        combined_tournament_games = in_tourn.get("team1_total", 0) + in_tourn.get("team2_total", 0)
+                        if combined_tournament_games >= 4:
+                            rec_wins = in_tourn.get('team1_wins', 0) if rec_is_team1 else in_tourn.get('team2_wins', 0)
+                            rec_losses = in_tourn.get('team1_losses', 0) if rec_is_team1 else in_tourn.get('team2_losses', 0)
+                            quick_pills.append(_lol_pill(f"🔥 {rec_wins}-{rec_losses} this split", "playable" if rec_wins >= rec_losses else "lean"))
+                        else:
+                            quick_pills.append(_lol_pill("⚠️ Limited split data", "lean"))
+
+                        if r.get("no_real_data"):
+                            quick_pills.append(_lol_pill("⚠️ Limited history", "lean"))
+                        if r.get("is_low_volume"):
+                            quick_pills.append(_lol_pill("⚠️ Low volume", "lean"))
+
+                        st.markdown("".join(quick_pills), unsafe_allow_html=True)
+                        st.markdown(f"**{r['recommended_team_name']}** — model {r['recommended_model_prob']*100:.1f}% vs market {r['recommended_market_prob']*100:.1f}%")
+
                         why_lines = [
                             f"**{r['recommended_team_name']}**'s real Elo rating is {r['team1_rating'] if r['recommended_side'] == 'team1' else r['team2_rating']}, vs {r['team2_rating'] if r['recommended_side'] == 'team1' else r['team1_rating']} for the opponent — built from real, completed match history.",
                             f"Model gives {r['recommended_team_name']} a {r['recommended_model_prob']*100:.1f}% chance to win, vs {r['recommended_market_prob']*100:.1f}% implied by the current market price — a real, computed gap, not a guess.",
@@ -10997,7 +11046,6 @@ The gap between two teams' ratings is what turns into the win probability you se
                         team1_intl = r.get("team1_international_matches", 0)
                         team2_intl = r.get("team2_international_matches", 0)
                         why_lines.append(f"Real cross-region international games in history: {r['team1_name']} — {team1_intl}, {r['team2_name']} — {team2_intl}. (International tournaments like MSI/Worlds/EWC are infrequent, so 0 is common and not itself a red flag — just means that team's rating hasn't yet been tested against other regions.)")
-                        h2h = r.get("head_to_head") or {}
                         if h2h.get("total_h2h_series", 0) > 0:
                             # Real fix (July 2026) — these are genuinely
                             # recency-weighted values by design (older
@@ -11012,8 +11060,6 @@ The gap between two teams' ratings is what turns into the win probability you se
                             t2_h2h = round(h2h.get("team2_h2h_wins", 0), 1)
                             total_h2h = round(h2h.get("total_h2h_series", 0), 1)
                             why_lines.append(f"Real head-to-head history (recency-weighted — recent meetings count more than old ones): {r['team1_name']} {t1_h2h} — {t2_h2h} {r['team2_name']} (~{total_h2h} effective prior meetings). This is already factored into the model probability above, not just background info.")
-                        in_tourn = r.get("in_tournament_form") or {}
-                        combined_tournament_games = in_tourn.get("team1_total", 0) + in_tourn.get("team2_total", 0)
                         if in_tourn.get("team1_total", 0) > 0 or in_tourn.get("team2_total", 0) > 0:
                             t1_rec = f"{in_tourn.get('team1_wins', 0)}-{in_tourn.get('team1_losses', 0)}"
                             t2_rec = f"{in_tourn.get('team2_wins', 0)}-{in_tourn.get('team2_losses', 0)}"
@@ -11030,7 +11076,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                         # most needs a real, honest heads-up.
                         if combined_tournament_games < 4:
                             why_lines.append(f"⚠️ Early in this tournament/split — only {combined_tournament_games} real game{'s' if combined_tournament_games != 1 else ''} played so far between both teams in this specific event. The overall rating leans more on past splits/tournaments until more real data exists here — treat with extra caution.")
-                        with st.expander(f"💡 Why this pick? — {r['team1_name']} vs {r['team2_name']}"):
+                        with st.expander(f"📋 Full Breakdown — {r['team1_name']} vs {r['team2_name']}"):
                             for line in why_lines:
                                 st.markdown(line)
                             if r.get("context_description"):
