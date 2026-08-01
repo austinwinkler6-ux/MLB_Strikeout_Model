@@ -768,6 +768,142 @@ def extract_completed_matches(team_matches_response):
     return completed
 
 
+def normalize_requested_team_slug(completed_matches, requested_slug):
+    """Real fix (July 2026, per direct user report — a real,
+    established team, paiN Gaming, showing ZERO processed games in the
+    real Elo/tournament-form pipeline despite genuinely having 38 real
+    completed matches). Found a real, deep slug inconsistency: Cito's
+    schedule-based team resolution can return a real, valid slug (e.g.
+    "pain-gaming") that Cito's own GET /teams/{slug}/matches endpoint
+    happily accepts as an alias and correctly returns that team's real
+    matches for — but the match objects THEMSELVES still label that
+    same team using its OTHER real, canonical slug internally (e.g.
+    "pain", confirmed via a real, live match object where team2.slug
+    was "pain" while team2.isRequested was true, for a request made
+    with slug "pain-gaming"). Since every downstream real function
+    (build_team_ratings_from_history, get_in_tournament_record,
+    get_head_to_head_record, etc.) compares OUR resolved slug directly
+    against each match's own team1.slug/team2.slug, this silent
+    mismatch meant this team's entire real, substantial match history
+    was NEVER actually processed anywhere — every slug comparison
+    simply never matched, leaving real teams stuck at the default 1500
+    Elo rating despite having genuine, plentiful data all along.
+
+    Fixes this at the real source, right after fetching a team's own
+    match history: Cito's real 'isRequested' flag on each match's
+    team1/team2 objects marks exactly which side corresponds to the
+    slug that was actually queried, regardless of which of a team's
+    real, valid slug aliases was used to make the request. This
+    overwrites THAT side's slug to match the real slug we resolved and
+    are using consistently everywhere else in this pipeline, so every
+    downstream comparison works correctly from this point forward.
+
+    Real fix (round 2, same real investigation) — the top-level series
+    'winner' field and each individual game's 'winnerSlug' ALSO
+    reference a team by its real, OLD, un-normalized slug. Fixing only
+    team1.slug/team2.slug and leaving these untouched would have been
+    a real, serious, and worse bug in disguise: every match/game this
+    team actually WON would still show its real winner as the OLD slug
+    (e.g. "pain"), which no longer equals ANYTHING in the normalized
+    match (team1_slug and team2_slug are now "pain-gaming" and the
+    opponent's real slug) — silently dropping every real WIN from Elo/
+    tournament-form processing while still correctly counting every
+    real LOSS (since a loss's winner is the opponent's real, unchanged
+    slug). That's a real, directional bias, not a random data-quality
+    gap — now fixed by normalizing 'winner' and every game's
+    'winnerSlug' alongside team1/team2.slug, all in the same pass.
+
+    Returns a NEW list of shallow-copied match dicts (with shallow-
+    copied team1/team2 sub-dicts and a shallow-copied games list/dicts
+    where changed) — deliberately never mutates the original response
+    in place, since that's real, shared, cached data (via Streamlit's
+    @st.cache_data) that other real callers may still reference."""
+    normalized = []
+    for match in completed_matches:
+        if not isinstance(match, dict):
+            normalized.append(match)
+            continue
+        new_match = dict(match)
+        old_slug = None
+        for side_key in ("team1", "team2"):
+            side = new_match.get(side_key)
+            if isinstance(side, dict) and side.get("isRequested") and side.get("slug") != requested_slug:
+                old_slug = side.get("slug")
+                new_side = dict(side)
+                new_side["slug"] = requested_slug
+                new_match[side_key] = new_side
+        if old_slug:
+            if new_match.get("winner") == old_slug:
+                new_match["winner"] = requested_slug
+            games = new_match.get("games")
+            if games:
+                new_games = []
+                for game in games:
+                    if isinstance(game, dict) and game.get("winnerSlug") == old_slug:
+                        new_game = dict(game)
+                        new_game["winnerSlug"] = requested_slug
+                        new_games.append(new_game)
+                    else:
+                        new_games.append(game)
+                new_match["games"] = new_games
+        normalized.append(new_match)
+    return normalized
+
+
+def apply_slug_alias_map(matches, alias_map):
+    """Real, second-pass fix (July 2026, same real investigation as
+    normalize_requested_team_slug() above). That function correctly
+    fixes a team's OWN slug within THAT team's own individually-
+    fetched match history — but the SAME real match also appears in
+    the OPPONENT's own separately-fetched history, and in THAT copy
+    only the opponent's own side gets normalized, leaving the first
+    team's slug un-normalized in that specific copy. Since combining
+    real per-team histories dedupes by matchId and keeps whichever
+    real copy of a shared match it happens to encounter first (real,
+    genuinely order-dependent — not something safe to rely on), a
+    match could still show the OLD, un-normalized slug depending on
+    real fetch order, even after the first, per-team normalization
+    pass. This applies a real, COMPLETE alias_map (built by the caller
+    from every team's own real isRequested-based old-slug detection
+    during their own individual fetches) ONE MORE TIME across the
+    FULLY COMBINED, deduplicated history — team1.slug, team2.slug,
+    winner, and every game's winnerSlug — guaranteeing a real,
+    consistent result regardless of which specific copy of a shared
+    match happened to win the dedup. A real, empty alias_map (the
+    common case — most teams' real, resolved slug matches their real,
+    internal match-history slug with no alias at all) is a safe,
+    fast no-op."""
+    if not alias_map:
+        return matches
+    normalized = []
+    for match in matches:
+        if not isinstance(match, dict):
+            normalized.append(match)
+            continue
+        new_match = dict(match)
+        for side_key in ("team1", "team2"):
+            side = new_match.get(side_key)
+            if isinstance(side, dict) and side.get("slug") in alias_map:
+                new_side = dict(side)
+                new_side["slug"] = alias_map[side["slug"]]
+                new_match[side_key] = new_side
+        if new_match.get("winner") in alias_map:
+            new_match["winner"] = alias_map[new_match["winner"]]
+        games = new_match.get("games")
+        if games:
+            new_games = []
+            for game in games:
+                if isinstance(game, dict) and game.get("winnerSlug") in alias_map:
+                    new_game = dict(game)
+                    new_game["winnerSlug"] = alias_map[game["winnerSlug"]]
+                    new_games.append(new_game)
+                else:
+                    new_games.append(game)
+            new_match["games"] = new_games
+        normalized.append(new_match)
+    return normalized
+
+
 def infer_missing_game_winners(completed_matches):
     """Real fix (July 2026) for a genuine data-quality bug found via
     live investigation: a real completed match (G2 2-1 over Movistar
