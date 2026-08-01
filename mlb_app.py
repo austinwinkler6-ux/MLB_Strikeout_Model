@@ -11031,7 +11031,14 @@ The gap between two teams' ratings is what turns into the win probability you se
                         if combined_tournament_games >= 4:
                             rec_wins = in_tourn.get('team1_wins', 0) if rec_is_team1 else in_tourn.get('team2_wins', 0)
                             rec_losses = in_tourn.get('team1_losses', 0) if rec_is_team1 else in_tourn.get('team2_losses', 0)
-                            quick_pills.append(_lol_pill(f"🔥 {rec_wins}-{rec_losses} this split", "playable" if rec_wins >= rec_losses else "lean"))
+                            # Real fix (July 2026, per direct user report)
+                            # — the emoji used to always show 🔥 regardless
+                            # of the actual record, which reads as "this is
+                            # a good sign" even for a losing record (e.g.
+                            # 16-20) — only the pill's background color
+                            # changed with win/loss, not the icon itself.
+                            _split_record_icon = "🔥" if rec_wins > rec_losses else ("📉" if rec_wins < rec_losses else "➖")
+                            quick_pills.append(_lol_pill(f"{_split_record_icon} {rec_wins}-{rec_losses} this split", "playable" if rec_wins >= rec_losses else "lean"))
                         else:
                             quick_pills.append(_lol_pill("⚠️ Limited split data", "lean"))
 
