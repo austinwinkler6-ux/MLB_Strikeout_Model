@@ -9104,7 +9104,13 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     debug_info["low_volume_results_discounted_not_filtered"] = low_volume_results
     debug_info["matchups_missing_exact_time_no_cito_schedule_match"] = matchups_missing_exact_time
     debug_info["team_history_diagnostics"] = team_history_diagnostics
-    return {"debug": debug_info, "results": results}
+    # Real addition (July 2026, per direct user report) — persists the
+    # real, combined match history this run actually used, so the new
+    # admin "In-Tournament Record Diagnostic" tool can inspect exactly
+    # which real games get matched to a given tournament WITHOUT
+    # needing a fresh, separate fetch (which could return subtly
+    # different real data than what THIS run actually priced against).
+    return {"debug": debug_info, "results": results, "sorted_history": sorted_history}
 
 # Real, soft banner shown on every page — a hard block (via the sidebar
 # nav trim + the nav-override above) already handles the "premium stuff"
@@ -11405,6 +11411,43 @@ The gap between two teams' ratings is what turns into the win probability you se
                         st.code(_err)
                 else:
                     st.caption("✅ No fetch errors recorded during the last run's team-history fetch phase.")
+
+                # Real addition (July 2026, per direct user report — a
+                # team's real in-tournament record looked internally
+                # inconsistent with real market context describing them
+                # as one of the league's strongest teams, raising a
+                # real concern that the same-day tournament-name
+                # matching fix might now be matching TOO broadly for a
+                # short, common league acronym). Shows exactly which
+                # real games get counted toward a given team's
+                # in-tournament record, using the same real matching
+                # logic the pricing pipeline itself uses — lets an
+                # admin directly SEE the real tournamentName values
+                # that got pulled in and confirm whether they genuinely
+                # represent the same real tournament/split.
+                st.markdown("---")
+                st.subheader("🔍 In-Tournament Record Diagnostic")
+                st.caption("Shows exactly which real games get counted toward a team's in-tournament record — uses the same real matching logic the pricing pipeline itself uses, against the real match history from the LAST run above (no new fetch).")
+                _diag_tourn_team_slug = st.text_input("Team slug (from the lookup table above)", key="lol_tourn_diag_team_slug")
+                _diag_tourn_name = st.text_input("Tournament name substring (as passed to the model — e.g. 'LCK Round 3-4 Legend Group')", key="lol_tourn_diag_name")
+                if st.button("Check in-tournament matches", key="lol_tourn_diag_btn"):
+                    if not _diag_tourn_team_slug or not _diag_tourn_name:
+                        st.warning("Enter both a team slug and a tournament name substring.")
+                    else:
+                        _last_sorted_history = _last_lol_output.get("sorted_history") or []
+                        if not _last_sorted_history:
+                            st.warning("No real match history saved from the last run — run the projections above again first.")
+                        else:
+                            from lol_elo import diagnose_in_tournament_matches
+                            _matched = diagnose_in_tournament_matches(_diag_tourn_team_slug, _diag_tourn_name, _last_sorted_history)
+                            if not _matched:
+                                st.info(f"0 real matches found for slug '{_diag_tourn_team_slug}' against tournament name '{_diag_tourn_name}' — the matching correctly found nothing here.")
+                            else:
+                                st.success(f"✅ {len(_matched)} real match(es) matched — check the 'Real Tournament Name' column below to confirm these all genuinely represent the same real tournament/split you expect, not something else that happened to share a token:")
+                                st.dataframe(pd.DataFrame([
+                                    {"Opponent Slug": m["opponent_slug"], "Real Tournament Name": m["tournament_name"], "Start Time": m["start_time"], "Result": m["result"]}
+                                    for m in _matched
+                                ]), use_container_width=True)
             else:
                 st.caption("Run the projections above at least once first to populate a real team_name → slug lookup here.")
             diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
