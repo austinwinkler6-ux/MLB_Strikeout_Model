@@ -8759,7 +8759,20 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     tournament_name_for_form = (market.get("event_title") or "").split(" - ")[-1].strip()
     if sorted_history and tournament_name_for_form:
         from lol_elo import blend_with_in_tournament_form
-        model_prob_team1, in_tournament_detail = blend_with_in_tournament_form(model_prob_team1, m["team1_slug"], m["team2_slug"], tournament_name_for_form, sorted_history)
+        # Real fix (July 2026, round 8) — passes the real match's own
+        # date (already resolved above as real_match_time) as the
+        # reference point for the new calendar-based recency cutoff in
+        # blend_with_in_tournament_form/get_in_tournament_record — a
+        # match happening a few days from now should measure "current
+        # split form" relative to ITS OWN real date, not just whatever
+        # moment the pipeline happens to run.
+        in_tournament_reference_date = None
+        if real_match_time:
+            try:
+                in_tournament_reference_date = datetime.fromisoformat(real_match_time.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass  # real, honest fallback — blend_with_in_tournament_form defaults to real "now" if this stays None
+        model_prob_team1, in_tournament_detail = blend_with_in_tournament_form(model_prob_team1, m["team1_slug"], m["team2_slug"], tournament_name_for_form, sorted_history, reference_date=in_tournament_reference_date)
     probability_waterfall["after_tournament_form"] = round(model_prob_team1 * 100, 2)
     probability_waterfall["final"] = probability_waterfall["after_tournament_form"]
 
