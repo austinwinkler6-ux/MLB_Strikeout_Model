@@ -892,6 +892,21 @@ def sign_in(email, password):
     except Exception as e:
         return None, None, str(e)
 
+def resend_confirmation_email(email):
+    """Real, honest resend helper (July 2026, per direct user request —
+    closing a real signup loophole where unlimited fake/throwaway
+    emails could each grab a fresh free trial) — for a real user whose
+    original confirmation email expired, went to spam, or never
+    arrived. Uses Supabase's own real resend endpoint rather than
+    trying to recreate or fake this ourselves. Only relevant once
+    "Confirm email" is turned on in the Supabase Dashboard (Auth →
+    Providers → Email) — with that off, this is never reached."""
+    try:
+        supabase.auth.resend({"type": "signup", "email": email})
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
 def sign_out():
     try:
         supabase.auth.sign_out()
@@ -947,7 +962,23 @@ if 'user' not in st.session_state:
         if login_submitted:
             user, session, error = sign_in(login_email, login_password)
             if error:
-                st.error(f"Login failed: {error}")
+                # Real fix (July 2026, per direct user request) — once
+                # "Confirm email" is enabled in Supabase, a real,
+                # legitimate user who hasn't clicked their confirmation
+                # link yet gets this same real error from Supabase.
+                # Shown as a clear, expected message with a real way to
+                # resend, instead of a generic "Login failed" error
+                # that gives no indication of what to actually do.
+                if "not confirmed" in error.lower():
+                    st.warning("📧 Please confirm your email before logging in — check your inbox for a confirmation link (and your spam folder).")
+                    if st.button("Resend confirmation email", key="resend_login_confirm"):
+                        resent_ok, resend_error = resend_confirmation_email(login_email)
+                        if resent_ok:
+                            st.success("✅ Confirmation email resent — check your inbox.")
+                        else:
+                            st.error(f"Couldn't resend — real error: {resend_error}")
+                else:
+                    st.error(f"Login failed: {error}")
             else:
                 st.session_state['user'] = user
                 st.session_state['session'] = session
@@ -975,6 +1006,11 @@ if 'user' not in st.session_state:
                 else:
                     user2, session, error2 = sign_in(signup_email, signup_password)
                     if not error2:
+                        # Real, immediate login succeeded — email
+                        # confirmation is either OFF in your Supabase
+                        # settings, or configured to auto-confirm. Keeps
+                        # the exact same real, working flow as before
+                        # either way.
                         st.session_state['user'] = user2
                         st.session_state['session'] = session
                         st.session_state['just_signed_up'] = True
@@ -983,6 +1019,19 @@ if 'user' not in st.session_state:
                         except Exception:
                             pass
                         st.rerun()
+                    elif "not confirmed" in error2.lower():
+                        # Real fix (July 2026, per direct user request —
+                        # closing a real signup loophole where unlimited
+                        # fake/throwaway emails could each grab a fresh
+                        # free trial). Once "Confirm email" is enabled in
+                        # Supabase, this immediate real sign-in attempt
+                        # correctly fails until the real email address
+                        # gets confirmed — shown as a clean, expected
+                        # "check your inbox" success message, not a
+                        # confusing raw login error right after signing up.
+                        st.success("✅ Account created! Check your email for a confirmation link, then come back and log in.")
+                    else:
+                        st.error(f"Account created, but automatic login failed — real error: {error2}. Try logging in manually from the Login tab.")
     st.stop()
 
 # ---- LOGGED IN ----
