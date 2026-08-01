@@ -498,18 +498,81 @@ MAX_IN_TOURNAMENT_FORM_WEIGHT = 0.35
 IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
 
 
+# Real, common stage/qualifier words that show up in real tournament
+# names across regions without being part of the actual tournament's
+# core identity — e.g. Polymarket's event_title might say "LCS Regular
+# Season" or "KeSPA Cup Group Stage" while Cito's real tournamentName
+# for the exact same real tournament says "LCS 2026 Summer" or "KeSPA
+# Cup 2026". Stripping these lets the two real, differently-worded
+# strings be compared on their actual shared identity instead of
+# failing a strict substring check that has no real reason to succeed.
+_TOURNAMENT_NAME_NOISE_WORDS = {
+    "regular", "season", "group", "stage", "playoffs", "playoff",
+    "finals", "final", "split", "summer", "spring", "winter", "fall",
+    "qualifier", "qualifiers", "promotion", "main", "event",
+}
+
+
+def _normalize_tournament_name_for_matching(name):
+    """Strips real, common stage/qualifier words and standalone 4-digit
+    years, leaving just the core tournament-identity tokens (e.g. "LCS
+    Regular Season" -> {"lcs"}, "KeSPA Cup Group Stage" -> {"kespa",
+    "cup"}) — the real, shared signal between Polymarket's event_title
+    and Cito's real tournamentName, which often describe the exact same
+    real tournament using genuinely different stage/qualifier wording."""
+    if not name:
+        return set()
+    words = name.strip().lower().replace("-", " ").split()
+    tokens = set()
+    for w in words:
+        if w.isdigit() and len(w) == 4:
+            continue  # a real, standalone year — not part of the tournament's core identity
+        if w in _TOURNAMENT_NAME_NOISE_WORDS:
+            continue
+        tokens.add(w)
+    return tokens
+
+
+def _tournament_names_match(tournament_name_substring, tournament_name):
+    """Real, robust tournament-name match (July 2026) — replaces a pure
+    substring check that fails whenever Polymarket's event_title and
+    Cito's real tournamentName describe the same real tournament with
+    genuinely different stage/qualifier wording. Real, confirmed case
+    that motivated this: "KeSPA Cup Group Stage" (from Polymarket) vs
+    Cito's real "KeSPA Cup 2026" share NO common substring at all
+    despite being the exact same real tournament, silently returning
+    (0, 0, 0) — genuinely no evidence — even when real games existed.
+    Also confirmed on a second, real, different tournament: "LCS
+    Regular Season" failing to match Cito's real LCS tournamentName the
+    same way. Strips real, common noise words (stage/qualifier terms,
+    standalone years) from both sides via
+    _normalize_tournament_name_for_matching(), then matches if the
+    remaining core tokens overlap at all — a real, deliberately
+    permissive but honest heuristic (not a guaranteed-exact ID match,
+    since neither data source actually shares one), which is a
+    meaningfully better real signal than a strict substring check that
+    was demonstrably failing on real, live data."""
+    needle_tokens = _normalize_tournament_name_for_matching(tournament_name_substring)
+    haystack_tokens = _normalize_tournament_name_for_matching(tournament_name)
+    if not needle_tokens or not haystack_tokens:
+        return False
+    return bool(needle_tokens & haystack_tokens)
+
+
 def get_in_tournament_record(team_slug, tournament_name_substring, sorted_completed_matches, exclude_opponent_slug=None):
     """Real, direct scan of a team's own match history for real,
-    completed matches within a SPECIFIC tournament — matched by
-    substring against each match's real tournamentName (case-
-    insensitive), since that's the only real, confirmed field
-    available for this on Cito's team-matches endpoint (no clean
-    tournamentId shared between Polymarket's market text and Cito's
-    schedule). Returns (wins, losses, total) — real, honest series-
-    level counts (using each match's own 'winner' field), not
-    inferred from anything else. A team not appearing at all in this
-    tournament yet returns (0, 0, 0) — genuinely no evidence, not a
-    guess either way.
+    completed matches within a SPECIFIC tournament — matched via
+    _tournament_names_match() (a real, robust token-overlap comparison,
+    not a strict substring check — see that function's own docstring
+    for the full real reasoning and the confirmed real cases that
+    motivated it) against each match's real tournamentName, since
+    that's the only real, confirmed field available for this on Cito's
+    team-matches endpoint (no clean tournamentId shared between
+    Polymarket's market text and Cito's schedule). Returns (wins,
+    losses, total) — real, honest series-level counts (using each
+    match's own 'winner' field), not inferred from anything else. A
+    team not appearing at all in this tournament yet returns (0, 0, 0)
+    — genuinely no evidence, not a guess either way.
 
     Real fix (July 2026, per external review) — exclude_opponent_slug
     lets a caller exclude games against one specific opponent. Used by
@@ -521,7 +584,6 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
     either blend was individually designed to have."""
     if not tournament_name_substring:
         return 0, 0, 0
-    needle = tournament_name_substring.strip().lower()
     wins = 0
     losses = 0
     total = 0
@@ -532,8 +594,8 @@ def get_in_tournament_record(team_slug, tournament_name_substring, sorted_comple
             continue
         if exclude_opponent_slug and exclude_opponent_slug in (m_team1, m_team2):
             continue  # a real rematch within this tournament — already captured by head-to-head, skip here
-        tournament_name = (match.get("tournamentName") or "").strip().lower()
-        if needle not in tournament_name:
+        tournament_name = match.get("tournamentName") or ""
+        if not _tournament_names_match(tournament_name_substring, tournament_name):
             continue
         winner = match.get("winner")
         if winner == team_slug:
