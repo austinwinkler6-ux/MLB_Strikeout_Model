@@ -509,24 +509,41 @@ IN_TOURNAMENT_FORM_WEIGHT_PER_GAME = 0.12
 _TOURNAMENT_NAME_NOISE_WORDS = {
     "regular", "season", "group", "stage", "playoffs", "playoff",
     "finals", "final", "split", "summer", "spring", "winter", "fall",
-    "qualifier", "qualifiers", "promotion", "main", "event",
+    "qualifier", "qualifiers", "promotion", "main", "event", "round",
 }
 
 
 def _normalize_tournament_name_for_matching(name):
-    """Strips real, common stage/qualifier words and standalone 4-digit
-    years, leaving just the core tournament-identity tokens (e.g. "LCS
-    Regular Season" -> {"lcs"}, "KeSPA Cup Group Stage" -> {"kespa",
+    """Strips real, common stage/qualifier words and ANY standalone
+    number, leaving just the core tournament-identity tokens (e.g.
+    "LCS Regular Season" -> {"lcs"}, "KeSPA Cup Group Stage" -> {"kespa",
     "cup"}) — the real, shared signal between Polymarket's event_title
     and Cito's real tournamentName, which often describe the exact same
-    real tournament using genuinely different stage/qualifier wording."""
+    real tournament using genuinely different stage/qualifier wording.
+
+    Real fix (July 2026, round 2, per direct user report) — originally
+    only stripped standalone 4-digit years, leaving other bare numbers
+    (round numbers, split numbers, stage numbers) as real tokens. This
+    produced a real, confirmed false match: "LCK Round 3-4 Legend
+    Group" (main roster) and "Split 3 2026" (a genuinely different real
+    tournament — the LCK Challengers/academy split) share NOTHING in
+    common except the bare number "3", which was enough for the old
+    version to treat them as the same real tournament, silently pulling
+    a team's B-team/academy results into their main-roster in-tournament
+    record. A bare number can never, by itself, prove two tournament
+    names refer to the same real event — round/split/stage numbering
+    schemes are reused across completely unrelated real tournaments all
+    the time. Now strips EVERY standalone numeric token (not just
+    4-digit years), so a match can only ever happen on a real,
+    identifying word (a league acronym, "cup", a proper tournament
+    name), never on a coincidental number alone."""
     if not name:
         return set()
     words = name.strip().lower().replace("-", " ").split()
     tokens = set()
     for w in words:
-        if w.isdigit() and len(w) == 4:
-            continue  # a real, standalone year — not part of the tournament's core identity
+        if w.isdigit():
+            continue  # a real, standalone number (year, round, split, stage) — never part of the tournament's core identity by itself
         if w in _TOURNAMENT_NAME_NOISE_WORDS:
             continue
         tokens.add(w)
