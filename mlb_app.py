@@ -11436,7 +11436,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                     else:
                         _last_sorted_history = _last_lol_output.get("sorted_history") or []
                         if not _last_sorted_history:
-                            st.warning("No real match history saved from the last run — run the projections above again first.")
+                            st.warning("No real match history saved from the last run — run the projections again first.")
                         else:
                             from lol_elo import diagnose_in_tournament_matches
                             _matched = diagnose_in_tournament_matches(_diag_tourn_team_slug, _diag_tourn_name, _last_sorted_history)
@@ -11448,8 +11448,56 @@ The gap between two teams' ratings is what turns into the win probability you se
                                     {"Opponent Slug": m["opponent_slug"], "Real Tournament Name": m["tournament_name"], "Real Tournament ID": m.get("tournament_id"), "Start Time": m["start_time"], "Result": m["result"]}
                                     for m in _matched
                                 ]), use_container_width=True)
+
+                st.markdown("---")
+                # Real addition (July 2026, per direct user report — "can
+                # we make sure this is good for EVERY tourney not just
+                # LPL") — the tournamentId fix was only ever CONFIRMED
+                # against one real, concrete case (LPL's real
+                # "lol-lpl_split_3_2026"). The fix's LOGIC is fully
+                # general (no LPL-specific code anywhere), but whether
+                # Cito's real tournamentId genuinely follows the same
+                # "lol-{league}_..." pattern for EVERY OTHER real league
+                # (LCK, LEC, LCS, CBLOL, VCS, PCS, LJL, NACL, etc.) was
+                # never actually verified — an untested assumption, not
+                # a confirmed fact, and this project's whole standing
+                # principle has been "verify with real data, don't
+                # guess." This scans the REAL, full combined match
+                # history from the last run (every league currently
+                # being pulled in, not just LPL) and shows every unique
+                # real (tournamentId, tournamentName) pair seen, plus
+                # exactly what real tokens _normalize_tournament_name_
+                # for_matching() would extract from each — letting a
+                # real, direct visual check confirm the pattern holds
+                # broadly, or reveal a real league where it doesn't.
+                st.subheader("🔍 All Real Tournament ID/Name Pairs (last run, every league)")
+                st.caption("Real, direct evidence for whether the tournamentId fix generalizes — one row per unique real (tournamentId, tournamentName) combination seen across ALL leagues in the last run's match history, with the exact tokens the matching logic would actually extract from each.")
+                if st.button("Show all real tournament ID/name pairs", key="lol_all_tourney_ids_btn"):
+                    _history_for_scan = (_last_lol_output.get("sorted_history") or []) if _last_lol_output else []
+                    if not _history_for_scan:
+                        st.warning("No real match history saved from the last run — run the projections again first.")
+                    else:
+                        from lol_elo import _normalize_tournament_name_for_matching
+                        _seen_pairs = {}
+                        for _match in _history_for_scan:
+                            _tid = _match.get("tournamentId") or ""
+                            _tname = _match.get("tournamentName") or ""
+                            _key = (_tid, _tname)
+                            if _key not in _seen_pairs:
+                                _combined_tokens = _normalize_tournament_name_for_matching(_tname) | _normalize_tournament_name_for_matching(_tid)
+                                _seen_pairs[_key] = {
+                                    "Real Tournament ID": _tid or "(missing)",
+                                    "Real Tournament Name": _tname or "(missing)",
+                                    "Extracted Matching Tokens": ", ".join(sorted(_combined_tokens)) if _combined_tokens else "⚠️ NONE — this tournament can NEVER match anything",
+                                    "Real Games Seen": 0,
+                                }
+                            _seen_pairs[_key]["Real Games Seen"] += 1
+                        st.success(f"✅ {len(_seen_pairs)} unique real (tournamentId, tournamentName) combination(s) found across {len(_history_for_scan)} total real matches in the last run.")
+                        st.caption("Check 'Extracted Matching Tokens' for every row — a real, sensible league acronym (lck, lpl, lec, cblol, etc.) should be present for each real tournament. A row showing ⚠️ NONE has no identifying token from EITHER field and can never be matched by anything — a real, genuine gap worth investigating for that specific league/tournament.")
+                        st.dataframe(pd.DataFrame(list(_seen_pairs.values())).sort_values("Real Games Seen", ascending=False), use_container_width=True)
             else:
                 st.caption("Run the projections above at least once first to populate a real team_name → slug lookup here.")
+
             diag_team_slug = st.text_input("Team slug to check (e.g. g2, t1, kc)", value="g2", key="lol_coverage_diag_slug")
             if st.button("Check coverage", key="lol_coverage_diag_btn"):
                 with st.spinner(f"Fetching real match history for {diag_team_slug}..."):
