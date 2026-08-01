@@ -493,8 +493,27 @@ def match_polymarket_name_to_slug(polymarket_team_name, name_to_slug_map):
     a wrong one downstream. Removed entirely — an unmatched team now
     correctly returns None and gets skipped, rather than risking a
     wrong, undetectable prediction. This does mean fewer real matchups
-    will resolve than before; that's the correct, honest tradeoff."""
+    will resolve than before; that's the correct, honest tradeoff.
+
+    Real fix (July 2026, round 2, per direct user investigation) —
+    MANUAL_TEAM_ALIASES is now checked FIRST, before the automatic map
+    lookup, not just as a fallback inside resolve_team_with_league_
+    context() for names the automatic lookup fails on entirely. Found
+    necessary via a real, confirmed case: Cito has THREE separate
+    duplicate real entries for ThunderTalk Gaming, and the automatic
+    exact-match lookup was finding a real, valid-LOOKING match every
+    time — just the wrong one (a real, dead duplicate with zero match
+    data), since that duplicate's specific name formatting happened to
+    match Polymarket's own convention exactly. Since the automatic
+    lookup "succeeded" (found SOMETHING), the code never reached the
+    fallback path where a human-verified manual override lives. A
+    confirmed, human-verified fact should always take priority over
+    automatic matching, even when that automatic matching finds a
+    real, valid-looking (but wrong) result — not just when it fails
+    outright."""
     normalized = _normalize_team_name(polymarket_team_name)
+    if normalized in MANUAL_TEAM_ALIASES:
+        return MANUAL_TEAM_ALIASES[normalized]
     return name_to_slug_map.get(normalized)
 
 
@@ -535,6 +554,19 @@ KNOWN_LEAGUE_MARKERS = {
 # each key should be the exact Polymarket team name, lowercased.
 MANUAL_TEAM_ALIASES = {
     'kt rolster challengers': 'kt-challengers',
+    # Real, confirmed fix (July 2026, per direct user investigation) —
+    # Cito has THREE separate real entries for the same real team:
+    # 'tt' (real, active, name "THUNDER TALK GAMING", tagged with the
+    # real league 'lpl', 40 real completed matches, most recent just 2
+    # days old), 'thunder-talk-gaming' (same duplicate problem), and
+    # 'thundertalk-gaming' (name "ThunderTalk Gaming" — no internal
+    # space, ZERO real match data). Polymarket's own team-name text
+    # happens to match 'thundertalk-gaming''s specific no-space
+    # formatting exactly, so ordinary name-based resolution silently
+    # picked the dead duplicate over the real, active team every time
+    # — confirmed directly via the admin coverage tool (0 total
+    # entries for the dead one, 50 total / 40 completed for 'tt').
+    'thundertalk gaming': 'tt',
 }
 
 
