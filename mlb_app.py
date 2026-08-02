@@ -2159,6 +2159,38 @@ def cached_run_nba_projection(run_fn, sport_label, player_name, opp_abbrev, home
         upsert_cached_projection(cache_date_str, sport_label, player_name, result, has_lineup_data=True)
     return result
 
+def cached_run_nfl_projection(run_fn, sport_label, player_name, cache_date_str, *run_fn_args, **run_fn_kwargs):
+    """Real fix (August 2026) — extends the exact same proven,
+    persistent, cross-user daily_cache pattern already working well
+    for MLB and NBA to NFL, which previously had ZERO computation
+    caching at all: every single visitor's session fully recomputed
+    every real QB/receiver projection from scratch, every single time
+    — confirmed as the single biggest real contributor to the "wait ~5
+    minutes to see props" complaint, since NFL alone could mean 15-30+
+    real, live projection runs per visitor with no reuse whatsoever.
+
+    Genuinely generic across all three real NFL models (unlike NBA's
+    cached_run_nba_projection, which assumes one fixed real function
+    signature shared by both NBA variants) — the three real NFL
+    projection functions (Pass Attempts, Pass Completions, Receptions)
+    have real, different signatures (Receptions needs an extra real
+    qb_name argument the other two don't), so run_fn is called as
+    run_fn(*run_fn_args, **run_fn_kwargs) — the caller decides exactly
+    how to invoke its own real model function; this wrapper only owns
+    the real caching logic wrapped around that call, reusing the same
+    generic daily_cache table (already sport-agnostic — sport_label is
+    just a string column, 'NFL'/'NFL_COMPLETIONS'/'NFL_RECEPTIONS' work
+    exactly the same way 'MLB'/'NBA'/'NBA_AST' already do, no schema
+    changes needed at all)."""
+    cached = get_cached_projection(cache_date_str, sport_label, player_name)
+    if cached:
+        return cached['projection_data']
+
+    result = run_fn(*run_fn_args, **run_fn_kwargs)
+    if result:
+        upsert_cached_projection(cache_date_str, sport_label, player_name, result, has_lineup_data=True)
+    return result
+
 def force_run_and_cache_mlb(pitcher_name, opponent_team, home_team, season, cache_date_str):
     """Always computes fresh (used by the manual ▶️ Run button, which exists
     specifically to force a recompute) but still updates the shared cache
@@ -4400,6 +4432,16 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
         log_failure_reason('MALFORMED_RESPONSE', f"closing line for {player_name}: {e}")
         return None, None
 
+# Real fix (August 2026) — was completely uncached: every single
+# visitor's session hit the live Odds API fresh, every time, even
+# though "today's MLB props" genuinely don't change second-to-second.
+# Real precedent already established elsewhere in this exact app —
+# load_nfl_props_data() already uses this same 5-minute TTL despite
+# having the same real "filter out already-started games" logic
+# inside it (computed fresh at cache-write time) — 5 minutes is short
+# enough that a game starting mid-cache-window is a real, small,
+# already-accepted staleness window, not a new risk.
+@st.cache_data(ttl=300)
 def load_mlb_props_data():
     """Fetches today's MLB pitcher-strikeout props from FanDuel/DraftKings.
     Returns an all_pitchers dict (empty on failure) — same shape used throughout the app.
@@ -4545,6 +4587,13 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                 })
     return pitcher_results
 
+# Real fix (August 2026) — same real reasoning as load_mlb_props_data()
+# above: was completely uncached, now matches the same, already-proven
+# 5-minute TTL. st.cache_data automatically keys this separately per
+# real prop_market argument ('player_points' vs 'player_assists'), so
+# NBA Points and NBA Assists each get their own real, independent
+# cache entry — no special handling needed for that.
+@st.cache_data(ttl=300)
 def load_nba_props_data(prop_market):
     """Fetches today's NBA player props for the given market
     ('player_points' or 'player_assists'). Returns an all_players dict.
@@ -4856,7 +4905,10 @@ def run_todays_card_auto_run(minimal_ui=False):
             render("Loading LoL matchups")
             completed.append("Loading LoL matchups")
             render("Running LoL projections")
-            lol_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"])
+            # Real fix (August 2026) — uses the real, shared, 30-minute
+            # cache instead of always recomputing the whole real LoL
+            # slate fresh for every visitor's session.
+            lol_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
             st.session_state['lol_pipeline_output'] = lol_output
             completed.append("Running LoL projections")
         else:
@@ -5582,6 +5634,15 @@ def run_single_nfl_attempts(qb_name, info, season):
     if game_week is None:
         return None, None, None, None
     result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+    if result:
+        # Real fix (August 2026) — a manual "▶️ Run" click always
+        # force-computes fresh (that's the whole point of the button),
+        # but still writes the real result into the shared, persistent
+        # cache afterward — same pattern already proven for MLB/NBA's
+        # own force-refresh buttons — so every OTHER real visitor
+        # benefits from this fresh computation too, not just this one
+        # session.
+        upsert_cached_projection(mm_today_str(), 'NFL', qb_name, result, has_lineup_data=True)
     if not result:
         return None, None, opp_abbrev, game_week
     proj = result['projection']
@@ -5637,6 +5698,8 @@ def run_single_nfl_completions(qb_name, info, season):
     if game_week is None:
         return None, None, None, None
     result = run_nfl_pass_completions_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+    if result:
+        upsert_cached_projection(mm_today_str(), 'NFL_COMPLETIONS', qb_name, result, has_lineup_data=True)
     if not result:
         return None, None, opp_abbrev, game_week
     proj = result['projection']
@@ -5712,6 +5775,8 @@ def run_single_nfl_receptions(receiver_name, info, season):
     if game_week is None:
         return None, None, opp_abbrev, None
     result = run_nfl_receptions_projection(receiver_name, receiver_team_abbrev, opp_abbrev, starting_qb, int(season), as_of_week=game_week)
+    if result:
+        upsert_cached_projection(mm_today_str(), 'NFL_RECEPTIONS', receiver_name, result, has_lineup_data=True)
     if not result:
         return None, None, opp_abbrev, game_week
     proj = result['projection']
@@ -5800,7 +5865,17 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
             # failure item 1 was built to fix in the first place.
             all_qbs[qb_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not match the live event to an NFL week"})
             continue
-        result = run_nfl_pass_attempts_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+        # Real fix (August 2026) — was a real, direct, uncached call to
+        # run_nfl_pass_attempts_projection() every single time, for
+        # every real visitor's session — meaning NFL had ZERO real
+        # computation caching at all, unlike MLB/NBA which already
+        # reuse a real, shared, persistent result for the rest of the
+        # day once ANY visitor computes it. Now checks/writes the same
+        # real daily_cache table those sports already use.
+        result = cached_run_nfl_projection(
+            run_nfl_pass_attempts_projection, 'NFL', qb_name, mm_today_str(),
+            qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week,
+        )
 
         if result:
             proj = result['projection']
@@ -6008,7 +6083,10 @@ def run_all_nfl_completions_projections(all_qbs, season, progress_callback=None)
         if game_week is None:
             all_qbs[qb_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not match the live event to an NFL week"})
             continue
-        result = run_nfl_pass_completions_projection(qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week)
+        result = cached_run_nfl_projection(
+            run_nfl_pass_completions_projection, 'NFL_COMPLETIONS', qb_name, mm_today_str(),
+            qb_name, qb_team_abbrev, opp_abbrev, int(season), as_of_week=game_week,
+        )
 
         if result:
             proj = result['projection']
@@ -7820,7 +7898,10 @@ def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=
         if game_week is None:
             all_receivers[receiver_name].update({'Tier': "🔴 Data Incomplete — Pass", 'Pass Reason': "Could not match the live event to an NFL week"})
             continue
-        result = run_nfl_receptions_projection(receiver_name, receiver_team_abbrev, opp_abbrev, starting_qb, int(season), as_of_week=game_week)
+        result = cached_run_nfl_projection(
+            run_nfl_receptions_projection, 'NFL_RECEPTIONS', receiver_name, mm_today_str(),
+            receiver_name, receiver_team_abbrev, opp_abbrev, starting_qb, int(season), as_of_week=game_week,
+        )
 
         if result:
             proj = result['projection']
@@ -9201,6 +9282,35 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     # needing a fresh, separate fetch (which could return subtly
     # different real data than what THIS run actually priced against).
     return {"debug": debug_info, "results": results, "sorted_history": sorted_history}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ahead=1):
+    """Real fix (August 2026) — caches the ENTIRE real LoL pipeline
+    output (every real matchup, priced and tiered) for 30 real
+    minutes, shared across every visitor hitting this same running
+    server process. Real, deliberate design choice, different from
+    MLB/NBA/NFL's once-a-day persistent cache: this pipeline computes
+    a whole real slate atomically in one pass, not incrementally per
+    player, and real market prices genuinely shift meaningfully within
+    a day — treating a morning snapshot as valid for the rest of the
+    day (like the once-a-day sports do) would be a real, honest
+    accuracy tradeoff this project shouldn't make silently. A shorter,
+    real TTL here means the SECOND+ real visitor within any given real
+    30-minute window gets an instant, cached result, while the pipeline
+    still genuinely refreshes often enough to track real, moving
+    market prices and newly-started/completed real matches.
+
+    Real, deliberate limitation: no progress_callback support here — a
+    real Python closure/function can't be part of a real Streamlit
+    cache key (unhashable), so this always calls the underlying real
+    pipeline with progress_callback=None. In practice this means a
+    real cache MISS (the rare case — once per real 30-minute window,
+    not once per real visitor) falls back to a simple real spinner
+    instead of the detailed step-by-step progress bar, while a real
+    cache HIT (the now-common case) is instant either way."""
+    return run_lol_matchup_projections(api_key, tag_slug=tag_slug, max_days_ahead=max_days_ahead, progress_callback=None)
+
 
 # Real, soft banner shown on every page — a hard block (via the sidebar
 # nav trim + the nav-override above) already handles the "premium stuff"
@@ -10959,24 +11069,24 @@ elif nav == "🎮 Esports (LoL)":
         st.warning("⚠️ This model isn't fully configured yet — check back soon.")
     else:
         if st.button("🚀 Load Latest Matchups", use_container_width=True, key="run_lol_projections"):
-            # Real fix (July 2026, round 3) — was a single static
-            # st.spinner() with no real progress info, so a genuinely
-            # busy real slate needing many Cito calls (each respecting a
-            # real 30-calls/min limit) looked identical whether it was
-            # 10 seconds in or fully frozen. Now shows a real progress
-            # bar and the actual step being worked on, same pattern
-            # already used for MLB/NBA/NFL's "Run All Projections."
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def _update_lol_progress(current, total, label):
-                status_text.text(f"Step {current} of {total}: {label}")
-                progress_bar.progress(min(1.0, current / total) if total else 0)
-
-            pipeline_output = run_lol_matchup_projections(st.secrets["CITO_API_KEY"], progress_callback=_update_lol_progress)
+            # Real fix (August 2026) — now tries the real, shared,
+            # 30-minute cache first (_cached_lol_full_pipeline) instead
+            # of always recomputing the whole real slate fresh. On a
+            # real cache HIT (the now-common case, once any visitor has
+            # run this in the last 30 real minutes), this resolves
+            # near-instantly regardless of what's shown around it. On a
+            # real cache MISS (rare — once per real 30-minute window,
+            # not once per real visitor), this real spinner shows for
+            # the genuine duration of the real computation — a real,
+            # deliberate simplification from the prior detailed step-
+            # by-step progress bar, since a real Python closure/
+            # function (like a progress callback) can't be part of a
+            # real Streamlit cache key, and a cache miss should now be
+            # rare enough that the simpler spinner is an acceptable
+            # trade for it.
+            with st.spinner("🎮 Loading LoL matchups..."):
+                pipeline_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
             st.session_state['lol_pipeline_output'] = pipeline_output
-            progress_bar.empty()
-            status_text.empty()
 
         pipeline_output = st.session_state.get('lol_pipeline_output')
         if pipeline_output:
