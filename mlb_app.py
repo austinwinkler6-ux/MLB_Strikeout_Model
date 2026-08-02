@@ -926,7 +926,24 @@ def try_restore_session_from_cookie():
     yet, check for a saved refresh token cookie (set on login, 30-day expiry)
     and silently re-authenticate instead of showing the login screen again.
     Cookie components read the browser asynchronously, so this may take one
-    extra rerun to actually take effect on a brand new tab — expected, not a bug."""
+    extra rerun to actually take effect on a brand new tab — expected, not a bug.
+
+    Real fix (August 2026, per direct user report) — Supabase rotates
+    refresh tokens on each real use (the same real reason
+    refresh_supabase_session_if_needed() already re-saves its own
+    refreshed token back to the cookie, per that function's own real
+    comment). This function was missing that same real step — after a
+    real, successful restore here, the cookie still held the OLD, now-
+    already-consumed token. If this function ever ran a second time
+    before refresh_supabase_session_if_needed() got a chance to correct
+    it (a real, genuine risk once page loads got meaningfully longer
+    thanks to today's other real fixes, giving Streamlit's connection
+    more real time to reconnect/rerun mid-load), the second real
+    attempt would use that same stale, already-consumed token —
+    Supabase correctly rejects it, silently bouncing a real, just-
+    authenticated user back to the login screen. Now keeps the cookie
+    in sync immediately after every real successful restore, closing
+    that real gap."""
     if 'user' in st.session_state:
         return
     try:
@@ -937,6 +954,10 @@ def try_restore_session_from_cookie():
         if refreshed and refreshed.session and refreshed.user:
             st.session_state['user'] = refreshed.user
             st.session_state['session'] = refreshed.session
+            try:
+                cookie_controller.set('mm_refresh_token', refreshed.session.refresh_token, max_age=60 * 60 * 24 * 30)
+            except Exception:
+                pass
     except Exception:
         # Saved token invalid/expired — fall through to a normal login screen.
         pass
