@@ -9610,7 +9610,14 @@ if nav == "🏠 Home":
         """, unsafe_allow_html=True)
 
     st.markdown("<div style='padding-top: 36px;'></div>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
+    # Real fix (August 2026, per direct user request — "we should make
+    # an update to the home screen since we're into esports now") —
+    # this grid previously only listed MLB/NBA/NFL, even though LoL has
+    # been a real, fully working model in the app for a while now.
+    # Today's Card's own caption already correctly said "MLB, NBA, NFL,
+    # and LoL" — this grid was the one real, remaining place on Home
+    # that didn't reflect that.
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown("""
             <div class='mm-card' style='height: 125px; overflow: hidden;'>
@@ -9630,6 +9637,13 @@ if nav == "🏠 Home":
             <div class='mm-card' style='height: 125px; overflow: hidden;'>
                 <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🏈 NFL</div>
                 <div style='font-family: var(--mm-mono); font-size: 0.95rem; font-weight: 600;'>Pass Attempts · Pass Completions · Receptions</div>
+            </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        st.markdown("""
+            <div class='mm-card' style='height: 125px; overflow: hidden;'>
+                <div style='color: var(--mm-text-faint); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;'>🎮 Esports</div>
+                <div style='font-family: var(--mm-mono); font-size: 1.05rem; font-weight: 600;'>League of Legends · Match Winner</div>
             </div>
         """, unsafe_allow_html=True)
 
