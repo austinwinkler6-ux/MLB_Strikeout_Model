@@ -2918,7 +2918,7 @@ def get_bdl_team_ids():
     except Exception:
         return {}
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_bdl_team_injuries(team_id):
     """Current injury report for one NBA team — confirmed real endpoint
     (GET /v1/player_injuries, ALL-STAR tier, filter verified working via
@@ -3245,7 +3245,7 @@ def get_bdl_matchup_pace(team_full_name, opp_full_name, season, as_of_date):
 
 
 # ---- NBA POINTS PROJECTION ENGINE ----
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_live_nba_odds():
     """Current NBA odds — cached for 5 minutes so 15 players from the same
     game share one fetch instead of each triggering their own redundant call.
@@ -4441,7 +4441,7 @@ def fetch_closing_line(sport, player_name, direction, game_date_str):
 # inside it (computed fresh at cache-write time) — 5 minutes is short
 # enough that a game starting mid-cache-window is a real, small,
 # already-accepted staleness window, not a new risk.
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_mlb_props_data():
     """Fetches today's MLB pitcher-strikeout props from FanDuel/DraftKings.
     Returns an all_pitchers dict (empty on failure) — same shape used throughout the app.
@@ -4593,7 +4593,7 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
 # real prop_market argument ('player_points' vs 'player_assists'), so
 # NBA Points and NBA Assists each get their own real, independent
 # cache entry — no special handling needed for that.
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_nba_props_data(prop_market):
     """Fetches today's NBA player props for the given market
     ('player_points' or 'player_assists'). Returns an all_players dict.
@@ -4758,7 +4758,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                 })
     return results
 
-def run_todays_card_auto_run(minimal_ui=False):
+def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
     """Loads and runs every model in the app if not already done this
     session — MLB, both NBA prop types, all three NFL prop types, and
     LoL. minimal_ui=False (Today's Card): shows the detailed technical
@@ -4772,7 +4772,24 @@ def run_todays_card_auto_run(minimal_ui=False):
     app. Today's Card silently never showed them unless the user
     happened to separately visit those pages and run them manually
     first. Now covers every model, using the same real functions/
-    session-state keys each model's own page already uses."""
+    session-state keys each model's own page already uses.
+
+    Real fix (August 2026, per direct user report — landing directly
+    on the Esports page during a real, genuinely cold run still had to
+    wait through MLB/NBA/NFL's real cost first, since this always ran
+    in a fixed MLB→NBA→NFL→LoL order regardless of which real page the
+    visitor actually opened). priority_sport ('mlb'/'nba'/'nfl'/'lol'),
+    if given, moves that one real sport's block to the FRONT of the
+    real execution order — the caller passes in whichever sport
+    matches the current real nav page, so a cold visit to any specific
+    sport's page gets that one done first, with the others (which the
+    visitor isn't even looking at yet) following after. A real, minor,
+    accepted cosmetic side effect: the detailed checklist mode
+    (minimal_ui=False, Today's Card) still displays steps in the
+    original MLB→NBA→NFL→LoL declared order regardless of real
+    execution order, so checkmarks can appear slightly out of visual
+    sequence during a reordered run — not worth the real, added
+    complexity of reordering the display too, for a rarely-seen mode."""
     if st.session_state.get('today_card_auto_ran'):
         return
 
@@ -4816,105 +4833,119 @@ def run_todays_card_auto_run(minimal_ui=False):
 
     render()
 
-    if 'all_pitchers' not in st.session_state:
-        render("Loading MLB props")
-        mlb_props = load_mlb_props_data()
-        completed.append("Loading MLB props")
-        if mlb_props:
-            render("Running MLB projections")
-            mlb_results = run_all_mlb_projections(mlb_props, '2026')
-            completed.append("Running MLB projections")
-            st.session_state['all_pitchers'] = mlb_props
-            st.session_state['pitcher_results'] = mlb_results
-            st.session_state['season'] = '2026'
-            st.session_state.setdefault('manual_run_order', {})
-            st.session_state.setdefault('manual_run_counter', 0)
-        else:
-            completed.append("Running MLB projections")
-    else:
-        completed.extend(["Loading MLB props", "Running MLB projections"])
-
-    if 'all_nba_players' not in st.session_state:
-        render("Loading NBA points props")
-        nba_pts_props = load_nba_props_data('player_points')
-        completed.append("Loading NBA points props")
-        if nba_pts_props:
-            render("Running NBA points projections")
-            nba_pts_results = run_all_nba_projections(nba_pts_props, run_nba_points_projection, 'nba_points', '2025-26')
-            completed.append("Running NBA points projections")
-            st.session_state['all_nba_players'] = nba_pts_props
-            st.session_state['nba_pts_results'] = nba_pts_results
-            st.session_state['nba_season'] = '2025-26'
-        else:
-            completed.append("Running NBA points projections")
-    else:
-        completed.extend(["Loading NBA points props", "Running NBA points projections"])
-
-    if 'all_nba_assist_players' not in st.session_state:
-        render("Loading NBA assists props")
-        nba_ast_props = load_nba_props_data('player_assists')
-        completed.append("Loading NBA assists props")
-        if nba_ast_props:
-            render("Running NBA assists projections")
-            nba_ast_results = run_all_nba_projections(nba_ast_props, run_nba_assists_projection, 'nba_assists', '2025-26')
-            completed.append("Running NBA assists projections")
-            st.session_state['all_nba_assist_players'] = nba_ast_props
-            st.session_state['nba_ast_results'] = nba_ast_results
-        else:
-            completed.append("Running NBA assists projections")
-    else:
-        completed.extend(["Loading NBA assists props", "Running NBA assists projections"])
-
-    # Real addition (July 2026) — all three NFL models, same real
-    # load_fn/run_all_fn functions and session-state keys each model's
-    # own page (run_nfl_display) already uses, just triggered here too.
-    nfl_season = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
-    nfl_models = [
-        ('all_qbs', 'nfl_attempts', load_nfl_props_data, run_all_nfl_projections,
-         "Loading NFL attempts props", "Running NFL attempts projections"),
-        ('all_qbs_completions', 'nfl_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections,
-         "Loading NFL completions props", "Running NFL completions projections"),
-        ('all_receivers', 'nfl_receptions', load_nfl_receptions_props_data, run_all_nfl_receptions_projections,
-         "Loading NFL receptions props", "Running NFL receptions projections"),
-    ]
-    for all_players_key, session_key, load_fn, run_all_fn, load_step, run_step in nfl_models:
-        if all_players_key not in st.session_state:
-            render(load_step)
-            nfl_props = load_fn()
-            completed.append(load_step)
-            if nfl_props:
-                render(run_step)
-                nfl_results = run_all_fn(nfl_props, nfl_season)
-                completed.append(run_step)
-                st.session_state[all_players_key] = nfl_props
-                st.session_state[f'{session_key}_results'] = nfl_results
-                st.session_state[f'{session_key}_season'] = nfl_season
-                st.session_state.setdefault(f'manual_run_order_{session_key}', {})
-                st.session_state.setdefault(f'manual_run_counter_{session_key}', 0)
+    def _run_mlb():
+        if 'all_pitchers' not in st.session_state:
+            render("Loading MLB props")
+            mlb_props = load_mlb_props_data()
+            completed.append("Loading MLB props")
+            if mlb_props:
+                render("Running MLB projections")
+                mlb_results = run_all_mlb_projections(mlb_props, '2026')
+                completed.append("Running MLB projections")
+                st.session_state['all_pitchers'] = mlb_props
+                st.session_state['pitcher_results'] = mlb_results
+                st.session_state['season'] = '2026'
+                st.session_state.setdefault('manual_run_order', {})
+                st.session_state.setdefault('manual_run_counter', 0)
             else:
-                completed.append(run_step)
+                completed.append("Running MLB projections")
         else:
-            completed.extend([load_step, run_step])
+            completed.extend(["Loading MLB props", "Running MLB projections"])
 
-    # Real addition (July 2026) — LoL, structured differently from the
-    # other models (one real, all-in-one call rather than a separate
-    # load-then-run step), same real function/session-state key its
-    # own page already uses.
-    if 'lol_pipeline_output' not in st.session_state:
-        if "CITO_API_KEY" in st.secrets:
-            render("Loading LoL matchups")
-            completed.append("Loading LoL matchups")
-            render("Running LoL projections")
-            # Real fix (August 2026) — uses the real, shared, 30-minute
-            # cache instead of always recomputing the whole real LoL
-            # slate fresh for every visitor's session.
-            lol_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
-            st.session_state['lol_pipeline_output'] = lol_output
-            completed.append("Running LoL projections")
+    def _run_nba():
+        if 'all_nba_players' not in st.session_state:
+            render("Loading NBA points props")
+            nba_pts_props = load_nba_props_data('player_points')
+            completed.append("Loading NBA points props")
+            if nba_pts_props:
+                render("Running NBA points projections")
+                nba_pts_results = run_all_nba_projections(nba_pts_props, run_nba_points_projection, 'nba_points', '2025-26')
+                completed.append("Running NBA points projections")
+                st.session_state['all_nba_players'] = nba_pts_props
+                st.session_state['nba_pts_results'] = nba_pts_results
+                st.session_state['nba_season'] = '2025-26'
+            else:
+                completed.append("Running NBA points projections")
+        else:
+            completed.extend(["Loading NBA points props", "Running NBA points projections"])
+
+        if 'all_nba_assist_players' not in st.session_state:
+            render("Loading NBA assists props")
+            nba_ast_props = load_nba_props_data('player_assists')
+            completed.append("Loading NBA assists props")
+            if nba_ast_props:
+                render("Running NBA assists projections")
+                nba_ast_results = run_all_nba_projections(nba_ast_props, run_nba_assists_projection, 'nba_assists', '2025-26')
+                completed.append("Running NBA assists projections")
+                st.session_state['all_nba_assist_players'] = nba_ast_props
+                st.session_state['nba_ast_results'] = nba_ast_results
+            else:
+                completed.append("Running NBA assists projections")
+        else:
+            completed.extend(["Loading NBA assists props", "Running NBA assists projections"])
+
+    def _run_nfl():
+        # Real addition (July 2026) — all three NFL models, same real
+        # load_fn/run_all_fn functions and session-state keys each
+        # model's own page (run_nfl_display) already uses, just
+        # triggered here too.
+        nfl_season = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
+        nfl_models = [
+            ('all_qbs', 'nfl_attempts', load_nfl_props_data, run_all_nfl_projections,
+             "Loading NFL attempts props", "Running NFL attempts projections"),
+            ('all_qbs_completions', 'nfl_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections,
+             "Loading NFL completions props", "Running NFL completions projections"),
+            ('all_receivers', 'nfl_receptions', load_nfl_receptions_props_data, run_all_nfl_receptions_projections,
+             "Loading NFL receptions props", "Running NFL receptions projections"),
+        ]
+        for all_players_key, session_key, load_fn, run_all_fn, load_step, run_step in nfl_models:
+            if all_players_key not in st.session_state:
+                render(load_step)
+                nfl_props = load_fn()
+                completed.append(load_step)
+                if nfl_props:
+                    render(run_step)
+                    nfl_results = run_all_fn(nfl_props, nfl_season)
+                    completed.append(run_step)
+                    st.session_state[all_players_key] = nfl_props
+                    st.session_state[f'{session_key}_results'] = nfl_results
+                    st.session_state[f'{session_key}_season'] = nfl_season
+                    st.session_state.setdefault(f'manual_run_order_{session_key}', {})
+                    st.session_state.setdefault(f'manual_run_counter_{session_key}', 0)
+                else:
+                    completed.append(run_step)
+            else:
+                completed.extend([load_step, run_step])
+
+    def _run_lol():
+        # Real addition (July 2026) — LoL, structured differently from
+        # the other models (one real, all-in-one call rather than a
+        # separate load-then-run step), same real function/session-
+        # state key its own page already uses.
+        if 'lol_pipeline_output' not in st.session_state:
+            if "CITO_API_KEY" in st.secrets:
+                render("Loading LoL matchups")
+                completed.append("Loading LoL matchups")
+                render("Running LoL projections")
+                # Real fix (August 2026) — uses the real, shared,
+                # 30-minute cache instead of always recomputing the
+                # whole real LoL slate fresh for every visitor's
+                # session.
+                lol_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
+                st.session_state['lol_pipeline_output'] = lol_output
+                completed.append("Running LoL projections")
+            else:
+                completed.extend(["Loading LoL matchups", "Running LoL projections"])
         else:
             completed.extend(["Loading LoL matchups", "Running LoL projections"])
-    else:
-        completed.extend(["Loading LoL matchups", "Running LoL projections"])
+
+    blocks = {'mlb': _run_mlb, 'nba': _run_nba, 'nfl': _run_nfl, 'lol': _run_lol}
+    order = ['mlb', 'nba', 'nfl', 'lol']
+    if priority_sport in order:
+        order.remove(priority_sport)
+        order.insert(0, priority_sport)
+    for key in order:
+        blocks[key]()
 
     status_box.empty()
 
@@ -5473,7 +5504,7 @@ def get_nfl_game_context(season, team, opponent, as_of_week):
         return None
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_nfl_props_data():
     """Fetches today's live NFL player_pass_attempts props from FanDuel/
     DraftKings — same shape as load_mlb_props_data()/load_nba_props_data()
@@ -5934,7 +5965,7 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
 # Real fix (August 2026) — matches the same real 5-minute TTL already
 # used by load_nfl_props_data() (Pass Attempts) — this loader didn't
 # have it, a real, small inconsistency.
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_nfl_completions_props_data():
     """Fetches today's live NFL player_pass_completions props (July
     2026) — a faithful parallel to load_nfl_props_data(), just built for
@@ -7720,7 +7751,7 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
 
 # Real fix (August 2026) — same real reasoning as the Completions
 # loader above.
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_nfl_receptions_props_data():
     """Fetches today's live NFL player_receptions props (July 2026) —
     structurally closer to load_nba_props_data() than to
@@ -9337,7 +9368,19 @@ render_trial_banner(subscription_status, user_id, user.email)
 # checklist/progress UI most of the time. The function's own existing
 # session-state guard (today_card_auto_ran) means this is a genuinely
 # free, instant no-op on every page after the first one in a session.
-run_todays_card_auto_run(minimal_ui=True)
+#
+# Real fix (August 2026, round 2, per direct user report — landing
+# directly on the Esports page during a real, genuinely cold run still
+# showed raw NFL loading text and took a while, since the fixed
+# MLB→NBA→NFL→LoL order ran regardless of which real page was actually
+# open). Maps the current real nav page to a priority sport, so a cold
+# run does that one FIRST — the sport the visitor is actually looking
+# at gets done before the others, which they aren't even viewing yet.
+_nav_to_priority_sport = {
+    "⚾ MLB Models": "mlb", "🏀 NBA Models": "nba",
+    "🏈 NFL Models": "nfl", "🎮 Esports (LoL)": "lol",
+}
+run_todays_card_auto_run(minimal_ui=True, priority_sport=_nav_to_priority_sport.get(nav))
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
