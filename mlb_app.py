@@ -9401,12 +9401,36 @@ _nav_to_priority_sport = {
     "⚾ MLB Models": "mlb", "🏀 NBA Models": "nba",
     "🏈 NFL Models": "nfl", "🎮 Esports (LoL)": "lol",
 }
+
+# Real fix (August 2026, per direct user report — "when I first load up
+# the home screen it just shows that the projections are loading" with
+# nothing above it) — the real hero header used to only render AFTER
+# the global auto-run finished, since it lived inside the Home page
+# block further below, and the auto-run itself runs earlier, before
+# nav dispatch. Now shown immediately, right here, before the auto-run
+# call — so a visitor sees the real header right away, with any real
+# loading indicator appearing below it, not instead of it. Skipped for
+# a brand-new signup still in the bankroll-setup gate (that flow shows
+# its own, different "Welcome to Model Metrics" header instead, just
+# below) to avoid showing two stacked headers.
+_early_bankroll_settings = get_user_settings() if nav == "🏠 Home" else None
+_early_has_bankroll = bool(_early_bankroll_settings and _early_bankroll_settings.get('starting_bankroll') is not None)
+if nav == "🏠 Home" and not (st.session_state.get('just_signed_up') and not _early_has_bankroll):
+    st.markdown("""
+        <div style='text-align: center; padding: 8px 0 4px 0;'>
+            <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;'>
+                Player Prop Analytics
+            </div>
+            <h1 style='font-size: 3rem; margin: 0 0 14px 0; line-height: 1.1;'>Sharp Data. Sharp Bets.</h1>
+        </div>
+    """, unsafe_allow_html=True)
+
 run_todays_card_auto_run(minimal_ui=True, priority_sport=_nav_to_priority_sport.get(nav))
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
-    _bankroll_settings = get_user_settings()
-    _has_bankroll = bool(_bankroll_settings and _bankroll_settings.get('starting_bankroll') is not None)
+    _bankroll_settings = _early_bankroll_settings
+    _has_bankroll = _early_has_bankroll
 
     if st.session_state.get('just_signed_up') and not _has_bankroll:
         st.markdown("""
@@ -9441,18 +9465,9 @@ if nav == "🏠 Home":
                 st.rerun()
         st.stop()
 
-    st.markdown("""
-        <div style='text-align: center; padding: 8px 0 4px 0;'>
-            <div style='color: var(--mm-accent); font-family: var(--mm-mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;'>
-                Player Prop Analytics
-            </div>
-            <h1 style='font-size: 3rem; margin: 0 0 14px 0; line-height: 1.1;'>Sharp Data. Sharp Bets.</h1>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Real fix (August 2026) — the real auto-run now fires globally,
-    # once per session, before nav dispatch even begins (see above) —
-    # removed the redundant duplicate call that used to live here.
+    # Real fix (August 2026) — the real header now renders earlier
+    # (see above, before the global auto-run call), removed the
+    # duplicate that used to live here.
     top_entry = top_ranked_entry(build_todays_card_entries())
     already_bet_by_sport = get_already_bet_players_today_by_sport()
 
