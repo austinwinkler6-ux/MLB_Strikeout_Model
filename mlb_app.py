@@ -5931,6 +5931,10 @@ def run_all_nfl_projections(all_qbs, season, progress_callback=None):
                 })
     return results
 
+# Real fix (August 2026) — matches the same real 5-minute TTL already
+# used by load_nfl_props_data() (Pass Attempts) — this loader didn't
+# have it, a real, small inconsistency.
+@st.cache_data(ttl=300)
 def load_nfl_completions_props_data():
     """Fetches today's live NFL player_pass_completions props (July
     2026) — a faithful parallel to load_nfl_props_data(), just built for
@@ -7714,6 +7718,9 @@ def run_nfl_receptions_model_b_projection(player_name, team, opponent, qb_name, 
         if st.session_state.get("_nfl_debug_mode"): raise
         return None
 
+# Real fix (August 2026) — same real reasoning as the Completions
+# loader above.
+@st.cache_data(ttl=300)
 def load_nfl_receptions_props_data():
     """Fetches today's live NFL player_receptions props (July 2026) —
     structurally closer to load_nba_props_data() than to
@@ -7962,32 +7969,22 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
     """
     bankroll, risk_style = get_bankroll_context()
     already_bet_today = get_already_bet_players_today(sport_save_label)
-    col_load, col_run_all = st.columns(2)
 
-    with col_load:
-        if st.button(f"📋 Load This Week's {player_label} Props", use_container_width=True, key=f"load_{session_key}"):
-            with st.spinner(f"Pulling this week's {player_label} props..."):
-                all_players = load_fn()
-                if all_players:
-                    st.session_state[all_players_key] = all_players
-                    st.session_state[f'{session_key}_season'] = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
-                    st.session_state[f'{session_key}_results'] = {}
-                    st.session_state[f'manual_run_order_{session_key}'] = {}
-                    st.session_state[f'manual_run_counter_{session_key}'] = 0
-                else:
-                    real_error = st.session_state.pop(f'_nfl_{session_key}_props_load_error', None) or st.session_state.pop('_nfl_props_load_error', None) or st.session_state.pop('_nfl_completions_props_load_error', None) or st.session_state.pop('_nfl_receptions_props_load_error', None)
-                    if real_error:
-                        st.error(f"Couldn't load this week's props — real error: {real_error}")
-                    else:
-                        st.error("Couldn't load this week's props — either no games are posted yet or it's off-season.")
-
-    with col_run_all:
-        if st.button("🚀 Run All Projections", use_container_width=True, key=f"run_all_{session_key}"):
-            if all_players_key not in st.session_state:
-                st.warning("Load this week's props first!")
-            else:
-                all_players = st.session_state[all_players_key]
-                season = st.session_state.get(f'{session_key}_season', datetime.now().year)
+    # Real fix (August 2026, per direct user request) — data is now
+    # already loaded automatically by the real, global
+    # run_todays_card_auto_run() call before page dispatch (backed by
+    # today's real caching fixes — this is the same NFL that used to
+    # have ZERO computation caching at all, now fully persistent). This
+    # button is now an OPTIONAL way to force a genuinely fresh props
+    # pull (load_fn.clear() bypasses its 5-minute cache on purpose
+    # here) rather than a required first step.
+    if st.button(f"🔄 Refresh {player_label} Props & Projections", key=f"refresh_{session_key}"):
+        if hasattr(load_fn, "clear"):
+            load_fn.clear()
+        with st.spinner(f"Pulling fresh {player_label} props and running projections..."):
+            all_players = load_fn()
+            if all_players:
+                season = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 total = len(all_players)
@@ -7998,12 +7995,20 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
 
                 player_results = run_all_fn(all_players, season, progress_callback=_update_progress)
                 st.session_state[all_players_key] = all_players
+                st.session_state[f'{session_key}_season'] = season
                 st.session_state.setdefault(f'{session_key}_results', {})
                 st.session_state[f'{session_key}_results'].update(player_results)
-
-                status_text.text(f"✅ Done! All {total} projections complete.")
-                progress_bar.progress(1.0)
+                st.session_state[f'manual_run_order_{session_key}'] = {}
+                st.session_state[f'manual_run_counter_{session_key}'] = 0
+                progress_bar.empty()
+                status_text.empty()
                 st.rerun()
+            else:
+                real_error = st.session_state.pop(f'_nfl_{session_key}_props_load_error', None) or st.session_state.pop('_nfl_props_load_error', None) or st.session_state.pop('_nfl_completions_props_load_error', None) or st.session_state.pop('_nfl_receptions_props_load_error', None)
+                if real_error:
+                    st.error(f"Couldn't load this week's props — real error: {real_error}")
+                else:
+                    st.error("Couldn't load this week's props — either no games are posted yet or it's off-season.")
 
     if all_players_key in st.session_state:
         all_players = st.session_state[all_players_key]
@@ -8025,7 +8030,7 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
         if started_since_load:
             names_preview = ", ".join(started_since_load[:5])
             more = f" and {len(started_since_load) - 5} more" if len(started_since_load) > 5 else ""
-            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"Load This Week's Props\"** again to refresh.")
+            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"🔄 Refresh\"** above to update.")
 
         manual_run_order = st.session_state.get(f'manual_run_order_{session_key}', {})
 
@@ -9317,6 +9322,23 @@ def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ah
 # side of this; this is the "everywhere" side.
 render_trial_banner(subscription_status, user_id, user.email)
 
+# Real fix (August 2026, per direct user request — "get rid of the
+# load player prop and run player projections buttons and just have
+# all the data fully there for when anyone loads the site") — this
+# used to only fire on the Home page specifically, meaning a real
+# visitor who went straight to, say, the NFL page without visiting
+# Home first would still hit the old two-button "Load Props" / "Run
+# Projections" manual flow. Now fires globally, once per real session,
+# regardless of which page someone lands on first — thanks to today's
+# earlier caching fixes (persistent daily_cache for MLB/NBA/NFL, a
+# real 30-minute shared cache for LoL, plus the scheduled cache-warmer
+# script), this is now fast enough in the common case to run silently
+# before any page's own content renders, rather than needing a visible
+# checklist/progress UI most of the time. The function's own existing
+# session-state guard (today_card_auto_ran) means this is a genuinely
+# free, instant no-op on every page after the first one in a session.
+run_todays_card_auto_run(minimal_ui=True)
+
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
     _bankroll_settings = get_user_settings()
@@ -9364,7 +9386,9 @@ if nav == "🏠 Home":
         </div>
     """, unsafe_allow_html=True)
 
-    run_todays_card_auto_run(minimal_ui=True)
+    # Real fix (August 2026) — the real auto-run now fires globally,
+    # once per session, before nav dispatch even begins (see above) —
+    # removed the redundant duplicate call that used to live here.
     top_entry = top_ranked_entry(build_todays_card_entries())
     already_bet_by_sport = get_already_bet_players_today_by_sport()
 
@@ -9588,8 +9612,8 @@ elif nav == "🎯 Today's Card":
     st.title("🎯 Today's Card")
     st.caption("Ranked, not listed. Loads and runs every model automatically — MLB, NBA, NFL, and LoL.")
 
-    run_todays_card_auto_run(minimal_ui=True)
-
+    # Real fix (August 2026) — same real global auto-run now covers
+    # this page too, removed the redundant duplicate call.
     if st.session_state.get('today_card_updated_at'):
         st.caption(f"🕐 Last updated at {st.session_state['today_card_updated_at']}")
 
@@ -9711,28 +9735,22 @@ elif nav == "⚾ MLB Models":
     bankroll, risk_style = get_bankroll_context()
     already_bet_today = get_already_bet_players_today('MLB')
 
-    col_load, col_run_all = st.columns(2)
-
-    with col_load:
-        if st.button("📋 Load Today's Props", use_container_width=True):
-            with st.spinner("Pulling today's props..."):
-                all_pitchers = load_mlb_props_data()
-                if all_pitchers:
-                    st.session_state['all_pitchers'] = all_pitchers
-                    st.session_state['season'] = '2026'
-                    st.session_state['pitcher_results'] = {}
-                    st.session_state['manual_run_order'] = {}
-                    st.session_state['manual_run_counter'] = 0
-                else:
-                    st.error("Couldn't load today's props — no games found or the odds API request failed.")
-
-    with col_run_all:
-        if st.button("🚀 Run All Projections", use_container_width=True):
-            if 'all_pitchers' not in st.session_state:
-                st.warning("Load today's props first!")
-            else:
-                all_pitchers = st.session_state['all_pitchers']
-                season = st.session_state.get('season', '2026')
+    # Real fix (August 2026, per direct user request — "get rid of the
+    # load player prop and run player projections buttons and just
+    # have all the data fully there") — data is now already loaded
+    # automatically by the real, global run_todays_card_auto_run()
+    # call before page dispatch (backed by today's real caching fixes
+    # — persistent daily_cache + the scheduled cache-warmer — so this
+    # is genuinely fast now, not a guess that it'll be fine). This
+    # button is now an OPTIONAL way to force a genuinely fresh odds
+    # pull (load_mlb_props_data.clear() bypasses its 5-minute cache on
+    # purpose here, since the whole point of clicking this is "get me
+    # current lines right now") rather than a required first step.
+    if st.button("🔄 Refresh Props & Projections", key="mlb_refresh"):
+        load_mlb_props_data.clear()
+        with st.spinner("Pulling fresh props and running projections..."):
+            all_pitchers = load_mlb_props_data()
+            if all_pitchers:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 total = len(all_pitchers)
@@ -9741,13 +9759,17 @@ elif nav == "⚾ MLB Models":
                     status_text.text(f"Running {i+1} of {total}: {name}")
                     progress_bar.progress((i + 1) / total)
 
-                pitcher_results = run_all_mlb_projections(all_pitchers, season, progress_callback=_update_progress)
+                pitcher_results = run_all_mlb_projections(all_pitchers, '2026', progress_callback=_update_progress)
                 st.session_state['all_pitchers'] = all_pitchers
+                st.session_state['season'] = '2026'
                 st.session_state['pitcher_results'] = pitcher_results
-
-                status_text.text(f"✅ Done! All {total} projections complete.")
-                progress_bar.progress(1.0)
+                st.session_state['manual_run_order'] = {}
+                st.session_state['manual_run_counter'] = 0
+                progress_bar.empty()
+                status_text.empty()
                 st.rerun()
+            else:
+                st.error("Couldn't load today's props — no games found or the odds API request failed.")
 
     if 'all_pitchers' in st.session_state:
         all_pitchers = st.session_state['all_pitchers']
@@ -9773,7 +9795,7 @@ elif nav == "⚾ MLB Models":
         if started_since_load:
             names_preview = ", ".join(started_since_load[:5])
             more = f" and {len(started_since_load) - 5} more" if len(started_since_load) > 5 else ""
-            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"Load Today's Props\"** again to refresh.")
+            st.warning(f"⚠️ {len(started_since_load)} loaded game(s) have started since you pulled props ({names_preview}{more}) — their projections are now stale. Click **\"🔄 Refresh Props & Projections\"** above to update.")
 
         manual_run_order = st.session_state.get('manual_run_order', {})
 
@@ -10021,29 +10043,19 @@ elif nav == "🏀 NBA Models":
     def run_nba_display(all_players_key, run_fn, sport_key, prop_market, session_key):
         bankroll, risk_style = get_bankroll_context()
         already_bet_today = get_already_bet_players_today(nba_bet_sport_label(sport_key))
-        col_load, col_run_all = st.columns(2)
 
-        with col_load:
-            label = "NBA Points" if prop_market == 'player_points' else "Assist"
-            if st.button(f"📋 Load Today's {label} Props", use_container_width=True, key=f"load_{session_key}"):
-                with st.spinner(f"Pulling {label} props..."):
-                    all_players = load_nba_props_data(prop_market)
-                    if all_players:
-                        st.session_state[all_players_key] = all_players
-                        st.session_state['nba_season'] = '2025-26'
-                        st.session_state[f'{session_key}_results'] = {}
-                        st.session_state[f'manual_run_order_{session_key}'] = {}
-                        st.success(f"Loaded {len(all_players)} players!")
-                    else:
-                        st.error("Couldn't load today's props — no games found or the odds API request failed.")
-
-        with col_run_all:
-            if st.button(f"🚀 Run All Projections", use_container_width=True, key=f"run_all_{session_key}"):
-                if all_players_key not in st.session_state:
-                    st.warning("Load today's props first!")
-                else:
-                    all_players = st.session_state[all_players_key]
-                    season = st.session_state.get('nba_season', '2025-26')
+        # Real fix (August 2026, per direct user request) — data is
+        # now already loaded automatically by the real, global
+        # run_todays_card_auto_run() call before page dispatch. This
+        # button is now an OPTIONAL way to force a genuinely fresh
+        # odds pull (load_nba_props_data.clear() bypasses its 5-minute
+        # cache on purpose here) rather than a required first step.
+        label = "NBA Points" if prop_market == 'player_points' else "Assist"
+        if st.button(f"🔄 Refresh {label} Props & Projections", key=f"refresh_{session_key}"):
+            load_nba_props_data.clear()
+            with st.spinner(f"Pulling fresh {label} props and running projections..."):
+                all_players = load_nba_props_data(prop_market)
+                if all_players:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     total = len(all_players)
@@ -10052,14 +10064,17 @@ elif nav == "🏀 NBA Models":
                         status_text.text(f"Running {i+1} of {total}: {name}")
                         progress_bar.progress((i + 1) / total)
 
-                    results = run_all_nba_projections(all_players, run_fn, sport_key, season, progress_callback=_update_progress)
+                    results = run_all_nba_projections(all_players, run_fn, sport_key, '2025-26', progress_callback=_update_progress)
                     st.session_state[all_players_key] = all_players
+                    st.session_state['nba_season'] = '2025-26'
                     st.session_state.setdefault(f'{session_key}_results', {})
                     st.session_state[f'{session_key}_results'].update(results)
-
-                    status_text.text(f"✅ Done! All {total} projections complete.")
-                    progress_bar.progress(1.0)
+                    st.session_state[f'manual_run_order_{session_key}'] = {}
+                    progress_bar.empty()
+                    status_text.empty()
                     st.rerun()
+                else:
+                    st.error("Couldn't load today's props — no games found or the odds API request failed.")
 
         if all_players_key in st.session_state:
             all_players = st.session_state[all_players_key]
@@ -11068,22 +11083,15 @@ elif nav == "🎮 Esports (LoL)":
     if "CITO_API_KEY" not in st.secrets:
         st.warning("⚠️ This model isn't fully configured yet — check back soon.")
     else:
-        if st.button("🚀 Load Latest Matchups", use_container_width=True, key="run_lol_projections"):
-            # Real fix (August 2026) — now tries the real, shared,
-            # 30-minute cache first (_cached_lol_full_pipeline) instead
-            # of always recomputing the whole real slate fresh. On a
-            # real cache HIT (the now-common case, once any visitor has
-            # run this in the last 30 real minutes), this resolves
-            # near-instantly regardless of what's shown around it. On a
-            # real cache MISS (rare — once per real 30-minute window,
-            # not once per real visitor), this real spinner shows for
-            # the genuine duration of the real computation — a real,
-            # deliberate simplification from the prior detailed step-
-            # by-step progress bar, since a real Python closure/
-            # function (like a progress callback) can't be part of a
-            # real Streamlit cache key, and a cache miss should now be
-            # rare enough that the simpler spinner is an acceptable
-            # trade for it.
+        # Real fix (August 2026, per direct user request) — data is now
+        # already loaded automatically by the real, global
+        # run_todays_card_auto_run() call before page dispatch (LoL is
+        # included in that same real auto-run). This button is now an
+        # OPTIONAL way to force a genuinely fresh pull — clears the
+        # real 30-minute cache on purpose here, since the whole point
+        # of clicking "Refresh" is "get me current data right now."
+        if st.button("🔄 Refresh Matchups", use_container_width=True, key="run_lol_projections"):
+            _cached_lol_full_pipeline.clear()
             with st.spinner("🎮 Loading LoL matchups..."):
                 pipeline_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
             st.session_state['lol_pipeline_output'] = pipeline_output
