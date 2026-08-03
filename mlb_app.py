@@ -8597,7 +8597,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     directly against the separate coverage tool's own independent
     count — if they disagree, that's real, direct evidence the live
     run itself received bad data, even with zero exceptions raised."""
-    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners, normalize_requested_team_slug, apply_slug_alias_map, slugs_textually_related
+    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners, normalize_requested_team_slug, apply_slug_alias_map, slugs_textually_related, resolve_fetchable_slug, is_disambiguated_challengers_slug
     from lol_elo import combine_and_dedupe_matches
 
     if unique_slugs is None:
@@ -8635,14 +8635,22 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     # along later in this loop.
     from cito_api import MANUAL_CHALLENGERS_SLUGS
     def _is_challengers_slug(s):
-        return "challenger" in (s or "").lower() or (s or "").lower() in MANUAL_CHALLENGERS_SLUGS
+        return "challenger" in (s or "").lower() or (s or "").lower() in MANUAL_CHALLENGERS_SLUGS or is_disambiguated_challengers_slug(s)
     unique_slugs = sorted(unique_slugs, key=lambda s: (not _is_challengers_slug(s), s))
 
     for slug in unique_slugs:
         if on_step:
             on_step(f"Match history: {slug}")
         try:
-            team_matches = _cached_lol_team_matches(api_key, slug)
+            # Real fix (August 2026, round 6, per direct user
+            # investigation) — slug may now be a real, synthetic,
+            # disambiguated identifier (e.g. "bro::cl") that Cito's own
+            # real API has no idea about — the actual real fetch must
+            # always use the real, underlying Cito slug
+            # (resolve_fetchable_slug strips the synthetic suffix,
+            # returning it unchanged if there wasn't one).
+            fetchable_slug = resolve_fetchable_slug(slug)
+            team_matches = _cached_lol_team_matches(api_key, fetchable_slug)
             completed = extract_completed_matches(team_matches)
             # Real fix (July 2026, per direct user report — a real,
             # established team, paiN Gaming, showing zero processed
@@ -8670,11 +8678,26 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
             # slugs_textually_related() check normalize_requested_
             # team_slug() itself uses, so a genuinely different real
             # team never gets folded into this map at all.
-            for _match in completed:
-                for _side_key in ("team1", "team2"):
-                    _side = _match.get(_side_key)
-                    if isinstance(_side, dict) and _side.get("isRequested") and _side.get("slug") and _side.get("slug") != slug and slugs_textually_related(_side.get("slug"), slug):
-                        slug_alias_map[_side["slug"]] = slug
+            # Real fix (round 6, August 2026) — ALSO skips this
+            # detection entirely for a real, synthetic disambiguated
+            # slug (e.g. "bro::cl"). A global {real_slug: synthetic_
+            # slug} entry here would be real, direct danger — applied
+            # via apply_slug_alias_map() below across the ENTIRE
+            # combined history, it would incorrectly relabel every
+            # real occurrence of the underlying slug (e.g. "bro")
+            # anywhere in the whole dataset, including real, unrelated
+            # main-roster matches from a completely different real
+            # matchup this same run. normalize_requested_team_slug()
+            # right below already correctly handles the disambiguation
+            # within THIS team's own real fetch — that's sufficient and
+            # safe; the global map must stay real-slug-to-real-slug
+            # only.
+            if not is_disambiguated_challengers_slug(slug):
+                for _match in completed:
+                    for _side_key in ("team1", "team2"):
+                        _side = _match.get(_side_key)
+                        if isinstance(_side, dict) and _side.get("isRequested") and _side.get("slug") and _side.get("slug") != slug and slugs_textually_related(_side.get("slug"), slug):
+                            slug_alias_map[_side["slug"]] = slug
             completed = normalize_requested_team_slug(completed, slug)
             all_team_histories.append(completed)
             per_team_fetch_counts[slug] = len(completed)
@@ -8709,11 +8732,23 @@ def _fetch_lol_team_rosters(unique_slugs, api_key, on_step=None):
     called before each real per-team fetch, feeding a real progress
     indicator on the LoL page instead of a single static spinner."""
     roster_cache = {}
+    from cito_api import resolve_fetchable_slug
     for slug in unique_slugs:
         if on_step:
             on_step(f"Roster history: {slug}")
         try:
-            roster_cache[slug] = _cached_lol_team_roster(api_key, slug)
+            # Real fix (August 2026, round 6) — slug may be a real,
+            # synthetic, disambiguated identifier (e.g. "bro::cl") that
+            # Cito's own real roster endpoint has no idea about. Fetches
+            # using the real, underlying slug, but still keys the cache
+            # by the original (possibly synthetic) slug, so downstream
+            # lookups for the disambiguated identity still find an
+            # entry — Cito's real roster endpoint has no tier concept
+            # of its own anyway, so reusing the same real, current
+            # roster snapshot for both identities is the most honest
+            # real option available, not a compromise specific to this
+            # fix.
+            roster_cache[slug] = _cached_lol_team_roster(api_key, resolve_fetchable_slug(slug))
         except Exception:
             pass  # real, honest fallback — this team simply won't have a roster-continuity discount applied
     return roster_cache
@@ -8729,6 +8764,7 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     'too_far_ahead', 'bad_price_data', 'illiquid', or None (meaning a
     real result was produced)."""
     from polymarket_api import polymarket_price_to_american_odds
+    from cito_api import is_disambiguated_challengers_slug
 
     market = m["market"]
     prices = market.get("outcomePrices_parsed", [])
@@ -8900,7 +8936,19 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
     # pair (rate limit, network issue, etc) — a real, honest fallback,
     # not silently losing the feature entirely over one failed call.
     h2h_detail = {"total_h2h_series": 0}
-    if api_key:
+    # Real fix (August 2026, round 6) — a real, synthetic disambiguated
+    # slug (e.g. "bro::cl") has no real meaning to Cito's own live H2H
+    # endpoint, and this project doesn't have live access to verify
+    # exactly how blend_with_head_to_head_from_api's interpretation of
+    # the raw API response would behave if handed a slug value that
+    # doesn't match what the API itself actually returned. Rather than
+    # risk a real, unverified bug in that path, disambiguated matchups
+    # go straight to the reconstruction-based H2H below, which already
+    # correctly uses the real, tier-filtered sorted_history — same
+    # real, safe fallback this code already uses when the live API
+    # call fails for any other reason.
+    _either_side_disambiguated = is_disambiguated_challengers_slug(m["team1_slug"]) or is_disambiguated_challengers_slug(m["team2_slug"])
+    if api_key and not _either_side_disambiguated:
         try:
             # Real fix (July 2026) — now uses the cached wrapper
             # (_cached_lol_head_to_head), so a repeat run within the
@@ -9207,6 +9255,27 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     resolved_matchups, name_to_slug, candidates_map, unresolved_team_names, unresolved_detail, needs_fallback, team_region_map, match_time_map, error_result = _resolve_lol_matchup_teams(match_markets, api_key)
     if error_result is not None:
         return error_result
+
+    # Real fix (August 2026, round 6, per direct user investigation —
+    # "so what was different between DNS and BRO?") — disambiguates a
+    # KNOWN, single-slug-ambiguous real team (see AMBIGUOUS_SINGLE_
+    # SLUG_TEAMS in cito_api.py — a team with NO separate real slug
+    # for their Challengers roster at all) for THIS SPECIFIC real
+    # matchup, using that matchup's own real market text to decide
+    # which real roster is actually meant — BEFORE unique_slugs/team
+    # histories get built, so a real Challengers-tier matchup uses a
+    # real, synthetic, disambiguated identity throughout the rest of
+    # this pipeline (Elo, in-tournament form, head-to-head),
+    # completely separate from that same real team's main-roster
+    # identity used in any other real matchup this same run.
+    from cito_api import AMBIGUOUS_SINGLE_SLUG_TEAMS, build_disambiguated_slug
+    for m in resolved_matchups:
+        matchup_tournament_text = (m["market"].get("event_title") or "").split(" - ")[-1].strip().lower()
+        if "challenger" in matchup_tournament_text:
+            if m["team1_slug"] in AMBIGUOUS_SINGLE_SLUG_TEAMS:
+                m["team1_slug"] = build_disambiguated_slug(m["team1_slug"])
+            if m["team2_slug"] in AMBIGUOUS_SINGLE_SLUG_TEAMS:
+                m["team2_slug"] = build_disambiguated_slug(m["team2_slug"])
 
     def _serialize_candidates_dict(candidates_dict):
         return {slug: {"leagues": sorted(info["leagues"]), "regions": sorted(info["regions"])} for slug, info in candidates_dict.items()}
