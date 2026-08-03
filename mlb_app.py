@@ -10561,580 +10561,623 @@ elif nav == "📒 Bet Tracker":
     sport_filter = st.selectbox("Filter by Sport", ["All", "MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="bet_sport_filter")
     sport_query = None if sport_filter == "All" else sport_filter
 
-    st.markdown("---")
-    with st.expander("➕ Log a Bet Manually", expanded=False):
-        st.caption("For bets outside today's model run (backfilling, or a prop not pulled from the models). For anything you ran through the models, use the 📝 Log button on that row instead — it auto-fills everything and includes your MM Stake recommendation.")
-
-        bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="new_bet_sport")
-        # Real fix (July 2026) — LoL is structurally different (a real
-        # matchup between two teams with win probabilities, not a
-        # single player against an over/under line), so it needs its
-        # own real branch rather than being forced into the same
-        # fields as every other sport.
-        is_lol = bet_sport == "LOL"
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if is_lol:
-                bt_team1 = st.text_input("Team 1", placeholder="e.g. T1")
-                bt_team2 = st.text_input("Team 2", placeholder="e.g. Gen.G")
-                bt_player = f"{bt_team1} vs {bt_team2}" if bt_team1 or bt_team2 else ""
-                bt_projection = st.number_input("Model Win Probability (%)", value=None, placeholder="e.g. 62.5", min_value=0.0, max_value=100.0)
-            elif bet_sport == "MLB":
-                bt_player = st.selectbox("Pitcher", pitchers_list, index=0)
-                bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
-            else:
-                bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
-                bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
-            if is_lol:
-                bt_opening_line = st.number_input("Market Implied Probability (%)", value=None, placeholder="e.g. 55.0", min_value=0.0, max_value=100.0)
-            else:
-                bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
-            bt_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f")
-            bt_model_edge = None if is_lol else st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
-        with col2:
-            bt_date = st.date_input("Date")
-            if is_lol:
-                bt_over_under = st.text_input("Team You Bet On", placeholder="e.g. T1")
-            else:
-                bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
-            bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
-            bt_actual = None if is_lol else st.number_input("Actual Statistic", value=None, placeholder="e.g. 7")
-            bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
-        with col3:
-            bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
-            if is_lol:
-                bt_tier = st.selectbox("MM Tier", ["", "🟢 Best Bet", "🔵 Worth a Look", "🟡 Lean", "🔴 Pass"])
-            else:
-                bt_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
-            bt_no_vig_prob = None if is_lol else st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
-            bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
-
-        if st.button("Log Bet"):
-            odds_val = bt_odds or -110
-            bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
-            profit = calc_profit(bet_val, odds_val, bt_result)
-            # Real fix (July 2026, per direct user feedback) — for LoL,
-            # rebuild the matchup text here (now that both team names
-            # AND the pick are available) to lead with the real,
-            # picked team, so it's immediately obvious which side was
-            # bet on — same fix already applied to the LoL page's own
-            # Log button.
-            final_player = bt_player
-            final_over_under = bt_over_under
-            if is_lol and bt_over_under:
-                lol_other_team = bt_team2 if bt_over_under.strip().lower() == (bt_team1 or '').strip().lower() else bt_team1
-                final_player = f"{bt_over_under} (vs {lol_other_team})" if lol_other_team else bt_over_under
-                final_over_under = '-'  # over/under genuinely doesn't apply to a moneyline bet
-            bet_payload = {
-                'date': str(bt_date), 'pitcher': final_player,
-                'projection': (bt_projection / 100 if is_lol and bt_projection else bt_projection) or 0,
-                'opening_line': (bt_opening_line / 100 if is_lol and bt_opening_line else bt_opening_line) or 0,
-                'over_under': final_over_under, 'odds': odds_val,
-                'bet_amount': bet_val, 'result': bt_result,
-                'actual': bt_actual or 0, 'profit': profit,
-                'sport': bet_sport, 'ev_pct': bt_ev_pct,
-                'model_prob': (bt_model_prob / 100 if bt_model_prob else None),
-            }
-            if is_lol:
-                # Matches the exact real field convention the LoL
-                # page's own Log button already uses — mm_tier instead
-                # of confidence_tier, no no_vig_prob/model_edge at all.
-                bet_payload['mm_tier'] = bt_tier or None
-            else:
-                bet_payload['confidence_tier'] = bt_tier or None
-                bet_payload['model_edge'] = bt_model_edge
-                bet_payload['no_vig_prob'] = bt_no_vig_prob
-            save_bet(bet_payload)
-            st.rerun()
-
     bets = load_bets(sport_query)
 
-    if bets:
+    tab_recent, tab_stats, tab_manage = st.tabs(["📋 Recent Bets", "📊 Stats & Insights", "⚙️ Manage"])
+
+    with tab_recent:
         st.markdown("---")
-        st.subheader("📈 Performance Summary")
-        bets_df = pd.DataFrame(bets)
-        settled = bets_df[bets_df['result'] != 'Pending']
+        with st.expander("➕ Log a Bet Manually", expanded=False):
+            st.caption("For bets outside today's model run (backfilling, or a prop not pulled from the models). For anything you ran through the models, use the 📝 Log button on that row instead — it auto-fills everything and includes your MM Stake recommendation.")
 
-        if not settled.empty:
-            wins = len(settled[settled['result'] == 'Win'])
-            losses = len(settled[settled['result'] == 'Loss'])
-            total = wins + losses
-            win_pct = round(wins / total * 100, 1) if total > 0 else 0
-            total_profit = round(settled['profit'].sum(), 2)
-            total_wagered = round(settled['bet_amount'].sum(), 2)
-            roi = round(total_profit / total_wagered * 100, 1) if total_wagered > 0 else 0
+            bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="new_bet_sport")
+            # Real fix (July 2026) — LoL is structurally different (a real
+            # matchup between two teams with win probabilities, not a
+            # single player against an over/under line), so it needs its
+            # own real branch rather than being forced into the same
+            # fields as every other sport.
+            is_lol = bet_sport == "LOL"
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Record", f"{wins}-{losses}")
-            col2.metric("Win %", f"{win_pct}%")
-            col3.metric("Total Profit", f"${total_profit}")
-            col4.metric("ROI", f"{roi}%")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if is_lol:
+                    bt_team1 = st.text_input("Team 1", placeholder="e.g. T1")
+                    bt_team2 = st.text_input("Team 2", placeholder="e.g. Gen.G")
+                    bt_player = f"{bt_team1} vs {bt_team2}" if bt_team1 or bt_team2 else ""
+                    bt_projection = st.number_input("Model Win Probability (%)", value=None, placeholder="e.g. 62.5", min_value=0.0, max_value=100.0)
+                elif bet_sport == "MLB":
+                    bt_player = st.selectbox("Pitcher", pitchers_list, index=0)
+                    bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
+                else:
+                    bt_player = st.text_input("Player Name", placeholder="e.g. LeBron James")
+                    bt_projection = st.number_input("Your Projection", value=None, placeholder="e.g. 6.4")
+                if is_lol:
+                    bt_opening_line = st.number_input("Market Implied Probability (%)", value=None, placeholder="e.g. 55.0", min_value=0.0, max_value=100.0)
+                else:
+                    bt_opening_line = st.number_input("Book Line", value=None, placeholder="e.g. 5.5")
+                bt_bet = st.number_input("Bet Amount ($)", value=None, min_value=0.0, placeholder="e.g. 100.50", step=0.01, format="%.2f")
+                bt_model_edge = None if is_lol else st.number_input("Model Edge", value=None, placeholder="e.g. 0.9")
+            with col2:
+                bt_date = st.date_input("Date")
+                if is_lol:
+                    bt_over_under = st.text_input("Team You Bet On", placeholder="e.g. T1")
+                else:
+                    bt_over_under = st.selectbox("Over or Under?", ["Over", "Under"])
+                bt_odds = st.number_input("Odds (e.g. -140 or +110)", value=None, placeholder="e.g. -140")
+                bt_actual = None if is_lol else st.number_input("Actual Statistic", value=None, placeholder="e.g. 7")
+                bt_ev_pct = st.number_input("EV% at time of bet", value=None, placeholder="e.g. 6.2")
+            with col3:
+                bt_result = st.selectbox("Result", ["Pending", "Win", "Loss"])
+                if is_lol:
+                    bt_tier = st.selectbox("MM Tier", ["", "🟢 Best Bet", "🔵 Worth a Look", "🟡 Lean", "🔴 Pass"])
+                else:
+                    bt_tier = st.selectbox("Reliability", ["", "🟢 Reliable", "🟠 Volatile", "🔴 Uncertain Workload"])
+                bt_no_vig_prob = None if is_lol else st.number_input("No-Vig Prob", value=None, placeholder="e.g. 0.52")
+                bt_model_prob = st.number_input("Model Prob", value=None, placeholder="e.g. 0.61")
 
-            if 'ev_pct' in bets_df.columns and bets_df['ev_pct'].notna().any():
-                st.metric("Avg EV%", f"{round(bets_df['ev_pct'].dropna().mean(), 2)}%")
-
-        settings = get_user_settings()
-        if settings and settings.get('starting_bankroll') is not None:
-            st.markdown("---")
-            st.subheader("💰 Bankroll")
-            all_bets_unfiltered = bets if sport_filter == "All" else load_bets()
-            current_bankroll = get_current_bankroll(settings, all_bets_unfiltered)
-            starting_bankroll = settings['starting_bankroll']
-            baseline_date = settings.get('bankroll_set_date') or '1900-01-01'
-            profit_this_month = calc_profit_this_month(all_bets_unfiltered)
-            max_drawdown = calc_max_drawdown_pct(all_bets_unfiltered, starting_bankroll, baseline_date)
-            avg_stake_units = calc_avg_stake_units(all_bets_unfiltered, current_bankroll)
-
-            col1, col2 = st.columns(2)
-            col1.metric("Current Bankroll", f"${current_bankroll:,.2f}")
-            col2.metric(
-                "This Month",
-                f"{'+' if profit_this_month >= 0 else ''}${profit_this_month:,.2f}"
-            )
-
-            col3, col4 = st.columns(2)
-            if avg_stake_units is not None:
-                col3.metric("Average Stake", f"{avg_stake_units} Units")
-            if max_drawdown is not None:
-                col4.metric("Largest Drawdown", f"{max_drawdown}%")
-
-            st.caption(f"Baseline of ${starting_bankroll:,.2f} set on {baseline_date}. Adjustable anytime in Settings.")
-
-            discipline = calc_stake_discipline_stats(all_bets_unfiltered)
-            if discipline:
-                st.markdown("---")
-                st.subheader("🎯 MM Stake Performance")
-                st.caption(f"Based on {discipline['total_tracked']} bet(s) logged with an MM Stake recommendation attached. \"Followed\" = actual stake within ±{STAKE_DEVIATION_FOLLOWED_THRESHOLD}% of the recommendation.")
-
-                if discipline['today_total'] > 0:
-                    st.caption(f"**Today's Discipline:** {discipline['today_followed']} of {discipline['today_total']} bets followed MM Stake")
-
-                dcol1, dcol2 = st.columns(2)
-                dcol1.metric("Bets Following MM Stake", f"{discipline['bets_following']} of {discipline['total_tracked']}")
-                dcol2.metric("Stake Discipline", f"{discipline['discipline_pct']}%")
-
-                dcol3, dcol4 = st.columns(2)
-                dev = discipline['avg_deviation_pct']
-                dcol3.metric("Avg. Stake Deviation", f"{'+' if dev >= 0 else ''}{dev}%")
-
-                if discipline['roi_following'] is not None and discipline['roi_exceeding'] is not None:
-                    dcol4.metric(
-                        "ROI: Following vs. Deviating",
-                        f"{discipline['roi_following']}% vs {discipline['roi_exceeding']}%",
-                    )
-                elif discipline['roi_following'] is not None:
-                    dcol4.metric("ROI When Following MM Stake", f"{discipline['roi_following']}%")
-                    st.caption("Not enough settled deviated bets yet for a comparison.")
-        else:
-            st.caption("💰 Set a bankroll in Settings to unlock your Bankroll dashboard and personalized MM Stake recommendations.")
-
-        st.markdown("---")
-        st.subheader("🎯 Closing Line Tracker")
-        today_str = mm_today_str()
-        # Real fix (July 2026) — NFL (all 3 variants) added: the
-        # backend (get_odds_api_sport_and_market) already fully
-        # supports NFL closing lines, this filter just never included
-        # them, so NFL bets silently never got closing-line data even
-        # though the real capability existed. LoL is deliberately left
-        # out — fetch_closing_line() is built entirely around an
-        # over/under prop structure (a specific player, a direction),
-        # which doesn't map to a real moneyline bet (two teams, no
-        # line at all) without real, separate work.
-        CLOSING_LINE_SUPPORTED_SPORTS = ('MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS')
-        all_settled_for_closing = [
-            b for b in bets
-            if b.get('date') and b['date'] < today_str and b.get('sport') in CLOSING_LINE_SUPPORTED_SPORTS
-        ]
-        missing_closing = [b for b in all_settled_for_closing if not b.get('closing_line')]
-
-        force_refetch = st.checkbox(
-            "Re-fetch all closing lines (use this if old values look wrong)"
-        )
-        bets_to_update = all_settled_for_closing if force_refetch else missing_closing
-
-        if bets_to_update:
-            if force_refetch:
-                st.caption(f"Will re-fetch and overwrite closing data for all {len(bets_to_update)} settled bet(s).")
-            else:
-                st.caption(f"{len(bets_to_update)} settled bet(s) missing closing line data.")
-            if st.button("🔄 Update Closing Lines", use_container_width=True):
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                updated = 0
-                for i, bet in enumerate(bets_to_update):
-                    status_text.text(f"Fetching closing line {i+1} of {len(bets_to_update)}: {bet.get('pitcher')}")
-                    progress_bar.progress((i + 1) / len(bets_to_update))
-                    closing_line, closing_odds = fetch_closing_line(
-                        bet.get('sport'), bet.get('pitcher'), bet.get('over_under'), bet.get('date')
-                    )
-                    if closing_line is not None:
-                        placed_line = bet.get('opening_line') or 0
-                        if bet.get('over_under') == 'Over':
-                            clv = round(closing_line - placed_line, 2)
-                        else:
-                            clv = round(placed_line - closing_line, 2)
-
-                        odds_clv = None
-                        placed_odds = bet.get('odds')
-                        if closing_odds is not None and placed_odds and closing_line == placed_line:
-                            odds_clv = calculate_odds_clv(placed_odds, closing_odds)
-
-                        update_bet(bet['id'], {
-                            'closing_line': closing_line,
-                            'closing_odds': closing_odds,
-                            'clv': clv,
-                            'odds_clv': odds_clv,
-                        })
-                        updated += 1
-                status_text.text(f"✅ Done! Found closing lines for {updated} of {len(bets_to_update)} bets.")
-                progress_bar.progress(1.0)
-                st.rerun()
-        else:
-            st.caption("✅ All settled bets have closing line data.")
-
-        if 'clv' in bets_df.columns and bets_df['clv'].notna().any():
-            clv_df = bets_df[bets_df['clv'].notna()]
-            avg_clv = clv_df['clv'].mean()
-            beat_close_pct = round((clv_df['clv'] > 0).mean() * 100, 1)
-
-            has_odds_clv = 'odds_clv' in bets_df.columns and bets_df['odds_clv'].notna().any()
-            avg_odds_clv = None
-            beat_odds_pct = None
-            if has_odds_clv:
-                odds_clv_df = bets_df[bets_df['odds_clv'].notna()]
-                avg_odds_clv = odds_clv_df['odds_clv'].mean()
-                beat_odds_pct = round((odds_clv_df['odds_clv'] > 0).mean() * 100, 1)
-
-            market_result_series = [
-                market_result_label(c, o) for c, o in zip(
-                    bets_df.get('clv'),
-                    bets_df.get('odds_clv') if has_odds_clv else [None] * len(bets_df)
-                )
-            ]
-            decided = [x for x in market_result_series if x in ('🟢 Beat by Line', '🟢 Beat by Price', '🔴 Lost to Close')]
-
-            if decided:
-                beat_by_line = sum(1 for x in decided if x == '🟢 Beat by Line')
-                beat_by_price = sum(1 for x in decided if x == '🟢 Beat by Price')
-                missed = sum(1 for x in decided if x == '🔴 Lost to Close')
-                overall_beat_pct = round((beat_by_line + beat_by_price) / len(decided) * 100, 1)
-                st.metric("📈 Beat Market", f"{overall_beat_pct}%")
-                st.caption(f"🟢 {beat_by_line} Beat by Line · 🟢 {beat_by_price} Beat by Price · 🔴 {missed} Lost to Close")
-
-            col1, col2 = st.columns(2)
-            col1.metric("🎯 Beat Closing Line", f"{beat_close_pct}%")
-            col2.metric("📏 Avg Line CLV", f"{clv_emoji(avg_clv)}{fmt_signed_num(avg_clv, 2)} pts")
-
-            if has_odds_clv:
-                col3, col4 = st.columns(2)
-                col3.metric("Beat Closing Odds", f"{beat_odds_pct}%")
-                col4.metric("💵 Avg Odds CLV", f"{clv_emoji(avg_odds_clv)}{fmt_signed_num(avg_odds_clv, 2)} implied pts")
-                with col4:
-                    st.caption("Based on implied probability movement. (Not return on investment.)")
-
-        if 'ev_pct' in bets_df.columns and not settled.empty and settled['ev_pct'].notna().any():
-            st.markdown("---")
-            st.subheader("💰 Performance by EV%")
-            ev_settled = settled[settled['ev_pct'].notna()]
-            ev_buckets = [('<0%', -999, 0), ('0–2.5%', 0, 2.5), ('2.5–5%', 2.5, 5), ('5–7.5%', 5, 7.5), ('7.5–10%', 7.5, 10), ('10–15%', 10, 15), ('15%+', 15, 999)]
-            ev_data = []
-            for label, low, high in ev_buckets:
-                bucket = ev_settled[(ev_settled['ev_pct'] >= low) & (ev_settled['ev_pct'] < high)]
-                if len(bucket) > 0:
-                    b_wagered = round(bucket['bet_amount'].sum(), 2)
-                    b_roi = round(bucket['profit'].sum() / b_wagered * 100, 1) if b_wagered > 0 else 0
-                    ev_data.append({'EV%': label, 'Bets': len(bucket), 'ROI': f"{b_roi}%", 'Profit': f"${round(bucket['profit'].sum(), 2)}"})
-            if ev_data:
-                st.dataframe(pd.DataFrame(ev_data), use_container_width=True)
-
-        if 'sport' in bets_df.columns and not settled.empty:
-            st.markdown("---")
-            st.subheader("📊 Performance by Sport")
-            sport_data = []
-            for sport in settled['sport'].unique():
-                s_df = settled[settled['sport'] == sport]
-                s_wins = len(s_df[s_df['result'] == 'Win'])
-                s_total = len(s_df)
-                s_wagered = round(s_df['bet_amount'].sum(), 2)
-                s_roi = round(s_df['profit'].sum() / s_wagered * 100, 1) if s_wagered > 0 else 0
-                avg_ev = round(s_df['ev_pct'].dropna().mean(), 2) if 'ev_pct' in s_df.columns and s_df['ev_pct'].notna().any() else 'N/A'
-                sport_data.append({'Sport': sport, 'Bets': s_total, 'Win %': f"{round(s_wins / s_total * 100, 1)}%" if s_total > 0 else '0%', 'ROI': f"{s_roi}%", 'Avg EV%': avg_ev})
-            if sport_data:
-                st.dataframe(pd.DataFrame(sport_data), use_container_width=True)
-
-        settled_with_data = bets_df[
-            (bets_df['result'] != 'Pending') &
-            (bets_df['opening_line'] > 0) &
-            (bets_df['projection'] > 0)
-        ].copy()
-
-        if not settled_with_data.empty:
-            st.markdown("---")
-            st.subheader("📊 Edge Tier Win Rate")
-            settled_with_data['edge'] = (settled_with_data['projection'] - settled_with_data['opening_line']).abs().round(1)
-            settled_with_data['win'] = settled_with_data['result'] == 'Win'
-            tiers = [('0.0 to 0.4', 0.0, 0.4), ('0.5 to 0.9', 0.5, 0.9), ('1.0 to 1.4', 1.0, 1.4), ('1.5+', 1.5, 99)]
-            tier_data = []
-            for label, low, high in tiers:
-                for direction in ['⬆️ OVER', '⬇️ UNDER']:
-                    dir_df = settled_with_data[settled_with_data['over_under'].str.lower() == direction.split(' ')[1].lower()]
-                    tier_df = dir_df[(dir_df['edge'] >= low) & (dir_df['edge'] <= high)]
-                    if len(tier_df) > 0:
-                        win_rate = round(tier_df['win'].mean() * 100, 1)
-                        tier_data.append({'Direction': direction, 'Edge Tier': label, 'Bets': len(tier_df), 'Wins': int(tier_df['win'].sum()), 'Win Rate': f"{win_rate}%"})
-            if tier_data:
-                st.dataframe(pd.DataFrame(tier_data), use_container_width=True)
-
-        st.markdown("---")
-        st.subheader("📝 All Bets")
-        # Real fix (July 2026) — mm_tier used to be dropped
-        # unconditionally, on the assumption that confidence_tier
-        # already covers tier/reliability info. That's true for MLB/
-        # NBA/NFL, but LoL never sets confidence_tier at all — mm_tier
-        # is the only real tier field LoL bets have, so dropping it
-        # hid that information completely for every LoL bet.
-        # Real fix (July 2026, per direct user feedback) — these four
-        # fields are still saved to every bet (probability_waterfall
-        # for future calibration analysis across settled bets,
-        # model_version/ev_engine_version for internal tracking,
-        # sportsbook as real metadata) — just no longer shown as
-        # visible columns cluttering the day-to-day tracker view.
-        # Real fix (July 2026, per direct user feedback) — 'actual' is
-        # now hidden from the visible table too. It's not used in any
-        # of the Bet Tracker's own stats (confirmed — only 'result'
-        # and 'profit' feed those), but it IS the real input the
-        # Refresh MLB Results feature compares against opening_line to
-        # auto-determine Win/Loss/Push — so it's still saved and used
-        # internally, just no longer a visible column.
-        display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'probability_waterfall', 'model_version', 'ev_engine_version', 'sportsbook', 'game_pk', 'actual'] if c in bets_df.columns], errors='ignore')
-        if 'no_vig_prob' in display_df.columns:
-            display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
-        if 'model_prob' in display_df.columns:
-            display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
-
-        # Real fix (July 2026) — found via a real screenshot: LoL bets
-        # store real probabilities (0-1) in the SAME projection/
-        # opening_line columns MLB/NBA/NFL use for actual stat lines
-        # (e.g. 5.0 innings) — the shared 1-decimal numeric formatting
-        # crushed a real 62.5% model probability down to a
-        # meaningless-looking "0.6". Converts these two columns to a
-        # real percentage STRING for LoL rows only (e.g. "62.5%"),
-        # leaving every other sport's numeric values untouched. Also
-        # fixes 'actual' showing a real, misleading "0" for LoL bets,
-        # which genuinely have no actual-statistic concept at all
-        # (a moneyline bet just wins or loses) — now shows "—" instead,
-        # matching this app's existing convention for real N/A values.
-        # Real fix (July 2026) — found via a real, confirmed report:
-        # 'actual' (and the same issue applies to 'projection'/
-        # 'opening_line') was declared as a TextColumn in column_config
-        # below, but the LoL-specific string formatting only ran
-        # conditionally (only if the CURRENT FILTERED VIEW happened to
-        # contain at least one LoL row). Filtering to just 'MLB', or
-        # simply having no LoL bets logged yet, left these columns as
-        # pure, numeric float64 dtype underneath — while column_config
-        # still declared them as TextColumn regardless. That mismatch
-        # between the real, underlying pandas dtype and the declared
-        # column type is what broke editability, not a disabled flag.
-        # Now unconditionally casts these three columns to real string
-        # values (still just the plain number as text for non-LoL
-        # rows, e.g. "5.0"), so the actual dtype always matches what
-        # column_config declares, regardless of which sports happen to
-        # be in the current filtered view.
-        for _col in ['projection', 'opening_line', 'actual']:
-            if _col in display_df.columns:
-                display_df[_col] = display_df[_col].apply(lambda v: '' if pd.isna(v) else str(v))
-
-        if 'sport' in display_df.columns:
-            is_lol_row = display_df['sport'] == 'LOL'
-            if is_lol_row.any():
-                if 'projection' in display_df.columns:
-                    display_df['projection'] = display_df.apply(
-                        lambda row: f"{round(float(row['projection']) * 100, 1)}%" if row['sport'] == 'LOL' and row['projection'] not in (None, '') else row['projection'],
-                        axis=1)
-                if 'opening_line' in display_df.columns:
-                    display_df['opening_line'] = display_df.apply(
-                        lambda row: f"{round(float(row['opening_line']) * 100, 1)}%" if row['sport'] == 'LOL' and row['opening_line'] not in (None, '') else row['opening_line'],
-                        axis=1)
-                # Real fix (July 2026) — bets logged before the save-
-                # logic fix have the raw, ugly market_slug stored in
-                # 'pitcher' (e.g. 'lol-tl2-c9-2026-07-26') instead of a
-                # real, readable team matchup. Can't fully recover the
-                # original full team names from an abbreviated slug,
-                # but this real, best-effort cleanup at least strips
-                # the 'lol-' prefix and trailing date, turning it into
-                # something like 'TL2 vs C9' — genuinely cleaner, even
-                # if not a perfect match for the real, full names.
-                # Bets logged going forward already store the real,
-                # full matchup name and pass through unchanged here.
-                if 'pitcher' in display_df.columns:
-                    import re
-
-                    def _clean_lol_slug_for_display(value):
-                        if not isinstance(value, str) or not value.startswith("lol-"):
-                            return value
-                        stripped = re.sub(r"^lol-", "", value)
-                        stripped = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", stripped)
-                        parts = stripped.split("-")
-                        if len(parts) == 2:
-                            return f"{parts[0].upper()} vs {parts[1].upper()}"
-                        return stripped.replace("-", " ").upper()
-
-                    display_df['pitcher'] = display_df.apply(
-                        lambda row: _clean_lol_slug_for_display(row['pitcher']) if row['sport'] == 'LOL' else row['pitcher'],
-                        axis=1)
-
-        if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
-            display_df['Market Result'] = [
-                market_result_label(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
-            ]
-            cols = display_df.columns.tolist()
-            cols.remove('Market Result')
-            insert_at = cols.index('odds_clv') + 1 if 'odds_clv' in cols else len(cols)
-            cols.insert(insert_at, 'Market Result')
-            display_df = display_df[cols]
-
-        if 'closing_line' in display_df.columns:
-            display_df['closing_line'] = bets_df['closing_line'].apply(lambda v: "—" if pd.isna(v) else v)
-        if 'clv' in display_df.columns:
-            display_df['clv'] = bets_df['clv'].apply(lambda v: "—" if pd.isna(v) else f"{clv_emoji(v)}{fmt_signed_num(v, 1)}")
-        if 'closing_odds' in display_df.columns:
-            display_df['closing_odds'] = bets_df['closing_odds'].apply(fmt_odds_signed)
-        if 'odds_clv' in display_df.columns:
-            display_df['odds_clv'] = bets_df['odds_clv'].apply(lambda v: "—" if pd.isna(v) else f"{clv_emoji(v)}{fmt_signed_num(v, 1)}")
-
-        edited_df = st.data_editor(
-            display_df, use_container_width=True, num_rows="dynamic",
-            column_config={
-                'id': st.column_config.TextColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
-                'pitcher': st.column_config.TextColumn('Player / Matchup', help="A player name for MLB/NBA/NFL bets, or the full matchup (e.g. 'Team A vs Team B') for LoL bets"),
-                'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
-                'opening_line': st.column_config.TextColumn('Book Line / Market %', help="A number for stat props (e.g. 4.5 innings); a real percentage for LoL (market-implied win probability)", width="small"),
-                'projection': st.column_config.TextColumn('Projection / Model %', help="A number for stat props (e.g. 5.0 innings); a real percentage for LoL (model win probability)", width="small"),
-                'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
-                'odds': st.column_config.NumberColumn('Odds', format="%+d"),
-                'profit': st.column_config.NumberColumn('Profit ($)'),
-                'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under', '-']),
-                'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS', 'LOL']),
-                'ev_pct': st.column_config.NumberColumn('EV%'),
-                'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
-                'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
-                'confidence_tier': st.column_config.SelectboxColumn('Reliability', options=['🟢 Reliable', '🟠 Volatile', '🔴 Uncertain Workload']),
-                'mm_tier': st.column_config.SelectboxColumn('MM Tier', options=['🟢 Best Bet', '🔵 Worth a Look', '🟡 Lean', '🔴 Pass']),
-                'closing_line': st.column_config.TextColumn('Closing Line', disabled=True),
-                'clv': st.column_config.TextColumn('Line CLV', disabled=True, help="Positive = line moved in your favor after you bet"),
-                'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
-                'odds_clv': st.column_config.TextColumn('Odds CLV', disabled=True, help="Positive = odds moved in your favor after you bet (implied probability movement, not %ROI)"),
-                'Market Result': st.column_config.TextColumn('Market Result', disabled=True, help="Beat by Line = the number moved in your favor (the bigger win). Beat by Price = same line, better price. Lost to Close = the market beat you."),
-            },
-            column_order=[c for c in display_df.columns if c != 'id']
-        )
-
-        col_save, col_clear = st.columns(2)
-        with col_save:
-            if st.button("💾 Save Table Changes", use_container_width=True):
-                updated_bets = edited_df.to_dict('records')
-
-                # Rows removed via the table's own delete UI (trash icon) never
-                # show up in edited_df at all — without this, a "deleted" row
-                # just reappears on the next reload since nothing told the
-                # database to actually delete it.
-                original_ids = {str(b['id']) for b in bets if b.get('id')}
-                remaining_ids = {
-                    str(b.get('id')) for b in updated_bets
-                    if b.get('id') is not None and not (isinstance(b.get('id'), float) and pd.isna(b.get('id'))) and str(b.get('id')).strip() != ''
+            if st.button("Log Bet"):
+                odds_val = bt_odds or -110
+                bet_val = round(float(bt_bet), 2) if bt_bet else 0.0
+                profit = calc_profit(bet_val, odds_val, bt_result)
+                # Real fix (July 2026, per direct user feedback) — for LoL,
+                # rebuild the matchup text here (now that both team names
+                # AND the pick are available) to lead with the real,
+                # picked team, so it's immediately obvious which side was
+                # bet on — same fix already applied to the LoL page's own
+                # Log button.
+                final_player = bt_player
+                final_over_under = bt_over_under
+                if is_lol and bt_over_under:
+                    lol_other_team = bt_team2 if bt_over_under.strip().lower() == (bt_team1 or '').strip().lower() else bt_team1
+                    final_player = f"{bt_over_under} (vs {lol_other_team})" if lol_other_team else bt_over_under
+                    final_over_under = '-'  # over/under genuinely doesn't apply to a moneyline bet
+                bet_payload = {
+                    'date': str(bt_date), 'pitcher': final_player,
+                    'projection': (bt_projection / 100 if is_lol and bt_projection else bt_projection) or 0,
+                    'opening_line': (bt_opening_line / 100 if is_lol and bt_opening_line else bt_opening_line) or 0,
+                    'over_under': final_over_under, 'odds': odds_val,
+                    'bet_amount': bet_val, 'result': bt_result,
+                    'actual': bt_actual or 0, 'profit': profit,
+                    'sport': bet_sport, 'ev_pct': bt_ev_pct,
+                    'model_prob': (bt_model_prob / 100 if bt_model_prob else None),
                 }
-                removed_ids = original_ids - remaining_ids
-                for removed_id in removed_ids:
-                    delete_bet(removed_id)
-
-                for b in updated_bets:
-                    row_id = b.get('id')
-                    if row_id is None or (isinstance(row_id, float) and pd.isna(row_id)) or str(row_id).strip() == '':
-                        continue  # a newly added row from the dynamic table — no id yet, nothing to update
-                    b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
-                    no_vig_val = b.get('no_vig_prob')
-                    model_prob_val = b.get('model_prob')
-
-                    # Real fix (July 2026) — projection/opening_line/
-                    # actual can now be real percentage strings ('62.5%')
-                    # or the '—' placeholder for LoL rows, per the real
-                    # display fix above. Without converting these back
-                    # to real numbers here, saving table edits would
-                    # try to write a literal string into a numeric
-                    # database column, silently corrupting every edited
-                    # LoL row.
-                    def _parse_display_value_back_to_number(v):
-                        if v is None or (isinstance(v, float) and pd.isna(v)):
-                            return None
-                        if isinstance(v, str):
-                            v = v.strip()
-                            if v == "—" or v == "":
-                                return None
-                            if v.endswith("%"):
-                                try:
-                                    return round(float(v[:-1]) / 100, 4)
-                                except ValueError:
-                                    return None
-                            try:
-                                return float(v)
-                            except ValueError:
-                                return None
-                        return v
-
-                    # Real fix (July 2026) — found via a real, direct
-                    # report: "Out of range float values are not JSON
-                    # compliant: nan". Several fields (odds, bet_amount,
-                    # ev_pct, model_edge) were being passed straight
-                    # through with no NaN-checking at all, unlike the
-                    # three fields already fixed above. A real NaN in
-                    # ANY of these (a very real possibility — a manually
-                    # logged bet that never set ev_pct, an older bet
-                    # missing odds, etc.) breaks the ENTIRE save, not
-                    # just that one field, since Supabase's API can't
-                    # serialize a raw NaN into JSON at all. This applies
-                    # real, general NaN-to-None safety to every numeric
-                    # field in this payload, not just the ones already
-                    # covered.
-                    def _nan_to_none(v):
-                        if isinstance(v, float) and pd.isna(v):
-                            return None
-                        return v
-
-                    update_bet(row_id, {
-                        'result': b.get('result'),
-                        'odds': _nan_to_none(b.get('odds')), 'bet_amount': _nan_to_none(b.get('bet_amount')),
-                        'opening_line': _parse_display_value_back_to_number(b.get('opening_line')),
-                        'projection': _parse_display_value_back_to_number(b.get('projection')), 'over_under': b.get('over_under'),
-                        'profit': _nan_to_none(b.get('profit')) or 0, 'sport': b.get('sport', 'MLB'),
-                        'ev_pct': _nan_to_none(b.get('ev_pct')),
-                        'model_edge': _nan_to_none(b.get('model_edge')),
-                        'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
-                        'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
-                        'confidence_tier': b.get('confidence_tier'),
-                        'mm_tier': b.get('mm_tier'),
-                    })
-                if removed_ids:
-                    st.success(f"✅ Deleted {len(removed_ids)} bet(s).")
+                if is_lol:
+                    # Matches the exact real field convention the LoL
+                    # page's own Log button already uses — mm_tier instead
+                    # of confidence_tier, no no_vig_prob/model_edge at all.
+                    bet_payload['mm_tier'] = bt_tier or None
+                else:
+                    bet_payload['confidence_tier'] = bt_tier or None
+                    bet_payload['model_edge'] = bt_model_edge
+                    bet_payload['no_vig_prob'] = bt_no_vig_prob
+                save_bet(bet_payload)
                 st.rerun()
-        with col_clear:
-            if not st.session_state.get('confirm_clear_bets'):
-                if st.button("🗑️ Clear All Bets", use_container_width=True):
-                    st.session_state['confirm_clear_bets'] = True
+
+
+        st.markdown("---")
+        st.subheader("📋 Recent Bets")
+        if not bets:
+            st.info("No bets logged yet — log one above, or check back after running a model and hitting \"📝 Log\" on a pick.")
+        else:
+            RECENT_BETS_SHOW_LIMIT = 25
+            sorted_bets = sorted(bets, key=lambda b: b.get('date') or '', reverse=True)
+            show_all_recent = st.session_state.get('bt_show_all_recent', False)
+            bets_to_show = sorted_bets if show_all_recent else sorted_bets[:RECENT_BETS_SHOW_LIMIT]
+            for _b in bets_to_show:
+                _result = _b.get('result', 'Pending')
+                _result_kind = 'best' if _result == 'Win' else ('pass' if _result == 'Loss' else 'neutral')
+                _result_icon = '✅' if _result == 'Win' else ('❌' if _result == 'Loss' else '⏳')
+                _profit = _b.get('profit', 0) or 0
+                _profit_color = 'var(--mm-success)' if _profit > 0 else ('var(--mm-danger)' if _profit < 0 else 'var(--mm-text-dim)')
+                _profit_str = f"+${_profit:,.2f}" if _profit > 0 else (f"-${abs(_profit):,.2f}" if _profit < 0 else "$0.00")
+                st.markdown(f"""
+                    <div class='mm-card' style='margin-bottom: 10px; padding: 14px 18px;'>
+                        <div style='display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;'>
+                            <div>
+                                <span style='font-weight: 600; font-size: 1.02rem;'>{_b.get('pitcher', 'Unknown')}</span>
+                                <span class='mm-badge mm-badge-neutral' style='margin-left: 8px; font-size: 0.72rem;'>{_b.get('sport', '')}</span>
+                            </div>
+                            <div style='color: var(--mm-text-faint); font-size: 0.82rem; font-family: var(--mm-mono);'>{_b.get('date', '')}</div>
+                        </div>
+                        <div style='display: flex; justify-content: space-between; align-items: center; margin-top: 8px;'>
+                            <span class='mm-badge mm-badge-{_result_kind}'>{_result_icon} {_result}</span>
+                            <span style='font-family: var(--mm-mono); font-weight: 600; color: {_profit_color};'>{_profit_str}</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            if not show_all_recent and len(sorted_bets) > RECENT_BETS_SHOW_LIMIT:
+                if st.button(f"Show all {len(sorted_bets)} bets", key='bt_show_all_recent_btn'):
+                    st.session_state['bt_show_all_recent'] = True
+                    st.rerun()
+
+    with tab_stats:
+        if bets:
+            st.markdown("---")
+            st.subheader("📈 Performance Summary")
+            bets_df = pd.DataFrame(bets)
+            settled = bets_df[bets_df['result'] != 'Pending']
+
+            if not settled.empty:
+                wins = len(settled[settled['result'] == 'Win'])
+                losses = len(settled[settled['result'] == 'Loss'])
+                total = wins + losses
+                win_pct = round(wins / total * 100, 1) if total > 0 else 0
+                total_profit = round(settled['profit'].sum(), 2)
+                total_wagered = round(settled['bet_amount'].sum(), 2)
+                roi = round(total_profit / total_wagered * 100, 1) if total_wagered > 0 else 0
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Record", f"{wins}-{losses}")
+                col2.metric("Win %", f"{win_pct}%")
+                col3.metric("Total Profit", f"${total_profit}")
+                col4.metric("ROI", f"{roi}%")
+
+                if 'ev_pct' in bets_df.columns and bets_df['ev_pct'].notna().any():
+                    st.metric("Avg EV%", f"{round(bets_df['ev_pct'].dropna().mean(), 2)}%")
+
+            settings = get_user_settings()
+            if settings and settings.get('starting_bankroll') is not None:
+                st.markdown("---")
+                st.subheader("💰 Bankroll")
+                all_bets_unfiltered = bets if sport_filter == "All" else load_bets()
+                current_bankroll = get_current_bankroll(settings, all_bets_unfiltered)
+                starting_bankroll = settings['starting_bankroll']
+                baseline_date = settings.get('bankroll_set_date') or '1900-01-01'
+                profit_this_month = calc_profit_this_month(all_bets_unfiltered)
+                max_drawdown = calc_max_drawdown_pct(all_bets_unfiltered, starting_bankroll, baseline_date)
+                avg_stake_units = calc_avg_stake_units(all_bets_unfiltered, current_bankroll)
+
+                col1, col2 = st.columns(2)
+                col1.metric("Current Bankroll", f"${current_bankroll:,.2f}")
+                col2.metric(
+                    "This Month",
+                    f"{'+' if profit_this_month >= 0 else ''}${profit_this_month:,.2f}"
+                )
+
+                col3, col4 = st.columns(2)
+                if avg_stake_units is not None:
+                    col3.metric("Average Stake", f"{avg_stake_units} Units")
+                if max_drawdown is not None:
+                    col4.metric("Largest Drawdown", f"{max_drawdown}%")
+
+                st.caption(f"Baseline of ${starting_bankroll:,.2f} set on {baseline_date}. Adjustable anytime in Settings.")
+
+                discipline = calc_stake_discipline_stats(all_bets_unfiltered)
+                if discipline:
+                    st.markdown("---")
+                    st.subheader("🎯 MM Stake Performance")
+                    st.caption(f"Based on {discipline['total_tracked']} bet(s) logged with an MM Stake recommendation attached. \"Followed\" = actual stake within ±{STAKE_DEVIATION_FOLLOWED_THRESHOLD}% of the recommendation.")
+
+                    if discipline['today_total'] > 0:
+                        st.caption(f"**Today's Discipline:** {discipline['today_followed']} of {discipline['today_total']} bets followed MM Stake")
+
+                    dcol1, dcol2 = st.columns(2)
+                    dcol1.metric("Bets Following MM Stake", f"{discipline['bets_following']} of {discipline['total_tracked']}")
+                    dcol2.metric("Stake Discipline", f"{discipline['discipline_pct']}%")
+
+                    dcol3, dcol4 = st.columns(2)
+                    dev = discipline['avg_deviation_pct']
+                    dcol3.metric("Avg. Stake Deviation", f"{'+' if dev >= 0 else ''}{dev}%")
+
+                    if discipline['roi_following'] is not None and discipline['roi_exceeding'] is not None:
+                        dcol4.metric(
+                            "ROI: Following vs. Deviating",
+                            f"{discipline['roi_following']}% vs {discipline['roi_exceeding']}%",
+                        )
+                    elif discipline['roi_following'] is not None:
+                        dcol4.metric("ROI When Following MM Stake", f"{discipline['roi_following']}%")
+                        st.caption("Not enough settled deviated bets yet for a comparison.")
+            else:
+                st.caption("💰 Set a bankroll in Settings to unlock your Bankroll dashboard and personalized MM Stake recommendations.")
+
+            st.markdown("---")
+            st.subheader("🎯 Closing Line Tracker")
+            today_str = mm_today_str()
+            # Real fix (July 2026) — NFL (all 3 variants) added: the
+            # backend (get_odds_api_sport_and_market) already fully
+            # supports NFL closing lines, this filter just never included
+            # them, so NFL bets silently never got closing-line data even
+            # though the real capability existed. LoL is deliberately left
+            # out — fetch_closing_line() is built entirely around an
+            # over/under prop structure (a specific player, a direction),
+            # which doesn't map to a real moneyline bet (two teams, no
+            # line at all) without real, separate work.
+            CLOSING_LINE_SUPPORTED_SPORTS = ('MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS')
+            all_settled_for_closing = [
+                b for b in bets
+                if b.get('date') and b['date'] < today_str and b.get('sport') in CLOSING_LINE_SUPPORTED_SPORTS
+            ]
+            missing_closing = [b for b in all_settled_for_closing if not b.get('closing_line')]
+
+            force_refetch = st.checkbox(
+                "Re-fetch all closing lines (use this if old values look wrong)"
+            )
+            bets_to_update = all_settled_for_closing if force_refetch else missing_closing
+
+            if bets_to_update:
+                if force_refetch:
+                    st.caption(f"Will re-fetch and overwrite closing data for all {len(bets_to_update)} settled bet(s).")
+                else:
+                    st.caption(f"{len(bets_to_update)} settled bet(s) missing closing line data.")
+                if st.button("🔄 Update Closing Lines", use_container_width=True):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    updated = 0
+                    for i, bet in enumerate(bets_to_update):
+                        status_text.text(f"Fetching closing line {i+1} of {len(bets_to_update)}: {bet.get('pitcher')}")
+                        progress_bar.progress((i + 1) / len(bets_to_update))
+                        closing_line, closing_odds = fetch_closing_line(
+                            bet.get('sport'), bet.get('pitcher'), bet.get('over_under'), bet.get('date')
+                        )
+                        if closing_line is not None:
+                            placed_line = bet.get('opening_line') or 0
+                            if bet.get('over_under') == 'Over':
+                                clv = round(closing_line - placed_line, 2)
+                            else:
+                                clv = round(placed_line - closing_line, 2)
+
+                            odds_clv = None
+                            placed_odds = bet.get('odds')
+                            if closing_odds is not None and placed_odds and closing_line == placed_line:
+                                odds_clv = calculate_odds_clv(placed_odds, closing_odds)
+
+                            update_bet(bet['id'], {
+                                'closing_line': closing_line,
+                                'closing_odds': closing_odds,
+                                'clv': clv,
+                                'odds_clv': odds_clv,
+                            })
+                            updated += 1
+                    status_text.text(f"✅ Done! Found closing lines for {updated} of {len(bets_to_update)} bets.")
+                    progress_bar.progress(1.0)
                     st.rerun()
             else:
-                st.warning(f"⚠️ This will permanently delete all {len(bets)} bet(s) in your tracker. This cannot be undone.")
-                confirm_col1, confirm_col2 = st.columns(2)
-                with confirm_col1:
-                    if st.button("✅ Yes, delete everything", use_container_width=True):
-                        for bet in bets:
-                            delete_bet(bet['id'])
-                        st.session_state['confirm_clear_bets'] = False
+                st.caption("✅ All settled bets have closing line data.")
+
+            if 'clv' in bets_df.columns and bets_df['clv'].notna().any():
+                clv_df = bets_df[bets_df['clv'].notna()]
+                avg_clv = clv_df['clv'].mean()
+                beat_close_pct = round((clv_df['clv'] > 0).mean() * 100, 1)
+
+                has_odds_clv = 'odds_clv' in bets_df.columns and bets_df['odds_clv'].notna().any()
+                avg_odds_clv = None
+                beat_odds_pct = None
+                if has_odds_clv:
+                    odds_clv_df = bets_df[bets_df['odds_clv'].notna()]
+                    avg_odds_clv = odds_clv_df['odds_clv'].mean()
+                    beat_odds_pct = round((odds_clv_df['odds_clv'] > 0).mean() * 100, 1)
+
+                market_result_series = [
+                    market_result_label(c, o) for c, o in zip(
+                        bets_df.get('clv'),
+                        bets_df.get('odds_clv') if has_odds_clv else [None] * len(bets_df)
+                    )
+                ]
+                decided = [x for x in market_result_series if x in ('🟢 Beat by Line', '🟢 Beat by Price', '🔴 Lost to Close')]
+
+                if decided:
+                    beat_by_line = sum(1 for x in decided if x == '🟢 Beat by Line')
+                    beat_by_price = sum(1 for x in decided if x == '🟢 Beat by Price')
+                    missed = sum(1 for x in decided if x == '🔴 Lost to Close')
+                    overall_beat_pct = round((beat_by_line + beat_by_price) / len(decided) * 100, 1)
+                    st.metric("📈 Beat Market", f"{overall_beat_pct}%")
+                    st.caption(f"🟢 {beat_by_line} Beat by Line · 🟢 {beat_by_price} Beat by Price · 🔴 {missed} Lost to Close")
+
+                col1, col2 = st.columns(2)
+                col1.metric("🎯 Beat Closing Line", f"{beat_close_pct}%")
+                col2.metric("📏 Avg Line CLV", f"{clv_emoji(avg_clv)}{fmt_signed_num(avg_clv, 2)} pts")
+
+                if has_odds_clv:
+                    col3, col4 = st.columns(2)
+                    col3.metric("Beat Closing Odds", f"{beat_odds_pct}%")
+                    col4.metric("💵 Avg Odds CLV", f"{clv_emoji(avg_odds_clv)}{fmt_signed_num(avg_odds_clv, 2)} implied pts")
+                    with col4:
+                        st.caption("Based on implied probability movement. (Not return on investment.)")
+
+            if 'ev_pct' in bets_df.columns and not settled.empty and settled['ev_pct'].notna().any():
+                st.markdown("---")
+                st.subheader("💰 Performance by EV%")
+                ev_settled = settled[settled['ev_pct'].notna()]
+                ev_buckets = [('<0%', -999, 0), ('0–2.5%', 0, 2.5), ('2.5–5%', 2.5, 5), ('5–7.5%', 5, 7.5), ('7.5–10%', 7.5, 10), ('10–15%', 10, 15), ('15%+', 15, 999)]
+                ev_data = []
+                for label, low, high in ev_buckets:
+                    bucket = ev_settled[(ev_settled['ev_pct'] >= low) & (ev_settled['ev_pct'] < high)]
+                    if len(bucket) > 0:
+                        b_wagered = round(bucket['bet_amount'].sum(), 2)
+                        b_roi = round(bucket['profit'].sum() / b_wagered * 100, 1) if b_wagered > 0 else 0
+                        ev_data.append({'EV%': label, 'Bets': len(bucket), 'ROI': f"{b_roi}%", 'Profit': f"${round(bucket['profit'].sum(), 2)}"})
+                if ev_data:
+                    st.dataframe(pd.DataFrame(ev_data), use_container_width=True)
+
+            if 'sport' in bets_df.columns and not settled.empty:
+                st.markdown("---")
+                st.subheader("📊 Performance by Sport")
+                sport_data = []
+                for sport in settled['sport'].unique():
+                    s_df = settled[settled['sport'] == sport]
+                    s_wins = len(s_df[s_df['result'] == 'Win'])
+                    s_total = len(s_df)
+                    s_wagered = round(s_df['bet_amount'].sum(), 2)
+                    s_roi = round(s_df['profit'].sum() / s_wagered * 100, 1) if s_wagered > 0 else 0
+                    avg_ev = round(s_df['ev_pct'].dropna().mean(), 2) if 'ev_pct' in s_df.columns and s_df['ev_pct'].notna().any() else 'N/A'
+                    sport_data.append({'Sport': sport, 'Bets': s_total, 'Win %': f"{round(s_wins / s_total * 100, 1)}%" if s_total > 0 else '0%', 'ROI': f"{s_roi}%", 'Avg EV%': avg_ev})
+                if sport_data:
+                    st.dataframe(pd.DataFrame(sport_data), use_container_width=True)
+
+            settled_with_data = bets_df[
+                (bets_df['result'] != 'Pending') &
+                (bets_df['opening_line'] > 0) &
+                (bets_df['projection'] > 0)
+            ].copy()
+
+            if not settled_with_data.empty:
+                st.markdown("---")
+                st.subheader("📊 Edge Tier Win Rate")
+                settled_with_data['edge'] = (settled_with_data['projection'] - settled_with_data['opening_line']).abs().round(1)
+                settled_with_data['win'] = settled_with_data['result'] == 'Win'
+                tiers = [('0.0 to 0.4', 0.0, 0.4), ('0.5 to 0.9', 0.5, 0.9), ('1.0 to 1.4', 1.0, 1.4), ('1.5+', 1.5, 99)]
+                tier_data = []
+                for label, low, high in tiers:
+                    for direction in ['⬆️ OVER', '⬇️ UNDER']:
+                        dir_df = settled_with_data[settled_with_data['over_under'].str.lower() == direction.split(' ')[1].lower()]
+                        tier_df = dir_df[(dir_df['edge'] >= low) & (dir_df['edge'] <= high)]
+                        if len(tier_df) > 0:
+                            win_rate = round(tier_df['win'].mean() * 100, 1)
+                            tier_data.append({'Direction': direction, 'Edge Tier': label, 'Bets': len(tier_df), 'Wins': int(tier_df['win'].sum()), 'Win Rate': f"{win_rate}%"})
+                if tier_data:
+                    st.dataframe(pd.DataFrame(tier_data), use_container_width=True)
+
+    with tab_manage:
+        if bets:
+            st.markdown("---")
+            st.subheader("📝 All Bets")
+            # Real fix (July 2026) — mm_tier used to be dropped
+            # unconditionally, on the assumption that confidence_tier
+            # already covers tier/reliability info. That's true for MLB/
+            # NBA/NFL, but LoL never sets confidence_tier at all — mm_tier
+            # is the only real tier field LoL bets have, so dropping it
+            # hid that information completely for every LoL bet.
+            # Real fix (July 2026, per direct user feedback) — these four
+            # fields are still saved to every bet (probability_waterfall
+            # for future calibration analysis across settled bets,
+            # model_version/ev_engine_version for internal tracking,
+            # sportsbook as real metadata) — just no longer shown as
+            # visible columns cluttering the day-to-day tracker view.
+            # Real fix (July 2026, per direct user feedback) — 'actual' is
+            # now hidden from the visible table too. It's not used in any
+            # of the Bet Tracker's own stats (confirmed — only 'result'
+            # and 'profit' feed those), but it IS the real input the
+            # Refresh MLB Results feature compares against opening_line to
+            # auto-determine Win/Loss/Push — so it's still saved and used
+            # internally, just no longer a visible column.
+            display_df = bets_df.drop(columns=[c for c in ['created_at', 'user_id', 'mm_score', 'probability_waterfall', 'model_version', 'ev_engine_version', 'sportsbook', 'game_pk', 'actual'] if c in bets_df.columns], errors='ignore')
+            if 'no_vig_prob' in display_df.columns:
+                display_df['no_vig_prob'] = display_df['no_vig_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
+            if 'model_prob' in display_df.columns:
+                display_df['model_prob'] = display_df['model_prob'].apply(lambda v: round(v * 100, 1) if pd.notna(v) else v)
+
+            # Real fix (July 2026) — found via a real screenshot: LoL bets
+            # store real probabilities (0-1) in the SAME projection/
+            # opening_line columns MLB/NBA/NFL use for actual stat lines
+            # (e.g. 5.0 innings) — the shared 1-decimal numeric formatting
+            # crushed a real 62.5% model probability down to a
+            # meaningless-looking "0.6". Converts these two columns to a
+            # real percentage STRING for LoL rows only (e.g. "62.5%"),
+            # leaving every other sport's numeric values untouched. Also
+            # fixes 'actual' showing a real, misleading "0" for LoL bets,
+            # which genuinely have no actual-statistic concept at all
+            # (a moneyline bet just wins or loses) — now shows "—" instead,
+            # matching this app's existing convention for real N/A values.
+            # Real fix (July 2026) — found via a real, confirmed report:
+            # 'actual' (and the same issue applies to 'projection'/
+            # 'opening_line') was declared as a TextColumn in column_config
+            # below, but the LoL-specific string formatting only ran
+            # conditionally (only if the CURRENT FILTERED VIEW happened to
+            # contain at least one LoL row). Filtering to just 'MLB', or
+            # simply having no LoL bets logged yet, left these columns as
+            # pure, numeric float64 dtype underneath — while column_config
+            # still declared them as TextColumn regardless. That mismatch
+            # between the real, underlying pandas dtype and the declared
+            # column type is what broke editability, not a disabled flag.
+            # Now unconditionally casts these three columns to real string
+            # values (still just the plain number as text for non-LoL
+            # rows, e.g. "5.0"), so the actual dtype always matches what
+            # column_config declares, regardless of which sports happen to
+            # be in the current filtered view.
+            for _col in ['projection', 'opening_line', 'actual']:
+                if _col in display_df.columns:
+                    display_df[_col] = display_df[_col].apply(lambda v: '' if pd.isna(v) else str(v))
+
+            if 'sport' in display_df.columns:
+                is_lol_row = display_df['sport'] == 'LOL'
+                if is_lol_row.any():
+                    if 'projection' in display_df.columns:
+                        display_df['projection'] = display_df.apply(
+                            lambda row: f"{round(float(row['projection']) * 100, 1)}%" if row['sport'] == 'LOL' and row['projection'] not in (None, '') else row['projection'],
+                            axis=1)
+                    if 'opening_line' in display_df.columns:
+                        display_df['opening_line'] = display_df.apply(
+                            lambda row: f"{round(float(row['opening_line']) * 100, 1)}%" if row['sport'] == 'LOL' and row['opening_line'] not in (None, '') else row['opening_line'],
+                            axis=1)
+                    # Real fix (July 2026) — bets logged before the save-
+                    # logic fix have the raw, ugly market_slug stored in
+                    # 'pitcher' (e.g. 'lol-tl2-c9-2026-07-26') instead of a
+                    # real, readable team matchup. Can't fully recover the
+                    # original full team names from an abbreviated slug,
+                    # but this real, best-effort cleanup at least strips
+                    # the 'lol-' prefix and trailing date, turning it into
+                    # something like 'TL2 vs C9' — genuinely cleaner, even
+                    # if not a perfect match for the real, full names.
+                    # Bets logged going forward already store the real,
+                    # full matchup name and pass through unchanged here.
+                    if 'pitcher' in display_df.columns:
+                        import re
+
+                        def _clean_lol_slug_for_display(value):
+                            if not isinstance(value, str) or not value.startswith("lol-"):
+                                return value
+                            stripped = re.sub(r"^lol-", "", value)
+                            stripped = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", stripped)
+                            parts = stripped.split("-")
+                            if len(parts) == 2:
+                                return f"{parts[0].upper()} vs {parts[1].upper()}"
+                            return stripped.replace("-", " ").upper()
+
+                        display_df['pitcher'] = display_df.apply(
+                            lambda row: _clean_lol_slug_for_display(row['pitcher']) if row['sport'] == 'LOL' else row['pitcher'],
+                            axis=1)
+
+            if 'clv' in display_df.columns and 'odds_clv' in display_df.columns:
+                display_df['Market Result'] = [
+                    market_result_label(c, o) for c, o in zip(bets_df.get('clv'), bets_df.get('odds_clv'))
+                ]
+                cols = display_df.columns.tolist()
+                cols.remove('Market Result')
+                insert_at = cols.index('odds_clv') + 1 if 'odds_clv' in cols else len(cols)
+                cols.insert(insert_at, 'Market Result')
+                display_df = display_df[cols]
+
+            if 'closing_line' in display_df.columns:
+                display_df['closing_line'] = bets_df['closing_line'].apply(lambda v: "—" if pd.isna(v) else v)
+            if 'clv' in display_df.columns:
+                display_df['clv'] = bets_df['clv'].apply(lambda v: "—" if pd.isna(v) else f"{clv_emoji(v)}{fmt_signed_num(v, 1)}")
+            if 'closing_odds' in display_df.columns:
+                display_df['closing_odds'] = bets_df['closing_odds'].apply(fmt_odds_signed)
+            if 'odds_clv' in display_df.columns:
+                display_df['odds_clv'] = bets_df['odds_clv'].apply(lambda v: "—" if pd.isna(v) else f"{clv_emoji(v)}{fmt_signed_num(v, 1)}")
+
+            edited_df = st.data_editor(
+                display_df, use_container_width=True, num_rows="dynamic",
+                column_config={
+                    'id': st.column_config.TextColumn('ID', disabled=True, help="Internal row ID — used to match edits to the correct bet, don't need to touch this"),
+                    'pitcher': st.column_config.TextColumn('Player / Matchup', help="A player name for MLB/NBA/NFL bets, or the full matchup (e.g. 'Team A vs Team B') for LoL bets"),
+                    'result': st.column_config.SelectboxColumn('Result', options=['Pending', 'Win', 'Loss']),
+                    'opening_line': st.column_config.TextColumn('Book Line / Market %', help="A number for stat props (e.g. 4.5 innings); a real percentage for LoL (market-implied win probability)", width="small"),
+                    'projection': st.column_config.TextColumn('Projection / Model %', help="A number for stat props (e.g. 5.0 innings); a real percentage for LoL (model win probability)", width="small"),
+                    'bet_amount': st.column_config.NumberColumn('Bet ($)', min_value=0.0, step=0.01, format="%.2f"),
+                    'odds': st.column_config.NumberColumn('Odds', format="%+d"),
+                    'profit': st.column_config.NumberColumn('Profit ($)'),
+                    'over_under': st.column_config.SelectboxColumn('O/U', options=['Over', 'Under', '-']),
+                    'sport': st.column_config.SelectboxColumn('Sport', options=['MLB', 'NBA', 'NBA_AST', 'NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS', 'LOL']),
+                    'ev_pct': st.column_config.NumberColumn('EV%'),
+                    'no_vig_prob': st.column_config.NumberColumn('No-Vig Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
+                    'model_prob': st.column_config.NumberColumn('Model Prob (%)', min_value=0.0, max_value=100.0, step=0.1),
+                    'confidence_tier': st.column_config.SelectboxColumn('Reliability', options=['🟢 Reliable', '🟠 Volatile', '🔴 Uncertain Workload']),
+                    'mm_tier': st.column_config.SelectboxColumn('MM Tier', options=['🟢 Best Bet', '🔵 Worth a Look', '🟡 Lean', '🔴 Pass']),
+                    'closing_line': st.column_config.TextColumn('Closing Line', disabled=True),
+                    'clv': st.column_config.TextColumn('Line CLV', disabled=True, help="Positive = line moved in your favor after you bet"),
+                    'closing_odds': st.column_config.TextColumn('Closing Odds', disabled=True),
+                    'odds_clv': st.column_config.TextColumn('Odds CLV', disabled=True, help="Positive = odds moved in your favor after you bet (implied probability movement, not %ROI)"),
+                    'Market Result': st.column_config.TextColumn('Market Result', disabled=True, help="Beat by Line = the number moved in your favor (the bigger win). Beat by Price = same line, better price. Lost to Close = the market beat you."),
+                },
+                column_order=[c for c in display_df.columns if c != 'id']
+            )
+
+            col_save, col_clear = st.columns(2)
+            with col_save:
+                if st.button("💾 Save Table Changes", use_container_width=True):
+                    updated_bets = edited_df.to_dict('records')
+
+                    # Rows removed via the table's own delete UI (trash icon) never
+                    # show up in edited_df at all — without this, a "deleted" row
+                    # just reappears on the next reload since nothing told the
+                    # database to actually delete it.
+                    original_ids = {str(b['id']) for b in bets if b.get('id')}
+                    remaining_ids = {
+                        str(b.get('id')) for b in updated_bets
+                        if b.get('id') is not None and not (isinstance(b.get('id'), float) and pd.isna(b.get('id'))) and str(b.get('id')).strip() != ''
+                    }
+                    removed_ids = original_ids - remaining_ids
+                    for removed_id in removed_ids:
+                        delete_bet(removed_id)
+
+                    for b in updated_bets:
+                        row_id = b.get('id')
+                        if row_id is None or (isinstance(row_id, float) and pd.isna(row_id)) or str(row_id).strip() == '':
+                            continue  # a newly added row from the dynamic table — no id yet, nothing to update
+                        b['profit'] = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), b.get('result', 'Pending'))
+                        no_vig_val = b.get('no_vig_prob')
+                        model_prob_val = b.get('model_prob')
+
+                        # Real fix (July 2026) — projection/opening_line/
+                        # actual can now be real percentage strings ('62.5%')
+                        # or the '—' placeholder for LoL rows, per the real
+                        # display fix above. Without converting these back
+                        # to real numbers here, saving table edits would
+                        # try to write a literal string into a numeric
+                        # database column, silently corrupting every edited
+                        # LoL row.
+                        def _parse_display_value_back_to_number(v):
+                            if v is None or (isinstance(v, float) and pd.isna(v)):
+                                return None
+                            if isinstance(v, str):
+                                v = v.strip()
+                                if v == "—" or v == "":
+                                    return None
+                                if v.endswith("%"):
+                                    try:
+                                        return round(float(v[:-1]) / 100, 4)
+                                    except ValueError:
+                                        return None
+                                try:
+                                    return float(v)
+                                except ValueError:
+                                    return None
+                            return v
+
+                        # Real fix (July 2026) — found via a real, direct
+                        # report: "Out of range float values are not JSON
+                        # compliant: nan". Several fields (odds, bet_amount,
+                        # ev_pct, model_edge) were being passed straight
+                        # through with no NaN-checking at all, unlike the
+                        # three fields already fixed above. A real NaN in
+                        # ANY of these (a very real possibility — a manually
+                        # logged bet that never set ev_pct, an older bet
+                        # missing odds, etc.) breaks the ENTIRE save, not
+                        # just that one field, since Supabase's API can't
+                        # serialize a raw NaN into JSON at all. This applies
+                        # real, general NaN-to-None safety to every numeric
+                        # field in this payload, not just the ones already
+                        # covered.
+                        def _nan_to_none(v):
+                            if isinstance(v, float) and pd.isna(v):
+                                return None
+                            return v
+
+                        update_bet(row_id, {
+                            'result': b.get('result'),
+                            'odds': _nan_to_none(b.get('odds')), 'bet_amount': _nan_to_none(b.get('bet_amount')),
+                            'opening_line': _parse_display_value_back_to_number(b.get('opening_line')),
+                            'projection': _parse_display_value_back_to_number(b.get('projection')), 'over_under': b.get('over_under'),
+                            'profit': _nan_to_none(b.get('profit')) or 0, 'sport': b.get('sport', 'MLB'),
+                            'ev_pct': _nan_to_none(b.get('ev_pct')),
+                            'model_edge': _nan_to_none(b.get('model_edge')),
+                            'no_vig_prob': round(no_vig_val / 100, 3) if no_vig_val is not None and pd.notna(no_vig_val) else None,
+                            'model_prob': round(model_prob_val / 100, 3) if model_prob_val is not None and pd.notna(model_prob_val) else None,
+                            'confidence_tier': b.get('confidence_tier'),
+                            'mm_tier': b.get('mm_tier'),
+                        })
+                    if removed_ids:
+                        st.success(f"✅ Deleted {len(removed_ids)} bet(s).")
+                    st.rerun()
+            with col_clear:
+                if not st.session_state.get('confirm_clear_bets'):
+                    if st.button("🗑️ Clear All Bets", use_container_width=True):
+                        st.session_state['confirm_clear_bets'] = True
                         st.rerun()
-                with confirm_col2:
-                    if st.button("Cancel", use_container_width=True):
-                        st.session_state['confirm_clear_bets'] = False
-                        st.rerun()
+                else:
+                    st.warning(f"⚠️ This will permanently delete all {len(bets)} bet(s) in your tracker. This cannot be undone.")
+                    confirm_col1, confirm_col2 = st.columns(2)
+                    with confirm_col1:
+                        if st.button("✅ Yes, delete everything", use_container_width=True):
+                            for bet in bets:
+                                delete_bet(bet['id'])
+                            st.session_state['confirm_clear_bets'] = False
+                            st.rerun()
+                    with confirm_col2:
+                        if st.button("Cancel", use_container_width=True):
+                            st.session_state['confirm_clear_bets'] = False
+                            st.rerun()
 
 # ---- MODEL LAB (ADMIN ONLY) ----
 elif nav == "🔬 Model Lab" and is_admin:
