@@ -567,6 +567,13 @@ MANUAL_TEAM_ALIASES = {
     # — confirmed directly via the admin coverage tool (0 total
     # entries for the dead one, 50 total / 40 completed for 'tt').
     'thundertalk gaming': 'tt',
+    # Real, confirmed fix (August 2026, per direct user investigation)
+    # — same real duplicate-entry pattern as ThunderTalk above. Cito
+    # has 'docta-esports' (real, but ZERO match data — confirmed via
+    # the admin coverage tool) and 'docta-esports-club' (the real,
+    # active team — confirmed to have real, complete match history).
+    # Ordinary name-based resolution was picking the dead duplicate.
+    'docta esports': 'docta-esports-club',
 }
 
 
@@ -800,6 +807,26 @@ def extract_completed_matches(team_matches_response):
     return completed
 
 
+def slugs_textually_related(a, b):
+    """Real, shared safety check (August 2026, per direct user
+    investigation) — used by both normalize_requested_team_slug()
+    below and the real, global alias-map detection logic in
+    mlb_app.py's _fetch_lol_team_histories(), so the SAME real rule
+    applies whether a slug mismatch gets caught on the first pass or
+    the second, global pass. Two real slugs are considered the same
+    real team only when one is a real substring of the other once
+    hyphens/underscores are stripped (e.g. "pain"/"pain-gaming",
+    "docta-esports"/"docta-esports-club") — genuinely unrelated real
+    strings (e.g. "dns"/"kwangdong-freecs") are NOT treated as the
+    same team, since that pattern turned out to be real, confirmed
+    evidence of two DIFFERENT real rosters, not an aliasing quirk."""
+    if not a or not b:
+        return False
+    a_clean = a.replace("-", "").replace("_", "")
+    b_clean = b.replace("-", "").replace("_", "")
+    return a_clean in b_clean or b_clean in a_clean
+
+
 def normalize_requested_team_slug(completed_matches, requested_slug):
     """Real fix (July 2026, per direct user report — a real,
     established team, paiN Gaming, showing ZERO processed games in the
@@ -845,6 +872,32 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
     gap — now fixed by normalizing 'winner' and every game's
     'winnerSlug' alongside team1/team2.slug, all in the same pass.
 
+    Real fix (round 3, August 2026, per direct user investigation — a
+    real, serious, different bug this same mechanism was found to
+    CAUSE, not just fix). A real, confirmed case: requesting slug
+    "dns" (DN SOOPers CHALLENGERS, a real, distinct, lower-tier roster)
+    returned a real match with isRequested=true on team1.slug =
+    "kwangdong-freecs" — but that real match's own tournamentId was
+    "lol-lck_split_3_2026", the MAIN LCK split, not Challengers. "dns"
+    and "kwangdong-freecs" share NO textual relationship at all (unlike
+    "pain"/"pain-gaming", which obviously refer to the same real team).
+    Blindly relabeling here — as this function used to do
+    unconditionally — would silently feed a Challengers team's Elo/
+    tournament-form real MAIN-ROSTER results, a real, serious data-
+    contamination bug this same "fix" was directly responsible for.
+
+    Now only relabels when the old and new slugs show a real, obvious
+    textual relationship (one is a substring of the other, once
+    hyphens/underscores are stripped) — the same real pattern paiN's
+    "pain"/"pain-gaming" case has, and Docta's "docta-esports"/"docta-
+    esports-club" case has. When the two slugs are NOT textually
+    related, this is real, direct evidence they may be two genuinely
+    DIFFERENT real teams that Cito's backend is, for whatever real
+    reason, returning together — in that case, the match is EXCLUDED
+    entirely rather than attributed to either team, since real, honest
+    missing data is a far smaller problem than real, wrong data
+    silently corrupting a team's rating.
+
     Returns a NEW list of shallow-copied match dicts (with shallow-
     copied team1/team2 sub-dicts and a shallow-copied games list/dicts
     where changed) — deliberately never mutates the original response
@@ -857,13 +910,24 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
             continue
         new_match = dict(match)
         old_slug = None
+        unrelated_mismatch = False
         for side_key in ("team1", "team2"):
             side = new_match.get(side_key)
             if isinstance(side, dict) and side.get("isRequested") and side.get("slug") != requested_slug:
-                old_slug = side.get("slug")
+                real_old_slug = side.get("slug")
+                if not slugs_textually_related(real_old_slug, requested_slug):
+                    # Real, serious mismatch — likely a genuinely
+                    # different real team, not an alias. Exclude this
+                    # match entirely rather than risk corrupting either
+                    # team's real history.
+                    unrelated_mismatch = True
+                    break
+                old_slug = real_old_slug
                 new_side = dict(side)
                 new_side["slug"] = requested_slug
                 new_match[side_key] = new_side
+        if unrelated_mismatch:
+            continue
         if old_slug:
             if new_match.get("winner") == old_slug:
                 new_match["winner"] = requested_slug
