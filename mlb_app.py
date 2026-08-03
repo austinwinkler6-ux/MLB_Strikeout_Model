@@ -10544,46 +10544,6 @@ elif nav == "📒 Bet Tracker":
 
     bets = load_bets(sport_query)
 
-    # Real addition (July 2026, per direct user request) — automatic
-    # results pulling, starting with MLB (the one sport with a clean,
-    # per-game stats lookup already built via get_actual_strikeouts).
-    # NBA/NFL use a different, season-week-indexed data source for
-    # their backtest features that isn't directly reusable for a real-
-    # time, per-bet "has this game finished yet" check — a real,
-    # separate piece of work for later if this works well for MLB.
-    pending_mlb_with_game = [b for b in bets if b.get('sport') == 'MLB' and b.get('result') == 'Pending' and b.get('game_pk')] if bets else []
-    if pending_mlb_with_game:
-        st.markdown("---")
-        st.subheader("🔄 Refresh MLB Results")
-        st.caption(f"{len(pending_mlb_with_game)} pending MLB bet(s) have a real game reference saved. This pulls the actual, final strikeout count from MLB's own box score for any completed game and automatically fills in the result — no manual entry needed once the game's over.")
-        if st.button("🔄 Check for Completed Games Now"):
-            updated_count = 0
-            still_pending = []
-            with st.spinner(f"Checking {len(pending_mlb_with_game)} pending bet(s) against real, final box scores..."):
-                for b in pending_mlb_with_game:
-                    actual_k = get_actual_strikeouts(b['game_pk'], b['pitcher'])
-                    if actual_k is None:
-                        still_pending.append(b['pitcher'])
-                        continue
-                    opening_line = b.get('opening_line')
-                    over_under = b.get('over_under')
-                    if opening_line is None or over_under not in ('Over', 'Under'):
-                        continue  # not enough real info to determine a real result — leave it for manual entry
-                    if actual_k == opening_line:
-                        new_result = 'Push'
-                    elif over_under == 'Over':
-                        new_result = 'Win' if actual_k > opening_line else 'Loss'
-                    else:
-                        new_result = 'Win' if actual_k < opening_line else 'Loss'
-                    new_profit = calc_profit(b.get('bet_amount', 0), b.get('odds', -110), new_result)
-                    update_bet(b['id'], {'actual': actual_k, 'result': new_result, 'profit': new_profit})
-                    updated_count += 1
-            if updated_count > 0:
-                st.success(f"✅ Updated {updated_count} bet(s) with real, final results!")
-                st.rerun()
-            else:
-                st.info(f"Checked all {len(pending_mlb_with_game)} pending bet(s) — no completed games found yet (still pending: {', '.join(still_pending) if still_pending else 'none'}). Try again once today's games are finished.")
-
     if bets:
         st.markdown("---")
         st.subheader("📈 Performance Summary")
