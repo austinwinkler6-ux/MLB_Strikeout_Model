@@ -9425,7 +9425,22 @@ if nav == "🏠 Home" and not (st.session_state.get('just_signed_up') and not _e
         </div>
     """, unsafe_allow_html=True)
 
-run_todays_card_auto_run(minimal_ui=True, priority_sport=_nav_to_priority_sport.get(nav))
+# Real fix (August 2026, per direct user report — "it won't let me get
+# on the bet tracker until all props are run") — making the auto-run
+# fire globally, unconditionally, on every page (an earlier fix today)
+# had a real, serious side effect: pages with NOTHING to do with sports
+# props at all — Bet Tracker, Model Performance, Model Lab, Backtest,
+# Settings — were ALSO stuck waiting on the full MLB→NBA→NFL→LoL run
+# to finish before rendering, even though none of that data is
+# remotely relevant to them. Only real, sport-facing pages actually
+# need this data pre-loaded; everything else should render instantly,
+# completely independent of it.
+_PAGES_NEEDING_AUTO_RUN = {
+    "🏠 Home", "🎯 Today's Card", "⚾ MLB Models",
+    "🏀 NBA Models", "🏈 NFL Models", "🎮 Esports (LoL)",
+}
+if nav in _PAGES_NEEDING_AUTO_RUN:
+    run_todays_card_auto_run(minimal_ui=True, priority_sport=_nav_to_priority_sport.get(nav))
 
 # ---- HOME PAGE ----
 if nav == "🏠 Home":
