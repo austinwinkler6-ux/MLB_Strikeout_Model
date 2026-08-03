@@ -886,28 +886,63 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
     tournament-form real MAIN-ROSTER results, a real, serious data-
     contamination bug this same "fix" was directly responsible for.
 
-    Now only relabels when the old and new slugs show a real, obvious
-    textual relationship (one is a substring of the other, once
-    hyphens/underscores are stripped) — the same real pattern paiN's
-    "pain"/"pain-gaming" case has, and Docta's "docta-esports"/"docta-
-    esports-club" case has. When the two slugs are NOT textually
-    related, this is real, direct evidence they may be two genuinely
-    DIFFERENT real teams that Cito's backend is, for whatever real
-    reason, returning together — in that case, the match is EXCLUDED
-    entirely rather than attributed to either team, since real, honest
-    missing data is a far smaller problem than real, wrong data
-    silently corrupting a team's rating.
+    Real fix (round 4, August 2026, same real investigation, follow-up
+    finding) — round 3's fix correctly blocked the real contamination,
+    but a real, direct follow-up check (a genuine "lol-lck_cl_split_
+    2_2026" match for slug "dplus-kia-challengers") revealed it ALSO
+    blocked real, legitimate Challengers games too: Cito doesn't have
+    a real, separate team record for Dplus KIA's Challengers roster at
+    all — "dk" (their real, shared, main-roster slug) is isRequested
+    on BOTH the real main-tier AND real Challengers-tier games alike.
+    "dk" isn't textually related to "dplus-kia-challengers" either
+    way, so round 3's check excluded everything from this team, not
+    just the contamination.
+
+    Now checks the real, actual TOURNAMENT TIER directly (using the
+    same "challenger" keyword both the requested slug and each match's
+    real tournamentId can self-identify with) instead of relying on
+    the slug relationship alone. When a REQUESTED slug self-identifies
+    as Challengers (contains "challenger", e.g. "dplus-kia-challengers",
+    "kt-challengers"), any match whose real tournamentId does NOT
+    ALSO self-identify as Challengers tier is excluded outright,
+    regardless of isRequested — closing the real contamination even
+    though the underlying shared slug ("dk") looks the same either
+    way. Conversely, once BOTH sides confirm the same real tier, the
+    isRequested relabeling is trusted even when the underlying slugs
+    are textually unrelated (like "dk"), since the real, independent
+    tier match is stronger evidence than a textual slug comparison
+    alone. A real, known, current limitation: this only works for
+    requested slugs that self-identify via the literal word
+    "challenger" — an abbreviated slug like "dns" (DN SOOPers
+    Challengers) doesn't self-identify this way and still falls back
+    to the round 3 behavior (safe, but may still under-include real
+    Challengers data for teams named this way).
 
     Returns a NEW list of shallow-copied match dicts (with shallow-
     copied team1/team2 sub-dicts and a shallow-copied games list/dicts
     where changed) — deliberately never mutates the original response
     in place, since that's real, shared, cached data (via Streamlit's
     @st.cache_data) that other real callers may still reference."""
+    requested_is_challengers = "challenger" in (requested_slug or "").lower()
+
     normalized = []
     for match in completed_matches:
         if not isinstance(match, dict):
             normalized.append(match)
             continue
+
+        tournament_id_lower = (match.get("tournamentId") or "").lower()
+        tournament_is_challengers = "challenger" in tournament_id_lower or "_cl_" in tournament_id_lower or tournament_id_lower.endswith("_cl")
+
+        if requested_is_challengers and not tournament_is_challengers:
+            # Real, direct tier mismatch — we specifically asked for
+            # the Challengers side; a non-Challengers tournament here
+            # is real, main-roster contamination, regardless of what
+            # isRequested says.
+            continue
+
+        tier_confirmed = requested_is_challengers and tournament_is_challengers
+
         new_match = dict(match)
         old_slug = None
         unrelated_mismatch = False
@@ -915,7 +950,7 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
             side = new_match.get(side_key)
             if isinstance(side, dict) and side.get("isRequested") and side.get("slug") != requested_slug:
                 real_old_slug = side.get("slug")
-                if not slugs_textually_related(real_old_slug, requested_slug):
+                if not tier_confirmed and not slugs_textually_related(real_old_slug, requested_slug):
                     # Real, serious mismatch — likely a genuinely
                     # different real team, not an alias. Exclude this
                     # match entirely rather than risk corrupting either
