@@ -8614,6 +8614,30 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     # un-normalized copy of a shared match depending on real fetch
     # order, even after each team's own per-fetch normalization.
     slug_alias_map = {}
+
+    # Real fix (August 2026, round 6, per direct user report — "dn
+    # still doesn't work" after round 5's tier-based fix, which tested
+    # correctly in isolation). Found the real, remaining cause:
+    # combine_and_dedupe_matches() keeps whichever real copy of a
+    # shared matchId it encounters FIRST — if a Challengers team's own
+    # fetch (which correctly tier-relabels a shared match, e.g. "dns")
+    # gets added to all_team_histories AFTER the corresponding main-
+    # roster team's own fetch (which leaves that same real match
+    # untouched, e.g. still "kwangdong-freecs", since main-roster's own
+    # fetch has no real reason to relabel a match it already sees under
+    # its own real slug), the main-roster's un-relabeled copy silently
+    # wins the dedup race — discarding the real, correctly-relabeled
+    # Challengers copy entirely, even though round 5's fix worked
+    # perfectly within that one team's own fetch. Fetching Challengers-
+    # tier slugs FIRST guarantees their real, correctly-relabeled copy
+    # is the one already in all_team_histories by the time any
+    # corresponding main-roster fetch for the same shared match comes
+    # along later in this loop.
+    from cito_api import MANUAL_CHALLENGERS_SLUGS
+    def _is_challengers_slug(s):
+        return "challenger" in (s or "").lower() or (s or "").lower() in MANUAL_CHALLENGERS_SLUGS
+    unique_slugs = sorted(unique_slugs, key=lambda s: (not _is_challengers_slug(s), s))
+
     for slug in unique_slugs:
         if on_step:
             on_step(f"Match history: {slug}")
