@@ -596,6 +596,66 @@ MANUAL_CHALLENGERS_SLUGS = {
     'dns',  # DN SOOPers Challengers — confirmed August 2026: shares Cito's real, single "kwangdong-freecs" slug with their main roster for isRequested purposes, but their real, distinct tournament (lol-lck_cl_split_2_2026) IS present in the data once correctly tier-filtered.
 }
 
+# Real, curated allowlist (August 2026, per direct user investigation)
+# — a real, HARDER version of the same real problem MANUAL_CHALLENGERS_
+# SLUGS solves. For DNS, the requested slug ("dns") and Cito's real,
+# underlying slug ("kwangdong-freecs") are two genuinely different
+# strings — tagging "dns" as Challengers-only has zero effect on
+# anything that queries "kwangdong-freecs" directly. HANJIN BRION is
+# real, confirmed to be different: "bro" is the ONLY real slug that
+# exists for them at all — both their real main roster AND their real
+# Challengers roster get requested through the exact same string, with
+# real games from BOTH tiers returned either way (confirmed August
+# 2026: querying "bro" returned 28 real main-tier games and 9 real
+# Challengers-tier games together). Tagging "bro" itself as
+# Challengers-only in MANUAL_CHALLENGERS_SLUGS would incorrectly
+# affect every real query for their main roster too — there's no
+# distinguishing string to hang a real, safe rule on at the slug level
+# alone.
+#
+# Real teams here get a SYNTHETIC, disambiguated identifier
+# (build_disambiguated_slug) used internally throughout this pipeline
+# whenever a SPECIFIC real matchup being priced is confirmed (via that
+# matchup's own real market text) to involve this team's Challengers
+# side specifically — letting the exact same real slug correctly
+# represent two different real real rosters depending on which real
+# matchup is actually being priced, rather than a single, real,
+# globally-ambiguous rating.
+AMBIGUOUS_SINGLE_SLUG_TEAMS = {
+    'bro',  # HANJIN BRION — confirmed August 2026: the ONLY real slug for both their main roster and their Challengers roster, no separate identifier exists at all.
+}
+
+DISAMBIGUATED_CHALLENGERS_SUFFIX = "::cl"
+
+
+def build_disambiguated_slug(real_slug):
+    """Real, synthetic internal identifier (August 2026) — used ONLY
+    within this pipeline's own real Elo/tournament-form/head-to-head
+    bookkeeping, never sent to Cito's real API (real fetches always
+    strip this back to the real, underlying slug first — see
+    resolve_fetchable_slug below). Lets a real, single, ambiguous Cito
+    slug like "bro" correctly represent two different real rosters
+    depending on which real matchup is actually being priced, instead
+    of one real, globally-blended rating covering both tiers at once."""
+    return f"{real_slug}{DISAMBIGUATED_CHALLENGERS_SUFFIX}"
+
+
+def is_disambiguated_challengers_slug(slug):
+    """Real, direct check for whether a real slug string is one of
+    this pipeline's own synthetic identifiers (see
+    build_disambiguated_slug above), not a real, genuine Cito slug."""
+    return bool(slug) and slug.endswith(DISAMBIGUATED_CHALLENGERS_SUFFIX)
+
+
+def resolve_fetchable_slug(slug):
+    """Strips a real, synthetic disambiguation suffix (if present),
+    returning the real, underlying slug Cito's own API actually
+    recognizes. A real, genuine Cito slug (no suffix) passes through
+    completely unchanged."""
+    if is_disambiguated_challengers_slug(slug):
+        return slug[:-len(DISAMBIGUATED_CHALLENGERS_SUFFIX)]
+    return slug
+
 
 def build_team_candidates_map(*schedule_or_teams_list_responses):
     """A richer companion to build_team_name_to_slug_map() — instead
@@ -946,12 +1006,48 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
     case at a time via the admin diagnostic tools, at zero ongoing API
     cost, same real pattern as MANUAL_TEAM_ALIASES above.
 
+    Real fix (round 6, August 2026, same real investigation, per
+    direct user report — "so what was different between DNS and
+    BRO?"). Found a real, harder version of the same real problem:
+    HANJIN BRION has NO real, separate slug for their Challengers
+    roster at all — "bro" is the ONLY real slug that exists, used for
+    querying BOTH tiers, with real games from both tiers returned
+    either way. Neither round 4 (self-identifying slug text) nor
+    round 5 (a curated allowlist) can safely apply here — tagging
+    "bro" itself as Challengers-only would incorrectly affect every
+    real request for their main roster too, since it's the exact same
+    string either way.
+
+    Now also recognizes a real, synthetic, internal-only identifier
+    (see build_disambiguated_slug/is_disambiguated_challengers_slug in
+    this same module) that the caller builds PER REAL MATCHUP being
+    priced, using that specific matchup's own real market context to
+    decide which real roster is actually meant — letting the exact
+    same real Cito slug ("bro") correctly represent two different real
+    rosters depending on which real matchup is being priced, rather
+    than one real, globally-blended rating. Also adds the REVERSE,
+    symmetric filter: when a KNOWN-ambiguous real slug (see
+    AMBIGUOUS_SINGLE_SLUG_TEAMS) is requested WITHOUT disambiguation
+    (i.e. the plain "bro", meaning the real main roster), real
+    Challengers-tagged matches are now excluded from THAT identity too
+    — closing the same real contamination risk in the other direction,
+    not just protecting the Challengers side.
+
     Returns a NEW list of shallow-copied match dicts (with shallow-
     copied team1/team2 sub-dicts and a shallow-copied games list/dicts
     where changed) — deliberately never mutates the original response
     in place, since that's real, shared, cached data (via Streamlit's
     @st.cache_data) that other real callers may still reference."""
-    requested_is_challengers = "challenger" in (requested_slug or "").lower() or (requested_slug or "").lower() in MANUAL_CHALLENGERS_SLUGS
+    requested_slug_lower = (requested_slug or "").lower()
+    requested_is_challengers = (
+        "challenger" in requested_slug_lower
+        or requested_slug_lower in MANUAL_CHALLENGERS_SLUGS
+        or is_disambiguated_challengers_slug(requested_slug)
+    )
+    requested_is_ambiguous_main = (
+        resolve_fetchable_slug(requested_slug_lower) in AMBIGUOUS_SINGLE_SLUG_TEAMS
+        and not is_disambiguated_challengers_slug(requested_slug)
+    )
 
     normalized = []
     for match in completed_matches:
@@ -967,6 +1063,12 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
             # the Challengers side; a non-Challengers tournament here
             # is real, main-roster contamination, regardless of what
             # isRequested says.
+            continue
+        if requested_is_ambiguous_main and tournament_is_challengers:
+            # Real, symmetric tier mismatch — a known-ambiguous real
+            # slug requested WITHOUT disambiguation means the real
+            # main roster; a real Challengers-tagged match here is
+            # contamination in the OTHER direction.
             continue
 
         tier_confirmed = requested_is_challengers and tournament_is_challengers
