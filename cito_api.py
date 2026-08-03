@@ -576,6 +576,26 @@ MANUAL_TEAM_ALIASES = {
     'docta esports': 'docta-esports-club',
 }
 
+# Real, curated allowlist (August 2026, per direct user investigation)
+# — a real, deliberate alternative to fetching Cito's ENTIRE team
+# database (1800+ teams) to look up each team's official league tag.
+# That approach was already tried once for a different real problem
+# (see build_team_name_to_slug_map's own docstring above) and found to
+# burn through the free tier's monthly API quota fast — not worth
+# repeating for this.
+#
+# normalize_requested_team_slug() below can already detect a
+# Challengers-tier request when the slug itself literally contains
+# the word "challenger" (e.g. "dplus-kia-challengers"). This set
+# covers the real, confirmed cases where the real, official Challengers
+# slug is an ABBREVIATION that doesn't self-identify that way at all
+# (e.g. "dns" for DN SOOPers Challengers) — added one at a time, only
+# once actually confirmed via the admin diagnostic tools, at zero
+# ongoing API cost.
+MANUAL_CHALLENGERS_SLUGS = {
+    'dns',  # DN SOOPers Challengers — confirmed August 2026: shares Cito's real, single "kwangdong-freecs" slug with their main roster for isRequested purposes, but their real, distinct tournament (lol-lck_cl_split_2_2026) IS present in the data once correctly tier-filtered.
+}
+
 
 def build_team_candidates_map(*schedule_or_teams_list_responses):
     """A richer companion to build_team_name_to_slug_map() — instead
@@ -911,19 +931,27 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
     isRequested relabeling is trusted even when the underlying slugs
     are textually unrelated (like "dk"), since the real, independent
     tier match is stronger evidence than a textual slug comparison
-    alone. A real, known, current limitation: this only works for
-    requested slugs that self-identify via the literal word
-    "challenger" — an abbreviated slug like "dns" (DN SOOPers
-    Challengers) doesn't self-identify this way and still falls back
-    to the round 3 behavior (safe, but may still under-include real
-    Challengers data for teams named this way).
+    alone.
+
+    Real fix (round 5, August 2026, same real investigation) —
+    round 4's self-identification check only worked for requested
+    slugs that literally contain the word "challenger" — an
+    abbreviated slug like "dns" (DN SOOPers Challengers) doesn't
+    self-identify that way at all. Rather than fetching Cito's entire
+    real team database (1800+ teams — already tried once for a
+    different real problem and found to burn through the free tier's
+    monthly API quota fast, see build_team_name_to_slug_map's own
+    docstring), this checks a small, real, curated allowlist
+    (MANUAL_CHALLENGERS_SLUGS) instead — added one real, confirmed
+    case at a time via the admin diagnostic tools, at zero ongoing API
+    cost, same real pattern as MANUAL_TEAM_ALIASES above.
 
     Returns a NEW list of shallow-copied match dicts (with shallow-
     copied team1/team2 sub-dicts and a shallow-copied games list/dicts
     where changed) — deliberately never mutates the original response
     in place, since that's real, shared, cached data (via Streamlit's
     @st.cache_data) that other real callers may still reference."""
-    requested_is_challengers = "challenger" in (requested_slug or "").lower()
+    requested_is_challengers = "challenger" in (requested_slug or "").lower() or (requested_slug or "").lower() in MANUAL_CHALLENGERS_SLUGS
 
     normalized = []
     for match in completed_matches:
