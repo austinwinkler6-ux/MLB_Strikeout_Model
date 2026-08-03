@@ -8597,7 +8597,7 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
     directly against the separate coverage tool's own independent
     count — if they disagree, that's real, direct evidence the live
     run itself received bad data, even with zero exceptions raised."""
-    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners, normalize_requested_team_slug, apply_slug_alias_map
+    from cito_api import extract_completed_matches, sort_matches_chronologically, infer_missing_game_winners, normalize_requested_team_slug, apply_slug_alias_map, slugs_textually_related
     from lol_elo import combine_and_dedupe_matches
 
     if unique_slugs is None:
@@ -8633,10 +8633,23 @@ def _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=None, on_
             # fetching, so every function downstream of this point
             # (Elo, in-tournament form, head-to-head) sees one
             # consistent, real slug for this team.
+            # Real fix (round 3, August 2026, per direct user
+            # investigation) — this detection used to build the alias
+            # map unconditionally for ANY isRequested-marked slug
+            # mismatch, which is exactly what let a real, serious bug
+            # slip through: requesting "dns" (DN SOOPers CHALLENGERS)
+            # returned a real match belonging to "kwangdong-freecs"
+            # (the MAIN roster, confirmed via the match's own
+            # tournamentId being a real main-league split, not
+            # Challengers) — two real, unrelated strings, not an alias
+            # of the same team. Now uses the same real, shared
+            # slugs_textually_related() check normalize_requested_
+            # team_slug() itself uses, so a genuinely different real
+            # team never gets folded into this map at all.
             for _match in completed:
                 for _side_key in ("team1", "team2"):
                     _side = _match.get(_side_key)
-                    if isinstance(_side, dict) and _side.get("isRequested") and _side.get("slug") and _side.get("slug") != slug:
+                    if isinstance(_side, dict) and _side.get("isRequested") and _side.get("slug") and _side.get("slug") != slug and slugs_textually_related(_side.get("slug"), slug):
                         slug_alias_map[_side["slug"]] = slug
             completed = normalize_requested_team_slug(completed, slug)
             all_team_histories.append(completed)
