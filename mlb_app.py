@@ -11483,9 +11483,36 @@ The gap between two teams' ratings is what turns into the win probability you se
                             tournaments_seen[f"{tid} ({tname})"] += 1
                         st.write(f"**{len(completed)} real completed matches found. Unique tournaments/leagues played in:**")
                         st.json(tournaments_seen)
-                        st.write("**Sample of one full real match object (to see every real field available):**")
-                        if completed:
-                            st.json(completed[0])
+
+                        # Real fix (August 2026, per direct user report —
+                        # "it only shows like 1 game") — this used to
+                        # always show completed[0], regardless of which
+                        # tournament happened to sort first. That's a
+                        # real, direct blocker for exactly the kind of
+                        # investigation that found the real Challengers/
+                        # main-roster contamination bug — there was no
+                        # way to specifically inspect a match from a
+                        # DIFFERENT real tournament than whatever
+                        # happened to be first. Now shows ONE real
+                        # sample PER unique real tournament, with the
+                        # real isRequested side called out directly, so
+                        # a real contamination pattern (isRequested on a
+                        # slug unrelated to what was requested) is
+                        # visible for every real tournament in one pass.
+                        st.write(f"**One real sample match per unique tournament ({len(tournaments_seen)} total):**")
+                        seen_tournament_keys = set()
+                        for m in completed:
+                            tid = m.get("tournamentId")
+                            tname = m.get("tournamentName")
+                            key = f"{tid} ({tname})"
+                            if key in seen_tournament_keys:
+                                continue
+                            seen_tournament_keys.add(key)
+                            t1 = m.get("team1") or {}
+                            t2 = m.get("team2") or {}
+                            requested_side = t1 if t1.get("isRequested") else (t2 if t2.get("isRequested") else None)
+                            with st.expander(f"{key} — requested-side slug: {requested_side.get('slug') if requested_side else '⚠️ NEITHER side marked isRequested'}"):
+                                st.json(m)
                     except Exception as e:
                         st.error(f"❌ Real error: {e}")
 
