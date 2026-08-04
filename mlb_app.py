@@ -1826,6 +1826,63 @@ def upsert_cached_projection(cache_date_str, sport, player_name, projection_data
     except Exception:
         pass
 
+# Real fix (August 2026, per direct user report — "I literally just ran
+# this 10 minutes ago why do I have to wait all over again") — found the
+# real, root cause: @st.cache_data's cache lives entirely in the running
+# server process's memory. Every single real deploy (and we've been
+# deploying constantly tonight, one fix after another) restarts that
+# process, WIPING the cache instantly regardless of its real TTL — a
+# fresh, cold cache every time, no matter how recently it was warmed
+# before that deploy. This adds a SECOND, real, persistent cache layer
+# in Supabase (the same daily_cache table MLB/NBA/NFL already use) that
+# genuinely survives real server restarts, using a fixed real sentinel
+# player_name since this covers the WHOLE real LoL slate at once, not
+# one player. Uses real, direct time-based freshness (checking
+# updated_at against a real max age) instead of the once-a-day pattern
+# those sports use, matching LoL's own real 2-hour freshness need.
+_LOL_PIPELINE_CACHE_SENTINEL = "__ALL_MATCHUPS__"
+
+def get_persistent_lol_pipeline_cache(max_age_seconds=7200):
+    """Real, direct check of the persistent, Supabase-backed LoL cache
+    — returns the real, cached pipeline output dict if a row exists AND
+    is still within max_age_seconds, else None (a real, honest cache
+    miss, whether from no row existing yet or the row being too old)."""
+    try:
+        res = supabase.table("daily_cache").select("*") \
+            .eq("sport", "LOL").eq("player_name", _LOL_PIPELINE_CACHE_SENTINEL) \
+            .order("updated_at", desc=True).limit(1).execute()
+        if not res.data:
+            return None
+        row = res.data[0]
+        updated_at_str = row.get("updated_at")
+        if not updated_at_str:
+            return None
+        updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+        age_seconds = (datetime.now(ZoneInfo("UTC")) - updated_at).total_seconds()
+        if age_seconds > max_age_seconds:
+            return None
+        return row.get("projection_data")
+    except Exception:
+        return None
+
+def set_persistent_lol_pipeline_cache(pipeline_output):
+    """Real, direct write to the persistent, Supabase-backed LoL cache
+    — called right after a real, fresh pipeline computation, so the
+    NEXT real request (even from a genuinely fresh server process after
+    a real deploy) can skip straight to this instead of a full real
+    recompute."""
+    try:
+        supabase.table("daily_cache").upsert({
+            "cache_date": mm_today_str(),
+            "sport": "LOL",
+            "player_name": _LOL_PIPELINE_CACHE_SENTINEL,
+            "projection_data": _json_safe(pipeline_output),
+            "has_lineup_data": True,
+            "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        }, on_conflict="cache_date,sport,player_name").execute()
+    except Exception:
+        pass
+
 def store_ai_insight(cache_date_str, sport, player_name, insight_text, thesis_label):
     """Saves a generated Model Insight onto the existing shared cache row, so
     it's computed once per pitcher/day and reused by every user after that."""
@@ -9484,8 +9541,30 @@ def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ah
     real cache MISS (now rarer still, at a real 2-hour window instead
     of 30 minutes) falls back to a simple real spinner instead of the
     detailed step-by-step progress bar, while a real cache HIT (the
-    now-common case) is instant either way."""
-    return run_lol_matchup_projections(api_key, tag_slug=tag_slug, max_days_ahead=max_days_ahead, progress_callback=None)
+    now-common case) is instant either way.
+
+    Real fix (round 3, August 2026, per direct user report — "I
+    literally just ran this 10 minutes ago why do I have to wait all
+    over again"). This function's own @st.cache_data decorator only
+    caches in the running server process's real memory — genuinely
+    wiped on every real deploy/restart, regardless of the real 2-hour
+    TTL, since a new process starts with a real, empty cache every
+    time. Given how many real deploys happened in quick succession
+    tonight, that alone explained a real, repeated "still slow" report
+    even minutes after a real, successful run. Now checks a SECOND,
+    real, persistent cache (Supabase-backed, survives real restarts)
+    before falling through to the real, expensive computation, and
+    writes to it after — so even a genuinely fresh server process
+    (right after a real deploy) can skip straight to a real, fast DB
+    read instead of a full real recompute, as long as SOME real run
+    happened within the last real 2 hours, from any real server
+    process, not just this one."""
+    _persistent_hit = get_persistent_lol_pipeline_cache()
+    if _persistent_hit is not None:
+        return _persistent_hit
+    result = run_lol_matchup_projections(api_key, tag_slug=tag_slug, max_days_ahead=max_days_ahead, progress_callback=None)
+    set_persistent_lol_pipeline_cache(result)
+    return result
 
 
 # Real, soft banner shown on every page — a hard block (via the sidebar
