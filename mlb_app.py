@@ -11850,6 +11850,48 @@ The gap between two teams' ratings is what turns into the win probability you se
                         st.markdown("---")
 
             st.markdown("---")
+            st.subheader("⚠️ Teams Stuck At Default Rating")
+            # Real addition (August 2026, per direct user report — "so
+            # many of these lol teams just don't work") — rather than
+            # continuing to find these one at a time when a real
+            # matchup happens to surface one, this scans the SAME real
+            # team_history_diagnostics data already computed for the
+            # last run (no new real API calls) and surfaces EVERY team
+            # currently stuck at the default 1500 rating in one real
+            # view, sorted by whether they actually have real match
+            # data that just isn't reaching them (the concerning,
+            # actionable case) versus genuinely having none yet (an
+            # honest, expected case).
+            last_output_for_stuck = st.session_state.get('lol_pipeline_output')
+            if last_output_for_stuck and isinstance(last_output_for_stuck, dict):
+                _team_diag = (last_output_for_stuck.get("debug") or {}).get("team_history_diagnostics") or {}
+                _stuck_rows = []
+                for _slug, _info in _team_diag.items():
+                    _rating = _info.get("final_rating")
+                    if _rating is None or round(_rating, 1) == 1500.0:
+                        _real_matches = _info.get("real_completed_matches_this_run")
+                        _stuck_rows.append({
+                            "Team Slug": _slug,
+                            "Real Matches This Run": _real_matches if _real_matches is not None else "fetch failed",
+                            "Ended Up In Ratings": _info.get("ended_up_in_ratings"),
+                            "Likely Cause": (
+                                "⚠️ Has real data — investigate (slug alias, tier mismatch, or a new bug)"
+                                if (_real_matches or 0) > 0
+                                else "Genuinely no real data yet — honest, expected"
+                            ),
+                        })
+                if not _stuck_rows:
+                    st.success("✅ No teams stuck at the default rating in the last run.")
+                else:
+                    _stuck_df = pd.DataFrame(_stuck_rows).sort_values("Likely Cause")
+                    _concerning_count = sum(1 for r in _stuck_rows if "investigate" in r["Likely Cause"])
+                    if _concerning_count:
+                        st.warning(f"⚠️ {_concerning_count} team(s) have real match data that isn't reaching their rating — worth investigating each one the same way we did for paiN/DK/DNS/BRO.")
+                    st.dataframe(_stuck_df, use_container_width=True)
+            else:
+                st.caption("Run the projections above first to see this for that run.")
+
+            st.markdown("---")
             st.subheader("🔍 Pipeline Diagnostics (last run)")
             last_output = st.session_state.get('lol_pipeline_output')
             if last_output and isinstance(last_output, dict) and last_output.get("debug"):
