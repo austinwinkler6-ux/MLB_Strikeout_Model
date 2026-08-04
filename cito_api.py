@@ -1072,6 +1072,31 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
             continue
 
         tier_confirmed = requested_is_challengers and tournament_is_challengers
+        # Real fix (round 7, August 2026, per direct user report — "so
+        # many of these lol teams just dont work... you are the code,
+        # there has to be a fix for this"). Found the real, root cause:
+        # round 3's textual-relatedness safety check was built
+        # SPECIFICALLY in response to the DN SOOPers Challengers bug —
+        # a real, NARROW case where a single Cito slug genuinely
+        # represents two DIFFERENT real rosters (main + Challengers).
+        # That check was a blanket rule applied to EVERY real team,
+        # not just the ones actually proven to have that problem —
+        # which meant a real, ordinary team where Cito's schedule data
+        # and match-history data simply use two unrelated internal
+        # slugs for the SAME real roster (no tier ambiguity involved
+        # at all) was ALSO getting its real match data silently
+        # excluded, since "unrelated-looking slug" was being treated
+        # as suspicious regardless of WHY it looked unrelated.
+        # Cito's own isRequested flag already means, by definition,
+        # "this side IS the real team whose slug you queried" — that's
+        # a real, trustworthy signal on its own for the general case.
+        # The textual-relatedness/tier check is now ONLY applied to
+        # teams we've SPECIFICALLY confirmed are genuinely ambiguous
+        # (Challengers-tagged requests, or a known AMBIGUOUS_SINGLE_
+        # SLUG_TEAMS entry) — every other, ordinary team's real
+        # isRequested relabeling is now trusted directly, no textual
+        # comparison required at all.
+        is_known_risky_team = requested_is_challengers or requested_is_ambiguous_main
 
         new_match = dict(match)
         old_slug = None
@@ -1080,7 +1105,7 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
             side = new_match.get(side_key)
             if isinstance(side, dict) and side.get("isRequested") and side.get("slug") != requested_slug:
                 real_old_slug = side.get("slug")
-                if not tier_confirmed and not slugs_textually_related(real_old_slug, requested_slug):
+                if is_known_risky_team and not tier_confirmed and not slugs_textually_related(real_old_slug, requested_slug):
                     # Real, serious mismatch — likely a genuinely
                     # different real team, not an alias. Exclude this
                     # match entirely rather than risk corrupting either
