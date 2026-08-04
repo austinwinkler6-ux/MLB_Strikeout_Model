@@ -11888,6 +11888,75 @@ The gap between two teams' ratings is what turns into the win probability you se
                     if _concerning_count:
                         st.warning(f"⚠️ {_concerning_count} team(s) have real match data that isn't reaching their rating — worth investigating each one the same way we did for paiN/DK/DNS/BRO.")
                     st.dataframe(_stuck_df, use_container_width=True)
+
+                    # Real addition (August 2026, per direct user
+                    # report — "so many of these lol teams just dont
+                    # work... i literally saw half of these playing
+                    # within the last 2 days"). Rather than asking for
+                    # another real, manual, multi-step investigation
+                    # per team, this automates the FULL real cross-
+                    # check in one click: fetches Cito's real, full
+                    # team database ONCE (same real endpoint the
+                    # existing "Search Real Team Database" tool already
+                    # uses, same real, bounded, one-time admin-
+                    # triggered cost — not run automatically or
+                    # repeatedly), then for EVERY real "stuck" slug,
+                    # searches for real candidate teams with a similar
+                    # real name and checks EACH candidate's real match
+                    # coverage directly — surfacing a real, direct
+                    # answer (a real duplicate slug with real data, if
+                    # one exists) instead of raw diagnostic output that
+                    # still needs manual interpretation.
+                    st.markdown("---")
+                    if st.button("🔎 Auto-Investigate All Stuck Teams (checks Cito's full team database)", key="lol_auto_investigate_stuck"):
+                        with st.spinner("Fetching Cito's full real team database and cross-checking every stuck team — this can take a real minute..."):
+                            try:
+                                from cito_api import get_lol_teams_list, get_lol_team_matches, diagnose_team_match_coverage
+                                _all_teams = get_lol_teams_list(st.secrets["CITO_API_KEY"])
+                                _findings = []
+                                for _row in _stuck_rows:
+                                    _stuck_slug = _row["Team Slug"]
+                                    _search_term = _stuck_slug.replace("-", " ").replace("_", " ").strip().lower()
+                                    _search_words = [w for w in _search_term.split() if len(w) > 2]
+                                    _candidates = []
+                                    for _team in _all_teams:
+                                        _team_slug = (_team.get("slug") or "")
+                                        _team_name = (_team.get("name") or "").lower()
+                                        if _team_slug == _stuck_slug:
+                                            continue  # the same real slug we already know is stuck — not a candidate
+                                        if any(w in _team_name or w in _team_slug.replace("-", " ") for w in _search_words):
+                                            _candidates.append(_team)
+                                    if not _candidates:
+                                        _findings.append({"Stuck Slug": _stuck_slug, "Candidate Slug": "(none found)", "Candidate Name": "—", "Real Completed Matches": "—", "Verdict": "No similarly-named real team found in Cito's database at all"})
+                                        continue
+                                    for _cand in _candidates[:3]:  # cap at 3 real candidates per stuck team to keep this bounded
+                                        _cand_slug = _cand.get("slug")
+                                        try:
+                                            _cand_raw = get_lol_team_matches(st.secrets["CITO_API_KEY"], _cand_slug)
+                                            _cand_diag = diagnose_team_match_coverage(_cand_raw)
+                                            _cand_completed = _cand_diag.get("completed_count", 0)
+                                        except Exception as _e:
+                                            _cand_completed = f"fetch error: {_e}"
+                                        _verdict = "⚠️ REAL CANDIDATE — has completed matches, likely the correct slug" if isinstance(_cand_completed, int) and _cand_completed > 0 else "No real completed matches under this slug either"
+                                        _findings.append({
+                                            "Stuck Slug": _stuck_slug, "Candidate Slug": _cand_slug,
+                                            "Candidate Name": _cand.get("name"), "Real Completed Matches": _cand_completed,
+                                            "Verdict": _verdict,
+                                        })
+                                st.session_state['_lol_auto_investigate_findings'] = _findings
+                            except Exception as e:
+                                st.error(f"❌ Real error during auto-investigation: {e}")
+
+                    _findings = st.session_state.get('_lol_auto_investigate_findings')
+                    if _findings:
+                        _real_candidates = [f for f in _findings if "REAL CANDIDATE" in f["Verdict"]]
+                        if _real_candidates:
+                            st.success(f"✅ Found {len(_real_candidates)} real, likely-correct alternate slug(s) — add these to MANUAL_TEAM_ALIASES in cito_api.py:")
+                            st.dataframe(pd.DataFrame(_real_candidates), use_container_width=True)
+                        else:
+                            st.info("No alternate slugs with real match data found for any stuck team — these genuinely look like real data gaps, not a resolution bug.")
+                        with st.expander("See all real candidates checked (including dead ends)"):
+                            st.dataframe(pd.DataFrame(_findings), use_container_width=True)
             else:
                 st.caption("Run the projections above first to see this for that run.")
 
