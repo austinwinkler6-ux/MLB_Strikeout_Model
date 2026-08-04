@@ -11862,7 +11862,29 @@ The gap between two teams' ratings is what turns into the win probability you se
             # data that just isn't reaching them (the concerning,
             # actionable case) versus genuinely having none yet (an
             # honest, expected case).
+            #
+            # Real fix (August 2026, per direct user report — "i have
+            # to run the LOL projections AGAIN and it literally takes
+            # like 5+ minutes") — this used to ONLY check st.session_
+            # state['lol_pipeline_output'], which resets on a real,
+            # ordinary session refresh/new tab, even though the real,
+            # underlying _cached_lol_full_pipeline result was still
+            # genuinely warm server-side (2-hour real cache, shared
+            # across every real session). Now checks session_state
+            # FIRST (instant, no real click needed, if already
+            # populated this session), and falls back to calling the
+            # real, cached wrapper directly — which resolves instantly
+            # on a real cache hit (the common case right after any
+            # recent real run) and only genuinely takes real minutes
+            # if the real cache itself has actually expired.
             last_output_for_stuck = st.session_state.get('lol_pipeline_output')
+            if not last_output_for_stuck and "CITO_API_KEY" in st.secrets:
+                if st.button("📋 Load diagnostics (uses the real, shared cache — instant if warm)", key="lol_load_diag_from_cache"):
+                    with st.spinner("Checking the real, shared cache..."):
+                        last_output_for_stuck = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
+                        st.session_state['_lol_diag_cached_output'] = last_output_for_stuck
+                else:
+                    last_output_for_stuck = st.session_state.get('_lol_diag_cached_output')
             if last_output_for_stuck and isinstance(last_output_for_stuck, dict):
                 _team_diag = (last_output_for_stuck.get("debug") or {}).get("team_history_diagnostics") or {}
                 _stuck_rows = []
@@ -11979,7 +12001,7 @@ The gap between two teams' ratings is what turns into the win probability you se
                         with st.expander("See all real candidates checked (including dead ends)"):
                             st.dataframe(pd.DataFrame(_findings), use_container_width=True)
             else:
-                st.caption("Run the projections above first to see this for that run.")
+                st.caption("Click \"📋 Load diagnostics\" above (uses the real, shared cache — instant if warm), or run the projections above first if you haven't loaded matchups recently.")
 
             st.markdown("---")
             st.subheader("🔍 Pipeline Diagnostics (last run)")
