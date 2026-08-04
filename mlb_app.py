@@ -9520,7 +9520,7 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
 
 
 @st.cache_data(ttl=7200, show_spinner=False)
-def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ahead=1):
+def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ahead=1, force_refresh=False):
     """Real fix (August 2026) — caches the ENTIRE real LoL pipeline
     output (every real matchup, priced and tiered) for 2 real hours,
     shared across every visitor hitting this same running server
@@ -9573,10 +9573,25 @@ def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ah
     (right after a real deploy) can skip straight to a real, fast DB
     read instead of a full real recompute, as long as SOME real run
     happened within the last real 2 hours, from any real server
-    process, not just this one."""
-    _persistent_hit = get_persistent_lol_pipeline_cache()
-    if _persistent_hit is not None:
-        return _persistent_hit
+    process, not just this one.
+
+    Real fix (round 4, August 2026, per direct user report — a real
+    code-level fix that was already deployed still didn't show up,
+    because the "🔄 Refresh Matchups" button only cleared THIS
+    function's real, in-memory st.cache_data layer, not the real,
+    persistent Supabase layer added in round 3 — meaning a refresh
+    click immediately fell right back into the SAME stale, persistent
+    result instead of a genuinely fresh one. force_refresh=True (a
+    real part of the real Streamlit cache key, so it's a guaranteed
+    real cache miss whenever True) skips BOTH real cache layers
+    entirely and goes straight to a real, fresh computation — still
+    writing the real, fresh result back to the persistent cache
+    afterward, so the NEXT ordinary, non-forced request benefits from
+    it too."""
+    if not force_refresh:
+        _persistent_hit = get_persistent_lol_pipeline_cache()
+        if _persistent_hit is not None:
+            return _persistent_hit
     result = run_lol_matchup_projections(api_key, tag_slug=tag_slug, max_days_ahead=max_days_ahead, progress_callback=None)
     set_persistent_lol_pipeline_cache(result)
     return result
@@ -11428,13 +11443,21 @@ elif nav == "🎮 Esports (LoL)":
         # already loaded automatically by the real, global
         # run_todays_card_auto_run() call before page dispatch (LoL is
         # included in that same real auto-run). This button is now an
-        # OPTIONAL way to force a genuinely fresh pull — clears the
-        # real 30-minute cache on purpose here, since the whole point
-        # of clicking "Refresh" is "get me current data right now."
+        # OPTIONAL way to force a genuinely fresh pull.
+        #
+        # Real fix (round 2, August 2026, per direct user report — a
+        # real, deployed code fix still wasn't showing up after
+        # clicking Refresh) — clearing only THIS process's real, in-
+        # memory cache wasn't enough once a real, persistent Supabase
+        # cache layer got added underneath it — this button would
+        # immediately fall right back into that same real, stale,
+        # persistent result. force_refresh=True now bypasses BOTH real
+        # cache layers entirely, guaranteeing a genuinely fresh real
+        # computation on every real click of this button.
         if st.button("🔄 Refresh Matchups", use_container_width=True, key="run_lol_projections"):
             _cached_lol_full_pipeline.clear()
             with st.spinner("🎮 Loading LoL matchups..."):
-                pipeline_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"])
+                pipeline_output = _cached_lol_full_pipeline(st.secrets["CITO_API_KEY"], force_refresh=True)
             st.session_state['lol_pipeline_output'] = pipeline_output
 
         pipeline_output = st.session_state.get('lol_pipeline_output')
