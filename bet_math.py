@@ -285,22 +285,26 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     # model's real confidence at these extremes is genuinely shakier
     # than at ordinary odds (less real historical data at this
     # precision, more room for a small miscalibration to look like a
-    # huge edge) — this dampens the stake further, beyond ordinary
-    # Kelly, specifically as real odds get more extreme, independent
-    # of how good the raw EV% happens to look.
-    if odds is not None and odds > 0:
-        if odds >= 3000:
-            stake_units *= 0.30
-            reasoning.append("Extreme long-shot odds (+3000 or higher) sharply reduced stake — small model errors are massively amplified at these odds")
-        elif odds >= 2000:
-            stake_units *= 0.45
-            reasoning.append("Very long-shot odds (+2000 to +2999) reduced stake")
-        elif odds >= 1000:
-            stake_units *= 0.65
-            reasoning.append("Long-shot odds (+1000 to +1999) reduced stake")
-        elif odds >= 500:
-            stake_units *= 0.85
-            reasoning.append("Real underdog odds (+500 to +999) modestly reduced stake")
+    # huge edge).
+    #
+    # Real fix (round 2, August 2026, per direct user report — a real,
+    # live example: a +506 LPL underdog still landed at the tier's own
+    # $35 FLOOR even with round 1's dampener applied, since that
+    # dampener originally ran BEFORE the tier_min/tier_max clamp below
+    # and couldn't push below it. Odds-driven risk (payout variance,
+    # real model uncertainty at extreme prices) is a genuinely
+    # DIFFERENT real dimension than confidence-tier risk (signal
+    # strength) — this now runs as the real, FINAL word, after every
+    # other real adjustment including the tier floor itself (see
+    # further below), so extreme real odds can override even a "Best
+    # Bet" tier's own minimum. Real, direct target set by the user: a
+    # +500 underdog should land around $15-20, not $50+. Confirmed
+    # real reasoning: LoL runs far more real games per day than MLB/
+    # NBA/NFL, and most of its real value picks skew toward real
+    # underdogs — a bettor following these real recommendations is
+    # realistically stacking several real underdog stakes on the same
+    # real day, so each individual real stake needs to be meaningfully
+    # smaller.
 
     # Modifiers can nudge within the tier's range, but never push outside it —
     # the tier's judgment is the outer boundary, not just a starting point.
@@ -322,6 +326,26 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
         if not meets_max_criteria:
             stake_units = min(stake_units, near_max_threshold)
             reasoning.append("Held below maximum — not all top-tier criteria met")
+
+    # Real, final override — runs AFTER the tier floor/ceiling and the
+    # near-max gate above, specifically so it can push below even a
+    # tier's own stated minimum for genuinely extreme real odds.
+    if odds is not None and odds > 0:
+        if odds >= 3000:
+            stake_units *= 0.08
+            reasoning.append("Extreme long-shot odds (+3000 or higher) sharply reduced stake — small model errors are massively amplified at these odds")
+        elif odds >= 2000:
+            stake_units *= 0.12
+            reasoning.append("Very long-shot odds (+2000 to +2999) sharply reduced stake")
+        elif odds >= 1000:
+            stake_units *= 0.20
+            reasoning.append("Long-shot odds (+1000 to +1999) sharply reduced stake")
+        elif odds >= 500:
+            stake_units *= 0.30
+            reasoning.append("Real underdog odds (+500 to +999) sharply reduced stake")
+        elif odds >= 300:
+            stake_units *= 0.55
+            reasoning.append("Moderate underdog odds (+300 to +499) reduced stake")
 
     stake_units = round(stake_units, 2)
     unit_value = bankroll * 0.01  # 1 unit = 1% of bankroll, standard convention
