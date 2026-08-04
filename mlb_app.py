@@ -595,6 +595,16 @@ def short_why(info, result, sport):
 
     return " + ".join(parts[:2]) if parts else "—"
 
+def _lol_pill(text, kind="neutral"):
+    """Real, small, reusable badge-pill helper for LoL's compact "why"
+    summaries — promoted to module level (August 2026, per direct user
+    report — "today's card only gives why/MM stake for MLB props") so
+    Today's Card can reuse the exact same real, proven pill UI already
+    used on the LoL page itself, instead of duplicating it or falling
+    back to nothing for LoL entries."""
+    return f"<span class='mm-badge mm-badge-{kind}' style='margin-right:6px; margin-bottom:4px; display:inline-block;'>{text}</span>"
+
+
 def generate_why(info, result, direction, sport='mlb_strikeouts'):
     lines = []
     proj = info.get('Projection')
@@ -10122,20 +10132,78 @@ elif nav == "🎯 Today's Card":
                     st.markdown(tier_badge(e['tier']), unsafe_allow_html=True)
                     if e['tier'] != "🔴 Pass" and e['info'].get('Confidence Level') == "🔴 Low":
                         st.caption("🔴 Confidence: Low")
+                # Real fix (August 2026, per direct user report — "on
+                # today's card it only gives a why this bet and MM stake
+                # for MLB props, we need that for every sport"). Found
+                # TWO real, separate bugs causing this:
+                #
+                # 1. render_mm_stake_block() used to be nested INSIDE
+                #    "if why_lines:" — meaning if generate_why() ever
+                #    returned nothing for a real entry, BOTH the why
+                #    section AND the MM Stake block silently vanished
+                #    together, even though MM Stake doesn't actually
+                #    depend on why_lines at all. Un-nested below so each
+                #    renders independently.
+                #
+                # 2. generate_why() only ever understood MLB/NBA/NFL's
+                #    real, shared info-dict shape (Projection, FanDuel
+                #    Line, etc.) — LoL's real result dict uses a
+                #    completely different shape (team1_name,
+                #    recommended_model_prob, in_tournament_form, etc.),
+                #    so generate_why() always returned empty for LoL,
+                #    which is exactly what triggered bug #1 above for
+                #    every single real LoL entry. Now detects LoL
+                #    specifically and reuses the SAME real pill-based
+                #    summary already proven on the LoL page itself,
+                #    instead of forcing LoL's real data through a
+                #    function built for a different sport's shape.
                 if show_why_expander and e['result']:
-                    direction = e['info'].get('Direction', 'over')
-                    why_lines = generate_why(e['info'], e['result'], direction, e['sport_key'])
-                    if why_lines:
+                    is_lol_entry = e['sport_key'] == 'lol_moneyline'
+                    if is_lol_entry:
+                        r = e['info']
+                        rec_is_team1 = r.get('recommended_side') == 'team1'
+                        rec_rating = r.get('team1_rating') if rec_is_team1 else r.get('team2_rating')
+                        opp_rating = r.get('team2_rating') if rec_is_team1 else r.get('team1_rating')
+                        edge_pp = round((r.get('recommended_model_prob', 0) - r.get('recommended_market_prob', 0)) * 100, 1)
+                        quick_pills = [_lol_pill(f"📊 +{edge_pp}pp edge vs market", "best")]
+                        if rec_rating is not None and opp_rating is not None:
+                            quick_pills.append(_lol_pill("📈 Higher rated" if rec_rating >= opp_rating else "📉 Lower rated (other signals outweigh)", "playable" if rec_rating >= opp_rating else "neutral"))
+                        h2h = r.get("head_to_head") or {}
+                        if h2h.get("total_h2h_series", 0) > 0:
+                            rec_h2h = h2h.get("team1_h2h_wins", 0) if rec_is_team1 else h2h.get("team2_h2h_wins", 0)
+                            opp_h2h = h2h.get("team2_h2h_wins", 0) if rec_is_team1 else h2h.get("team1_h2h_wins", 0)
+                            if rec_h2h > opp_h2h:
+                                quick_pills.append(_lol_pill("🤝 H2H favors pick", "playable"))
+                            elif rec_h2h < opp_h2h:
+                                quick_pills.append(_lol_pill("⚠️ H2H favors opponent", "lean"))
                         with st.expander("💡 Why this bet?"):
-                            for line in why_lines:
-                                st.markdown(line)
-                            if auto_insight and ANTHROPIC_API_KEY:
-                                cache_sport_label = 'MLB' if e['sport_key'] == 'mlb_strikeouts' else nba_bet_sport_label(e['sport_key'])
-                                with st.spinner("🧠 Generating model insight..."):
-                                    insight, thesis_label = get_or_generate_ai_insight(
-                                        mm_today_str(), cache_sport_label, e['name'], e['info'], e['result']
-                                    )
-                                render_ai_insight_block(insight, thesis_label, e['result'], e['sport_key'])
+                            st.markdown("".join(quick_pills), unsafe_allow_html=True)
+                            if r.get("context_description"):
+                                st.markdown("---")
+                                st.caption("Additional real market context:")
+                                st.markdown(r["context_description"])
+                        if auto_insight:
+                            stake_info = {
+                                'MM Tier': r.get('mm_tier'), 'Model Prob': r.get('recommended_model_prob'),
+                                'Odds': r.get('recommended_odds'), 'EV%': r.get('ev_pct'),
+                                # 'Edge' deliberately omitted — see the LoL page's own identical
+                                # stake_info construction for the full real reasoning.
+                            }
+                            render_mm_stake_block(stake_info, {}, bankroll, risk_style)
+                    else:
+                        direction = e['info'].get('Direction', 'over')
+                        why_lines = generate_why(e['info'], e['result'], direction, e['sport_key'])
+                        if why_lines:
+                            with st.expander("💡 Why this bet?"):
+                                for line in why_lines:
+                                    st.markdown(line)
+                                if auto_insight and ANTHROPIC_API_KEY:
+                                    cache_sport_label = 'MLB' if e['sport_key'] == 'mlb_strikeouts' else nba_bet_sport_label(e['sport_key'])
+                                    with st.spinner("🧠 Generating model insight..."):
+                                        insight, thesis_label = get_or_generate_ai_insight(
+                                            mm_today_str(), cache_sport_label, e['name'], e['info'], e['result']
+                                        )
+                                    render_ai_insight_block(insight, thesis_label, e['result'], e['sport_key'])
                         if auto_insight:
                             render_mm_stake_block(e['info'], e['result'], bankroll, risk_style)
                 st.divider()
@@ -11663,8 +11731,6 @@ The gap between two teams' ratings is what turns into the win probability you se
                         # (Streamlit can't nest an expander inside another
                         # one, so this uses two separate, sibling
                         # expanders rather than one nested inside another).
-                        def _lol_pill(text, kind="neutral"):
-                            return f"<span class='mm-badge mm-badge-{kind}' style='margin-right:6px; margin-bottom:4px; display:inline-block;'>{text}</span>"
 
                         rec_is_team1 = r['recommended_side'] == 'team1'
                         rec_rating = r['team1_rating'] if rec_is_team1 else r['team2_rating']
