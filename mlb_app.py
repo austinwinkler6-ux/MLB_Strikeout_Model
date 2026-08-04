@@ -10558,7 +10558,23 @@ elif nav == "📊 Model Performance":
 elif nav == "📒 Bet Tracker":
     st.title("📒 Bet Tracker")
 
-    sport_filter = st.selectbox("Filter by Sport", ["All", "MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="bet_sport_filter")
+    # Real fix (August 2026, per direct user report — "no nba points or
+    # nfl pass attempts" showing in the filter) — the dropdown used to
+    # show the raw, internal sport codes directly ("NBA_AST",
+    # "NFL_COMPLETIONS"), which don't read as real, distinct options at
+    # a glance — "NBA" alone doesn't say Points specifically, and
+    # "NFL" alone doesn't say Pass Attempts specifically. This maps
+    # real, friendly labels to the exact same underlying codes already
+    # stored in the database — filtering behavior is completely
+    # unchanged, just what's actually shown in the dropdown.
+    SPORT_FILTER_LABELS = {
+        "All": "All", "MLB": "MLB", "NBA": "NBA Points", "NBA_AST": "NBA Assists",
+        "NFL": "NFL Pass Attempts", "NFL_COMPLETIONS": "NFL Pass Completions",
+        "NFL_RECEPTIONS": "NFL Receptions", "LOL": "Esports (LoL)",
+    }
+    SPORT_FILTER_CODES = {v: k for k, v in SPORT_FILTER_LABELS.items()}
+    sport_filter_label = st.selectbox("Filter by Sport", list(SPORT_FILTER_LABELS.values()), key="bet_sport_filter")
+    sport_filter = SPORT_FILTER_CODES[sport_filter_label]
     sport_query = None if sport_filter == "All" else sport_filter
 
     bets = load_bets(sport_query)
@@ -10570,7 +10586,8 @@ elif nav == "📒 Bet Tracker":
         with st.expander("➕ Log a Bet Manually", expanded=False):
             st.caption("For bets outside today's model run (backfilling, or a prop not pulled from the models). For anything you ran through the models, use the 📝 Log button on that row instead — it auto-fills everything and includes your MM Stake recommendation.")
 
-            bet_sport = st.selectbox("Sport", ["MLB", "NBA", "NBA_AST", "NFL", "NFL_COMPLETIONS", "NFL_RECEPTIONS", "LOL"], key="new_bet_sport")
+            bet_sport_label = st.selectbox("Sport", [v for k, v in SPORT_FILTER_LABELS.items() if k != "All"], key="new_bet_sport")
+            bet_sport = SPORT_FILTER_CODES[bet_sport_label]
             # Real fix (July 2026) — LoL is structurally different (a real
             # matchup between two teams with win probabilities, not a
             # single player against an over/under line), so it needs its
