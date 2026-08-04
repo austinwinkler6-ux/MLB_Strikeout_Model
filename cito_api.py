@@ -592,6 +592,26 @@ MANUAL_TEAM_ALIASES = {
 # (e.g. "dns" for DN SOOPers Challengers) — added one at a time, only
 # once actually confirmed via the admin diagnostic tools, at zero
 # ongoing API cost.
+# Real, curated redirect (August 2026, per direct user investigation,
+# using the auto-investigate admin tool's own real findings) — a
+# different mechanism than MANUAL_TEAM_ALIASES above. That dict is
+# keyed by the real, normalized POLYMARKET team name (since that's
+# what match_polymarket_name_to_slug() actually receives to look up).
+# This one is keyed by the real, WRONG Cito slug that resolution
+# already, confirmedly produces — found directly via the admin "Auto-
+# Investigate" tool's own real cross-check against Cito's full team
+# database, without needing to know or guess the exact real Polymarket
+# text for each team. Applied as a direct, real post-resolution
+# override: "whenever resolution produces this specific real wrong
+# slug, use this real correct one instead" — regardless of which real
+# Polymarket text originally produced it.
+KNOWN_WRONG_SLUG_REDIRECTS = {
+    'brod-n-friends': 'brod--friends',       # confirmed August 2026 — same real team, real slug just formatted differently ("Brod & Friends")
+    'esprit-shnen': 'e-shonen',               # confirmed August 2026 — same real team ("Esprit Shonen"), a real, missing-vowel typo in the original resolved slug
+    '3bl-esports': 'ebl-esports',             # confirmed August 2026 — same real team ("3BL GALAXY ESPORTS"), Cito's own real slug just doesn't start with "3"
+    'croatian-flair-x-rlx': 'croatian-flair', # LIKELY the same real roster under a real sponsor-tag name variant ("x RLX") — flagged as the real, more likely of two real candidates, not as fully certain as the three above; worth a real, direct sanity check once live.
+}
+
 MANUAL_CHALLENGERS_SLUGS = {
     'dns',  # DN SOOPers Challengers — confirmed August 2026: shares Cito's real, single "kwangdong-freecs" slug with their main roster for isRequested purposes, but their real, distinct tournament (lol-lck_cl_split_2_2026) IS present in the data once correctly tier-filtered.
 }
