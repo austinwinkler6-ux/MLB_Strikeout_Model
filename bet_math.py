@@ -273,6 +273,35 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
             stake_units *= 1.15
             reasoning.append("Exceptional EV increased stake")
 
+    # Real fix (August 2026, per direct user report — "make it so that
+    # I am not max betting on a +3000 odds play just because it has
+    # such good EV"). A real, well-known Kelly-criterion pitfall: at
+    # extreme underdog odds, the decimal-odds payout multiplier
+    # dominates the Kelly fraction's math — a real, honest but modest
+    # overestimate in model_prob (say, 20% true vs 25% modeled) barely
+    # matters at typical odds, but at +3000 that same-sized error
+    # inflates the apparent edge enormously, since Kelly's formula
+    # scales with the payout, not just the probability gap. The
+    # model's real confidence at these extremes is genuinely shakier
+    # than at ordinary odds (less real historical data at this
+    # precision, more room for a small miscalibration to look like a
+    # huge edge) — this dampens the stake further, beyond ordinary
+    # Kelly, specifically as real odds get more extreme, independent
+    # of how good the raw EV% happens to look.
+    if odds is not None and odds > 0:
+        if odds >= 3000:
+            stake_units *= 0.30
+            reasoning.append("Extreme long-shot odds (+3000 or higher) sharply reduced stake — small model errors are massively amplified at these odds")
+        elif odds >= 2000:
+            stake_units *= 0.45
+            reasoning.append("Very long-shot odds (+2000 to +2999) reduced stake")
+        elif odds >= 1000:
+            stake_units *= 0.65
+            reasoning.append("Long-shot odds (+1000 to +1999) reduced stake")
+        elif odds >= 500:
+            stake_units *= 0.85
+            reasoning.append("Real underdog odds (+500 to +999) modestly reduced stake")
+
     # Modifiers can nudge within the tier's range, but never push outside it —
     # the tier's judgment is the outer boundary, not just a starting point.
     stake_units = max(tier_min, min(tier_max, stake_units))
