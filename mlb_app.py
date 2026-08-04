@@ -9447,31 +9447,44 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     return {"debug": debug_info, "results": results, "sorted_history": sorted_history}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=7200, show_spinner=False)
 def _cached_lol_full_pipeline(api_key, tag_slug="league-of-legends", max_days_ahead=1):
     """Real fix (August 2026) — caches the ENTIRE real LoL pipeline
-    output (every real matchup, priced and tiered) for 30 real
-    minutes, shared across every visitor hitting this same running
-    server process. Real, deliberate design choice, different from
-    MLB/NBA/NFL's once-a-day persistent cache: this pipeline computes
-    a whole real slate atomically in one pass, not incrementally per
-    player, and real market prices genuinely shift meaningfully within
-    a day — treating a morning snapshot as valid for the rest of the
-    day (like the once-a-day sports do) would be a real, honest
-    accuracy tradeoff this project shouldn't make silently. A shorter,
-    real TTL here means the SECOND+ real visitor within any given real
-    30-minute window gets an instant, cached result, while the pipeline
-    still genuinely refreshes often enough to track real, moving
-    market prices and newly-started/completed real matches.
+    output (every real matchup, priced and tiered) for 2 real hours,
+    shared across every visitor hitting this same running server
+    process. Real, deliberate design choice, different from MLB/NBA/
+    NFL's once-a-day persistent cache: this pipeline computes a whole
+    real slate atomically in one pass, not incrementally per player,
+    and real market prices genuinely shift meaningfully within a day —
+    treating a morning snapshot as valid for the rest of the day (like
+    the once-a-day sports do) would be a real, honest accuracy
+    tradeoff this project shouldn't make silently.
+
+    Real fix (round 2, August 2026, per direct user report — "the
+    loading has still be so slow even with the cache thing"). This
+    originally used a 30-minute TTL, reasoned as "short enough to stay
+    fresh, long enough for the second+ real visitor within that window
+    to get an instant result." That reasoning quietly assumed frequent,
+    steady real traffic — for a real, genuinely low-traffic app (one
+    person checking in occasionally, hours apart), a 30-minute cache
+    is effectively ALWAYS cold by the time anyone actually visits,
+    completely defeating both this cache AND the whole real point of
+    the scheduled cache-warmer script, which only ran once a day and
+    had long since expired by the time it was actually checked. 2
+    hours is a real, deliberate rebalancing toward this project's
+    actual real usage pattern — still refreshes often enough within a
+    real day to track real, moving market prices and newly-completed
+    real matches, while realistically staying warm through most real,
+    spaced-out visits instead of expiring long before the next one.
 
     Real, deliberate limitation: no progress_callback support here — a
     real Python closure/function can't be part of a real Streamlit
     cache key (unhashable), so this always calls the underlying real
     pipeline with progress_callback=None. In practice this means a
-    real cache MISS (the rare case — once per real 30-minute window,
-    not once per real visitor) falls back to a simple real spinner
-    instead of the detailed step-by-step progress bar, while a real
-    cache HIT (the now-common case) is instant either way."""
+    real cache MISS (now rarer still, at a real 2-hour window instead
+    of 30 minutes) falls back to a simple real spinner instead of the
+    detailed step-by-step progress bar, while a real cache HIT (the
+    now-common case) is instant either way."""
     return run_lol_matchup_projections(api_key, tag_slug=tag_slug, max_days_ahead=max_days_ahead, progress_callback=None)
 
 
