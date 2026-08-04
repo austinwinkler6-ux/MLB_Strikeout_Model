@@ -8269,6 +8269,27 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
                         log_actual = st.number_input(f"Actual {player_label} Result (fill after game)", value=None, placeholder="e.g. 24", key=f"{session_key}_log_actual_{player_name}")
                         log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"{session_key}_log_result_{player_name}")
 
+                    # Real fix (August 2026, per direct user report —
+                    # "it doesn't have the calculation thing at the
+                    # bottom of the bet logger telling you if you are a
+                    # percent over the recommended stake like MLB does,
+                    # we need to add that to all of the models") — NFL's
+                    # log form was missing the real MM Stake
+                    # recommendation AND the deviation message entirely,
+                    # not just the deviation part — MLB/NBA already had
+                    # both, this brings NFL in line with that same real
+                    # pattern.
+                    log_mm_stake_dollars = None
+                    _log_result_data = player_results.get(player_name)
+                    if bankroll and _log_result_data:
+                        _log_stake = calculate_mm_stake(info, _log_result_data, bankroll, risk_style)
+                        if _log_stake and not _log_stake.get('pass'):
+                            log_mm_stake_dollars = _log_stake['stake_dollars']
+                            if log_bet:
+                                st.caption(format_stake_deviation_message(log_mm_stake_dollars, log_bet))
+                            else:
+                                st.caption(f"💰 MM Stake recommendation: ${log_mm_stake_dollars:,.2f}")
+
                     if st.button(f"✅ Confirm Log Bet", key=f"{session_key}_log_confirm_{player_name}", use_container_width=True):
                         if log_result != "Pending" and log_actual is None:
                             st.error("Enter the actual result before marking the bet settled.")
@@ -11708,6 +11729,21 @@ The gap between two teams' ratings is what turns into the win probability you se
                                     log_odds = st.number_input("Odds (e.g. -140 or +110)", value=r.get('recommended_odds'), step=1, key=f"lol_log_odds_{matchup_key}")
                                 with col_b:
                                     log_result = st.selectbox("Result", ["Pending", "Win", "Loss"], key=f"lol_log_result_{matchup_key}")
+
+                                # Real fix (August 2026, per direct user
+                                # report — "it doesn't have the
+                                # calculation thing at the bottom of the
+                                # bet logger telling you if you are a
+                                # percent over the recommended stake
+                                # like MLB does") — log_mm_stake_dollars
+                                # was already being computed above, just
+                                # never actually shown anywhere. Same
+                                # real display MLB/NBA/NFL now all use.
+                                if log_mm_stake_dollars is not None:
+                                    if log_bet:
+                                        st.caption(format_stake_deviation_message(log_mm_stake_dollars, log_bet))
+                                    else:
+                                        st.caption(f"💰 MM Stake recommendation: ${log_mm_stake_dollars:,.2f}")
 
                                 if st.button("✅ Confirm Log Bet", key=f"lol_log_confirm_{matchup_key}", use_container_width=True):
                                     odds = int(log_odds) if log_odds else -110
