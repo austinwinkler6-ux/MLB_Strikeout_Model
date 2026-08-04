@@ -9313,6 +9313,21 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     if error_result is not None:
         return error_result
 
+    # Real fix (August 2026, per direct user report — "so many of
+    # these lol teams just dont work"). Applies real, confirmed wrong-
+    # slug redirects found directly via the admin "Auto-Investigate"
+    # tool's own real cross-check against Cito's full team database —
+    # see KNOWN_WRONG_SLUG_REDIRECTS in cito_api.py for the real,
+    # confirmed cases and reasoning. Applied first, before the
+    # Challengers disambiguation step below, so every later step
+    # (unique_slugs, fetching, Elo) already sees the real, correct slug.
+    from cito_api import KNOWN_WRONG_SLUG_REDIRECTS
+    for m in resolved_matchups:
+        if m["team1_slug"] in KNOWN_WRONG_SLUG_REDIRECTS:
+            m["team1_slug"] = KNOWN_WRONG_SLUG_REDIRECTS[m["team1_slug"]]
+        if m["team2_slug"] in KNOWN_WRONG_SLUG_REDIRECTS:
+            m["team2_slug"] = KNOWN_WRONG_SLUG_REDIRECTS[m["team2_slug"]]
+
     # Real fix (August 2026, round 6, per direct user investigation —
     # "so what was different between DNS and BRO?") — disambiguates a
     # KNOWN, single-slug-ambiguous real team (see AMBIGUOUS_SINGLE_
@@ -12037,7 +12052,21 @@ The gap between two teams' ratings is what turns into the win probability you se
                                 for _row in _stuck_rows:
                                     _stuck_slug = _row["Team Slug"]
                                     _search_term = _stuck_slug.replace("-", " ").replace("_", " ").strip().lower()
-                                    _search_words = [w for w in _search_term.split() if len(w) > 2]
+                                    # Real fix (August 2026, per direct
+                                    # user report — several real,
+                                    # confirmed false-positive matches
+                                    # in the very first real use of this
+                                    # tool, e.g. "Way Gaming Esports"
+                                    # matching "3BL Galaxy Esports"
+                                    # purely on the generic word
+                                    # "esports"). These generic, low-
+                                    # information words appear in SO
+                                    # many real team names that matching
+                                    # on them alone proves nothing —
+                                    # excluded here so only real,
+                                    # distinguishing words drive a match.
+                                    _GENERIC_LOL_TEAM_WORDS = {"esports", "esport", "challengers", "challenger", "academy", "gaming", "team", "club", "the"}
+                                    _search_words = [w for w in _search_term.split() if len(w) > 2 and w not in _GENERIC_LOL_TEAM_WORDS]
                                     _candidates = []
                                     for _team in _all_teams:
                                         if not isinstance(_team, dict):
