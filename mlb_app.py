@@ -5022,8 +5022,22 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
     if priority_sport in order:
         order.remove(priority_sport)
         order.insert(0, priority_sport)
+    # Real fix (August 2026, per direct user report — a real, confirmed-
+    # successful cache-warmer run, checked only 11 real minutes later,
+    # STILL took ~2 real minutes) — rather than keep guessing at why,
+    # this records the REAL, actual wall-clock time each sport's block
+    # takes, every real run, so the next time this happens we have
+    # real, direct evidence of exactly where the time goes (e.g. is
+    # LoL's own cache genuinely missing, or is a "cache hit" itself
+    # still doing real, unexpectedly slow work — like many real,
+    # sequential Supabase round-trips even when nothing needs real
+    # recomputation) instead of continuing to guess blind.
+    _timing_log = {}
     for key in order:
+        _block_start = time.time()
         blocks[key]()
+        _timing_log[key] = round(time.time() - _block_start, 2)
+    st.session_state['_last_auto_run_timing'] = _timing_log
 
     status_box.empty()
 
@@ -11965,6 +11979,28 @@ The gap between two teams' ratings is what turns into the win probability you se
                         else:
                             st.error(f"❌ Real error: {res.get('error')}")
                         st.markdown("---")
+
+            st.markdown("---")
+            st.subheader("⏱️ Last Auto-Run Timing Breakdown")
+            # Real addition (August 2026, per direct user report — a
+            # real, confirmed-successful cache-warmer run, checked only
+            # 11 real minutes later, STILL took ~2 real minutes).
+            # Shows the real, actual wall-clock time each sport's
+            # block took during the LAST real run_todays_card_auto_run()
+            # call THIS session — direct, real evidence of where the
+            # time actually goes, instead of guessing whether a
+            # specific sport's cache is genuinely missing or whether
+            # even a real "cache hit" path is doing unexpectedly slow
+            # real work (e.g. many sequential real Supabase round-
+            # trips, one per player, even when nothing needs
+            # recomputing).
+            _last_timing = st.session_state.get('_last_auto_run_timing')
+            if _last_timing:
+                _timing_df = pd.DataFrame([{"Sport": k.upper(), "Seconds": v} for k, v in _last_timing.items()]).sort_values("Seconds", ascending=False)
+                st.dataframe(_timing_df, use_container_width=True)
+                st.caption(f"Total: {round(sum(_last_timing.values()), 1)}s — the slowest sport above is where a real fix should focus next, if this still feels slow even after a real, confirmed-warm cache-warmer run.")
+            else:
+                st.caption("No timing recorded yet this session — reload any page that triggers the auto-run (Home, Today's Card, or any sport page) to populate this.")
 
             st.markdown("---")
             st.subheader("⚠️ Teams Stuck At Default Rating")
