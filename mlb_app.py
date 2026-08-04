@@ -206,7 +206,57 @@ def inject_custom_css():
         border-radius: 12px;
         padding: 24px;
         box-sizing: border-box;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.24), 0 1px 3px rgba(0,0,0,0.16);
+        transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
     }
+    .mm-card:hover {
+        border-color: #2E3757;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.3), 0 2px 6px rgba(0,0,0,0.2);
+    }
+
+    /* Real fix (August 2026, per direct user request — "make it look
+       cleaner") — a handful of real, high-leverage polish passes on top
+       of the existing, already-distinct design system (not a redesign):
+       depth on cards (above), a refined scrollbar, visible keyboard
+       focus (a real accessibility floor, not just decoration), and
+       tighter typographic rhythm — small, deliberate details that read
+       as "considered" rather than "default Streamlit," without
+       changing the app's actual established identity. */
+
+    /* Custom scrollbar — default OS scrollbars read as unfinished on a
+       custom dark theme like this one. */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: var(--mm-bg); }
+    ::-webkit-scrollbar-thumb { background: var(--mm-border); border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--mm-text-faint); }
+
+    /* Visible keyboard focus — a real, deliberate accessibility floor,
+       not just visual polish; Streamlit's own default focus ring is
+       often invisible against this dark background. */
+    button:focus-visible, input:focus-visible, textarea:focus-visible,
+    [role="radio"]:focus-visible, [role="tab"]:focus-visible,
+    [data-baseweb="select"]:focus-within {
+        outline: 2px solid var(--mm-accent) !important;
+        outline-offset: 2px;
+    }
+
+    /* Real, tighter heading rhythm — Streamlit's own defaults leave
+       inconsistent, slightly loose spacing above/below headings. */
+    h1 { margin-bottom: 0.4em; }
+    h2, h3 { margin-top: 1.1em; margin-bottom: 0.35em; }
+
+    /* Tabs — a subtle underline treatment on the active tab, matching
+       the accent color already used throughout, instead of Streamlit's
+       plain default. */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--mm-border); }
+    .stTabs [data-baseweb="tab"] { color: var(--mm-text-dim); font-weight: 500; }
+    .stTabs [aria-selected="true"] { color: var(--mm-text) !important; }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: var(--mm-accent) !important; height: 2px; }
+
+    /* Real dataframe polish — softer internal grid lines than
+       Streamlit's default, so dense tables (the LoL diagnostics, bet
+       history) read as considered rather than a bare spreadsheet. */
+    [data-testid="stDataFrame"] { border: 1px solid var(--mm-border); border-radius: 10px; overflow: hidden; }
 
     /* Streamlit's own default top padding is large — trim it so page content
        (especially Home) starts higher up instead of leaving a big gap. */
