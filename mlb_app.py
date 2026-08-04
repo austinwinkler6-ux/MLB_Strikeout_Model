@@ -11912,7 +11912,26 @@ The gap between two teams' ratings is what turns into the win probability you se
                         with st.spinner("Fetching Cito's full real team database and cross-checking every stuck team — this can take a real minute..."):
                             try:
                                 from cito_api import get_lol_teams_list, get_lol_team_matches, diagnose_team_match_coverage
-                                _all_teams = get_lol_teams_list(st.secrets["CITO_API_KEY"])
+                                _all_teams_raw = get_lol_teams_list(st.secrets["CITO_API_KEY"])
+                                # Real fix (August 2026, per direct user
+                                # report — "'str' object has no
+                                # attribute 'get'") — get_lol_teams_list
+                                # can return a real, dict-wrapped
+                                # response ({"teams": [...]} or {"data":
+                                # [...]}), not always a plain real list
+                                # directly — this was iterating the raw
+                                # response unconditionally, which for a
+                                # dict-wrapped response iterates its
+                                # real KEYS (strings) instead of the
+                                # real team objects. Matches the same
+                                # real unwrapping already used correctly
+                                # elsewhere (search_teams_list_for_name).
+                                if isinstance(_all_teams_raw, dict):
+                                    _all_teams = _all_teams_raw.get("teams") or _all_teams_raw.get("data") or []
+                                elif isinstance(_all_teams_raw, list):
+                                    _all_teams = _all_teams_raw
+                                else:
+                                    _all_teams = []
                                 _findings = []
                                 for _row in _stuck_rows:
                                     _stuck_slug = _row["Team Slug"]
@@ -11920,6 +11939,8 @@ The gap between two teams' ratings is what turns into the win probability you se
                                     _search_words = [w for w in _search_term.split() if len(w) > 2]
                                     _candidates = []
                                     for _team in _all_teams:
+                                        if not isinstance(_team, dict):
+                                            continue
                                         _team_slug = (_team.get("slug") or "")
                                         _team_name = (_team.get("name") or "").lower()
                                         if _team_slug == _stuck_slug:
