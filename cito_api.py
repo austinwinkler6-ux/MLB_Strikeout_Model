@@ -612,6 +612,7 @@ KNOWN_WRONG_SLUG_REDIRECTS = {
     'croatian-flair-x-rlx': 'croatian-flair', # LIKELY the same real roster under a real sponsor-tag name variant ("x RLX") — flagged as the real, more likely of two real candidates, not as fully certain as the three above; worth a real, direct sanity check once live.
     'zyb-esport': 'zyb',                      # confirmed August 2026 — same real team ("ZYB"), Cito's own real slug just drops the generic "-esport" suffix
     'kiwoom-drx-challengers': 'drx-academy',  # confirmed August 2026 — "Academy" is the real, common naming convention for a team's real Challengers-tier roster in this data, same real real-world meaning as "Challengers". Real candidates 'drx'/'krx' were deliberately NOT used here — those are DRX's real MAIN roster, and would reintroduce the exact same real cross-tier contamination risk already fixed for DK/DNS/BRO.
+    'hanjin-brion-challengers': 'bro',        # confirmed August 2026 — a real, DEAD Cito entry with zero completed matches at all (confirmed via the admin coverage tool). Unlike the other entries above, "bro" is NOT a clean, dedicated Challengers slug — it's HANJIN BRION's real, SHARED main+Challengers slug (already in AMBIGUOUS_SINGLE_SLUG_TEAMS below). This redirect is what actually lets that existing tier-disambiguation logic run at all — it was built correctly months ago but never had a chance to fire, since resolution was landing on this dead slug before ever reaching "bro" in the first place.
 }
 
 MANUAL_CHALLENGERS_SLUGS = {
