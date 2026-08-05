@@ -1943,6 +1943,62 @@ def set_persistent_lol_pipeline_cache(pipeline_output):
     except Exception:
         pass
 
+# Real addition (August 2026, per direct user request — "I want it to
+# cover all of them now", extending the API bridge to every sport, not
+# just LoL). MLB/NBA/NFL's real, EXISTING daily_cache rows only ever
+# stored each real player's raw model output (projection, std_dev,
+# etc.) — never the real, FINISHED pick (with live odds, EV%, tier,
+# all attached) the way LoL's own pipeline cache does. Rather than have
+# a separate real API process re-derive that final pricing itself
+# (real, duplicate-logic risk, the exact thing this whole bridge was
+# built to avoid), this adds the SAME real "cache the whole, finished
+# result" pattern LoL already has — generalized to work for any real
+# sport code, not just LoL specifically. Uses a real, distinct sentinel
+# player_name from LoL's own, so these rows never collide with either
+# LoL's cache or the existing real per-player MLB/NBA/NFL rows.
+_ALL_PICKS_CACHE_SENTINEL = "__API_BRIDGE_ALL_PICKS__"
+
+def get_persistent_all_picks_cache(sport_code, max_age_seconds=7200):
+    """Real, direct check of the persistent, Supabase-backed 'all
+    finished picks for this sport' cache — returns the real, cached
+    picks list if a row exists AND is still within max_age_seconds,
+    else None."""
+    try:
+        res = supabase.table("daily_cache").select("*") \
+            .eq("sport", sport_code).eq("player_name", _ALL_PICKS_CACHE_SENTINEL) \
+            .order("updated_at", desc=True).limit(1).execute()
+        if not res.data:
+            return None
+        row = res.data[0]
+        updated_at_str = row.get("updated_at")
+        if not updated_at_str:
+            return None
+        updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+        age_seconds = (datetime.now(ZoneInfo("UTC")) - updated_at).total_seconds()
+        if age_seconds > max_age_seconds:
+            return None
+        return row.get("projection_data")
+    except Exception:
+        return None
+
+def set_persistent_all_picks_cache(sport_code, picks_list):
+    """Real, direct write to the persistent, Supabase-backed 'all
+    finished picks for this sport' cache — called right after Today's
+    Card's own real entries are built, so the real API bridge (or
+    anything else) can read one real, ready-to-use list per sport
+    without ever recomputing or re-deriving anything itself."""
+    try:
+        supabase.table("daily_cache").upsert({
+            "cache_date": mm_today_str(),
+            "sport": sport_code,
+            "player_name": _ALL_PICKS_CACHE_SENTINEL,
+            "projection_data": _json_safe(picks_list),
+            "has_lineup_data": True,
+            "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        }, on_conflict="cache_date,sport,player_name").execute()
+    except Exception:
+        pass
+
 def store_ai_insight(cache_date_str, sport, player_name, insight_text, thesis_label):
     """Saves a generated Model Insight onto the existing shared cache row, so
     it's computed once per pitcher/day and reused by every user after that."""
@@ -5098,6 +5154,24 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
         blocks[key]()
         _timing_log[key] = round(time.time() - _block_start, 2)
     st.session_state['_last_auto_run_timing'] = _timing_log
+
+    # Real addition (August 2026, per direct user request — extending
+    # the real API bridge to cover every sport, not just LoL). Reuses
+    # build_todays_card_entries() — the SAME real, already-finished
+    # data Today's Card itself displays (live odds, EV%, tier, all
+    # already attached) — grouped by real sport_key and persisted
+    # separately per sport, so the real API bridge can read one clean,
+    # ready list per sport without ever recomputing or re-deriving
+    # anything itself.
+    try:
+        _all_card_entries = build_todays_card_entries()
+        _entries_by_sport = {}
+        for _entry in _all_card_entries:
+            _entries_by_sport.setdefault(_entry['sport_key'], []).append(_entry)
+        for _sport_key, _entries in _entries_by_sport.items():
+            set_persistent_all_picks_cache(_sport_key, _entries)
+    except Exception:
+        pass  # a real failure here shouldn't block the real page from rendering
 
     status_box.empty()
 
