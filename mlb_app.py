@@ -230,16 +230,6 @@ def inject_custom_css():
     ::-webkit-scrollbar-thumb { background: var(--mm-border); border-radius: 6px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--mm-text-faint); }
 
-    /* Visible keyboard focus — a real, deliberate accessibility floor,
-       not just visual polish; Streamlit's own default focus ring is
-       often invisible against this dark background. */
-    button:focus-visible, input:focus-visible, textarea:focus-visible,
-    [role="radio"]:focus-visible, [role="tab"]:focus-visible,
-    [data-baseweb="select"]:focus-within {
-        outline: 2px solid var(--mm-accent) !important;
-        outline-offset: 2px;
-    }
-
     /* Real, tighter heading rhythm — Streamlit's own defaults leave
        inconsistent, slightly loose spacing above/below headings. */
     h1 { margin-bottom: 0.4em; }
