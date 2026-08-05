@@ -613,11 +613,26 @@ KNOWN_WRONG_SLUG_REDIRECTS = {
     'zyb-esport': 'zyb',                      # confirmed August 2026 — same real team ("ZYB"), Cito's own real slug just drops the generic "-esport" suffix
     'kiwoom-drx-challengers': 'drx-academy',  # confirmed August 2026 — "Academy" is the real, common naming convention for a team's real Challengers-tier roster in this data, same real real-world meaning as "Challengers". Real candidates 'drx'/'krx' were deliberately NOT used here — those are DRX's real MAIN roster, and would reintroduce the exact same real cross-tier contamination risk already fixed for DK/DNS/BRO.
     'hanjin-brion-challengers': 'bro',        # confirmed August 2026 — a real, DEAD Cito entry with zero completed matches at all (confirmed via the admin coverage tool). Unlike the other entries above, "bro" is NOT a clean, dedicated Challengers slug — it's HANJIN BRION's real, SHARED main+Challengers slug (already in AMBIGUOUS_SINGLE_SLUG_TEAMS below). This redirect is what actually lets that existing tier-disambiguation logic run at all — it was built correctly months ago but never had a chance to fire, since resolution was landing on this dead slug before ever reaching "bro" in the first place.
+    'ici-japon-corp-esport': 'ijc',           # confirmed August 2026 — same real team ("Ici Japon Corp"), Cito's real slug is just a shorter abbreviation
+    'srby-esport': 'srby-esports',            # confirmed August 2026 — same real team ("Sørby Esports"), just singular vs plural in the real slug
+    'up2u': 'meavedron',                      # LIKELY the same real roster under a real extended/sponsor name ("UP2U Meavedron") — flagged as slightly less certain than the entries above; worth a real, direct sanity check once live.
+    'dn-soopers-challengers': 'kwangdong-freecs',  # confirmed August 2026 — a real, DEAD Cito entry with zero completed matches (confirmed via the admin coverage tool), same exact real pattern as HANJIN BRION Challengers above. "kwangdong-freecs" is NOT a clean, dedicated Challengers slug — it's DN SOOPers' real, SHARED main+Challengers slug (added to AMBIGUOUS_SINGLE_SLUG_TEAMS below). This SUPERSEDES the earlier, mistaken 'dns' entry that used to live in MANUAL_CHALLENGERS_SLUGS below — that entry was built on the wrong premise that "dns" was the real resolved slug, when the real pipeline was actually resolving to "dn-soopers-challengers" the whole time, so that earlier fix never had a chance to fire at all.
 }
 
-MANUAL_CHALLENGERS_SLUGS = {
-    'dns',  # DN SOOPers Challengers — confirmed August 2026: shares Cito's real, single "kwangdong-freecs" slug with their main roster for isRequested purposes, but their real, distinct tournament (lol-lck_cl_split_2_2026) IS present in the data once correctly tier-filtered.
-}
+MANUAL_CHALLENGERS_SLUGS = set()
+# Real fix (August 2026, per direct user report — "dn-soopers-
+# challengers" still showing 0 real data despite an earlier real fix
+# here). The earlier 'dns' entry that used to live in this set was
+# built on a mistaken premise: it assumed "dns" was the real slug
+# resolution actually produced for DN SOOPers Challengers, but the
+# real pipeline was actually resolving to "dn-soopers-challengers" (a
+# real, dead Cito entry) the whole time — meaning that earlier fix
+# never had a chance to fire, the exact same real mistake later found
+# for HANJIN BRION Challengers too. DN SOOPers Challengers is now
+# correctly handled via the KNOWN_WRONG_SLUG_REDIRECTS + AMBIGUOUS_
+# SINGLE_SLUG_TEAMS chain instead (see both above/below) — this set is
+# left empty and in place in case a genuinely different, real
+# abbreviated-slug case turns up later that doesn't fit that pattern.
 
 # Real, curated allowlist (August 2026, per direct user investigation)
 # — a real, HARDER version of the same real problem MANUAL_CHALLENGERS_
@@ -646,6 +661,7 @@ MANUAL_CHALLENGERS_SLUGS = {
 # globally-ambiguous rating.
 AMBIGUOUS_SINGLE_SLUG_TEAMS = {
     'bro',  # HANJIN BRION — confirmed August 2026: the ONLY real slug for both their main roster and their Challengers roster, no separate identifier exists at all.
+    'kwangdong-freecs',  # DN SOOPers — confirmed August 2026: same real pattern as "bro" — the ONLY real slug for both their main roster and their Challengers roster.
 }
 
 DISAMBIGUATED_CHALLENGERS_SUFFIX = "::cl"
