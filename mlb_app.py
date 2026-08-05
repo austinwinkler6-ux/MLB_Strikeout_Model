@@ -5092,14 +5092,27 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
             ('all_receivers', 'nfl_receptions', load_nfl_receptions_props_data, run_all_nfl_receptions_projections,
              "Loading NFL receptions props", "Running NFL receptions projections"),
         ]
+        # Real addition (August 2026, per direct user report — the
+        # real, top-level timing panel showed NFL alone eating 105 of
+        # ~120 real total seconds, but that alone doesn't say WHERE
+        # inside NFL's own real three-model loop the time actually
+        # goes: the real, live props fetch (an external API call) or
+        # the real, per-player model computation. Real, granular
+        # per-phase timing below settles that with direct evidence
+        # instead of another guess.
+        _nfl_phase_timing = {}
         for all_players_key, session_key, load_fn, run_all_fn, load_step, run_step in nfl_models:
             if all_players_key not in st.session_state:
                 render(load_step)
+                _load_start = time.time()
                 nfl_props = load_fn()
+                _nfl_phase_timing[f"{session_key}_load"] = round(time.time() - _load_start, 2)
                 completed.append(load_step)
                 if nfl_props:
                     render(run_step)
+                    _run_start = time.time()
                     nfl_results = run_all_fn(nfl_props, nfl_season)
+                    _nfl_phase_timing[f"{session_key}_run"] = round(time.time() - _run_start, 2)
                     completed.append(run_step)
                     st.session_state[all_players_key] = nfl_props
                     st.session_state[f'{session_key}_results'] = nfl_results
@@ -5110,6 +5123,7 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
                     completed.append(run_step)
             else:
                 completed.extend([load_step, run_step])
+        st.session_state['_last_nfl_phase_timing'] = _nfl_phase_timing
 
     def _run_lol():
         # Real addition (July 2026) — LoL, structured differently from
@@ -12227,6 +12241,21 @@ The gap between two teams' ratings is what turns into the win probability you se
                 st.caption(f"Total: {round(sum(_last_timing.values()), 1)}s — the slowest sport above is where a real fix should focus next, if this still feels slow even after a real, confirmed-warm cache-warmer run.")
             else:
                 st.caption("No timing recorded yet this session — reload any page that triggers the auto-run (Home, Today's Card, or any sport page) to populate this.")
+
+            # Real addition (August 2026, per direct user finding — NFL
+            # alone ate 105 of ~120 real total seconds). Breaks NFL's
+            # own real block down further — per model variant (Pass
+            # Attempts/Completions/Receptions), and per real phase
+            # (the live real props/odds fetch vs the real per-player
+            # model computation) — direct, real evidence of exactly
+            # where inside NFL specifically the time goes, rather than
+            # guessing between "the live odds API is slow" and "the
+            # real per-player cache isn't actually hitting."
+            _nfl_phase_timing = st.session_state.get('_last_nfl_phase_timing')
+            if _nfl_phase_timing:
+                st.caption("NFL breakdown (load = live odds fetch, run = per-player model computation):")
+                _nfl_phase_df = pd.DataFrame([{"Phase": k, "Seconds": v} for k, v in _nfl_phase_timing.items()]).sort_values("Seconds", ascending=False)
+                st.dataframe(_nfl_phase_df, use_container_width=True)
 
             st.markdown("---")
             st.subheader("⚠️ Teams Stuck At Default Rating")
