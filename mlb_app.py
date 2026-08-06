@@ -11728,6 +11728,37 @@ elif nav == "🎮 Esports (LoL)":
                         reverse=True,
                     )
 
+                    # Real fix (August 2026, per direct user report —
+                    # "the LOL model is taking SOOOOO much longer to
+                    # run" after the real "last 10 games" dropdown got
+                    # added). That feature originally re-scanned the
+                    # ENTIRE real sorted_history list from scratch for
+                    # EVERY team, on EVERY real matchup — 2x per
+                    # matchup, dozens of real matchups, on every single
+                    # real Streamlit rerun (not just once per pipeline
+                    # computation). Builds one real index here instead,
+                    # in a single real pass over the history, so each
+                    # matchup's dropdown is just a real, instant
+                    # dict lookup afterward.
+                    _team_recent_games_index = {}
+                    for _match in (pipeline_output.get("sorted_history") or []):
+                        _t1 = _match.get("team1") or {}
+                        _t2 = _match.get("team2") or {}
+                        for _side, _opponent in ((_t1, _t2), (_t2, _t1)):
+                            _side_slug = _side.get("slug")
+                            if not _side_slug:
+                                continue
+                            _result = "W" if _match.get("winner") == _side_slug else "L"
+                            _team_recent_games_index.setdefault(_side_slug, []).append({
+                                "date": _match.get("startTime"),
+                                "opponent": _opponent.get("name") or _opponent.get("slug") or "Unknown",
+                                "result": _result,
+                                "tournament": _match.get("tournamentName") or "",
+                            })
+                    for _slug in _team_recent_games_index:
+                        _team_recent_games_index[_slug].sort(key=lambda g: g["date"] or "", reverse=True)
+                        _team_recent_games_index[_slug] = _team_recent_games_index[_slug][:10]
+
                     with st.expander("ℹ️ What's this rating?"):
                         st.markdown("""
 Every team starts at a neutral **1500**. From there, real match results move it up or down — win, and it goes up; lose, and it goes down. How much depends on who you played: beating a stronger team moves your rating more than beating a weaker one, since that's a bigger, more meaningful result.
@@ -11927,31 +11958,14 @@ The gap between two teams' ratings is what turns into the win probability you se
                         # results?"). Reuses the SAME real
                         # sorted_history data this whole pipeline
                         # already fetched and computed everything else
-                        # from — no new real API calls needed.
-                        def _recent_games_for_team(_team_slug, _team_name, _max_games=10):
-                            _games = []
-                            for _match in (pipeline_output.get("sorted_history") or []):
-                                _t1 = _match.get("team1") or {}
-                                _t2 = _match.get("team2") or {}
-                                _t1_slug, _t2_slug = _t1.get("slug"), _t2.get("slug")
-                                if _team_slug not in (_t1_slug, _t2_slug):
-                                    continue
-                                _is_t1 = (_t1_slug == _team_slug)
-                                _opponent = _t2 if _is_t1 else _t1
-                                _result = "W" if _match.get("winner") == _team_slug else "L"
-                                _games.append({
-                                    "date": _match.get("startTime"),
-                                    "opponent": _opponent.get("name") or _opponent.get("slug") or "Unknown",
-                                    "result": _result,
-                                    "tournament": _match.get("tournamentName") or "",
-                                })
-                            _games.sort(key=lambda g: g["date"] or "", reverse=True)
-                            return _games[:_max_games]
-
+                        # from — the expensive full-history scan now
+                        # happens ONCE, before this loop, via
+                        # _team_recent_games_index above — this is just
+                        # a real, instant dict lookup per team.
                         recent_col1, recent_col2 = st.columns(2)
                         for _col, _team_slug, _team_name in [(recent_col1, r["team1_slug"], r["team1_name"]), (recent_col2, r["team2_slug"], r["team2_name"])]:
                             with _col:
-                                _recent = _recent_games_for_team(_team_slug, _team_name)
+                                _recent = _team_recent_games_index.get(_team_slug, [])
                                 with st.expander(f"📅 {_team_name} — last {len(_recent)} games"):
                                     if not _recent:
                                         st.caption("No real recent match history found for this team.")
