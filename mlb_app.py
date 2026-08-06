@@ -5174,8 +5174,17 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
             _entries_by_sport.setdefault(_entry['sport_key'], []).append(_entry)
         for _sport_key, _entries in _entries_by_sport.items():
             set_persistent_all_picks_cache(_sport_key, _entries)
-    except Exception:
-        pass  # a real failure here shouldn't block the real page from rendering
+        st.session_state['_last_all_picks_persist_error'] = None
+        st.session_state['_last_all_picks_persist_counts'] = {k: len(v) for k, v in _entries_by_sport.items()}
+    except Exception as _e:
+        # Real fix (August 2026, per direct user report — the API
+        # bridge showing "0 total picks" even right after a real,
+        # successful Streamlit auto-run) — this used to silently
+        # swallow any real error here, giving no way to tell WHY the
+        # persist step failed versus it genuinely having nothing to
+        # persist. Now captures the real exception so it can be
+        # surfaced in the admin panel instead of guessed at blind.
+        st.session_state['_last_all_picks_persist_error'] = str(_e)
 
     status_box.empty()
 
@@ -12212,6 +12221,23 @@ The gap between two teams' ratings is what turns into the win probability you se
 
             st.markdown("---")
             st.subheader("⏱️ Last Auto-Run Timing Breakdown")
+            # Real addition (August 2026, per direct user report — the
+            # API bridge showing "0 total picks" even right after a
+            # real, successful auto-run). Shows the real, direct result
+            # of the last attempt to persist all sports' finished picks
+            # for the API bridge to read — either the real counts per
+            # sport (confirming it worked), or the real, actual
+            # exception if it silently failed, instead of guessing.
+            _persist_error = st.session_state.get('_last_all_picks_persist_error')
+            _persist_counts = st.session_state.get('_last_all_picks_persist_counts')
+            if _persist_error:
+                st.error(f"❌ Real error persisting all-sport picks for the API bridge: {_persist_error}")
+            elif _persist_counts:
+                st.success(f"✅ Last persist succeeded: {_persist_counts}")
+            else:
+                st.caption("No persist attempt recorded yet this session.")
+
+            st.markdown("---")
             # Real addition (August 2026, per direct user report — a
             # real, confirmed-successful cache-warmer run, checked only
             # 11 real minutes later, STILL took ~2 real minutes).
