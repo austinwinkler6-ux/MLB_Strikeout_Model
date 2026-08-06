@@ -11841,16 +11841,21 @@ The gap between two teams' ratings is what turns into the win probability you se
                         if combined_tournament_games >= 4:
                             rec_wins = in_tourn.get('team1_wins', 0) if rec_is_team1 else in_tourn.get('team2_wins', 0)
                             rec_losses = in_tourn.get('team1_losses', 0) if rec_is_team1 else in_tourn.get('team2_losses', 0)
-                            # Real fix (July 2026, per direct user report)
-                            # — the emoji used to always show 🔥 regardless
-                            # of the actual record, which reads as "this is
-                            # a good sign" even for a losing record (e.g.
-                            # 16-20) — only the pill's background color
-                            # changed with win/loss, not the icon itself.
+                            # Real fix (August 2026, per direct user
+                            # report) — "this split" implied a real,
+                            # strict boundary to one specific split,
+                            # but this record actually comes from a
+                            # real, recency-weighted rolling window
+                            # (up to 120 real days back — see
+                            # IN_TOURNAMENT_FORM_MAX_DAYS_BACK), which
+                            # doesn't always line up with one exact
+                            # real split. "Recently" is a more honest,
+                            # accurate real label for what this
+                            # actually represents.
                             _split_record_icon = "🔥" if rec_wins > rec_losses else ("📉" if rec_wins < rec_losses else "➖")
-                            quick_pills.append(_lol_pill(f"{_split_record_icon} {rec_wins}-{rec_losses} this split", "playable" if rec_wins >= rec_losses else "lean"))
+                            quick_pills.append(_lol_pill(f"{_split_record_icon} {rec_wins}-{rec_losses} recently", "playable" if rec_wins >= rec_losses else "lean"))
                         else:
-                            quick_pills.append(_lol_pill("⚠️ Limited split data", "lean"))
+                            quick_pills.append(_lol_pill("⚠️ Limited recent data", "lean"))
 
                         if r.get("no_real_data"):
                             quick_pills.append(_lol_pill("⚠️ Limited history", "lean"))
@@ -11907,6 +11912,49 @@ The gap between two teams' ratings is what turns into the win probability you se
                                 st.markdown(r["context_description"])
                             st.markdown("---")
                             st.caption(f"Real market liquidity: {r.get('market_liquidity')} | 24hr volume: {r.get('market_volume24hr')} | Total volume: {r.get('market_volume')}")
+
+                        # Real addition (August 2026, per direct user
+                        # request — "can we have a little dropdown to
+                        # show the teams last 5-10 games with the
+                        # results?"). Reuses the SAME real
+                        # sorted_history data this whole pipeline
+                        # already fetched and computed everything else
+                        # from — no new real API calls needed.
+                        def _recent_games_for_team(_team_slug, _team_name, _max_games=10):
+                            _games = []
+                            for _match in (pipeline_output.get("sorted_history") or []):
+                                _t1 = _match.get("team1") or {}
+                                _t2 = _match.get("team2") or {}
+                                _t1_slug, _t2_slug = _t1.get("slug"), _t2.get("slug")
+                                if _team_slug not in (_t1_slug, _t2_slug):
+                                    continue
+                                _is_t1 = (_t1_slug == _team_slug)
+                                _opponent = _t2 if _is_t1 else _t1
+                                _result = "W" if _match.get("winner") == _team_slug else "L"
+                                _games.append({
+                                    "date": _match.get("startTime"),
+                                    "opponent": _opponent.get("name") or _opponent.get("slug") or "Unknown",
+                                    "result": _result,
+                                    "tournament": _match.get("tournamentName") or "",
+                                })
+                            _games.sort(key=lambda g: g["date"] or "", reverse=True)
+                            return _games[:_max_games]
+
+                        recent_col1, recent_col2 = st.columns(2)
+                        for _col, _team_slug, _team_name in [(recent_col1, r["team1_slug"], r["team1_name"]), (recent_col2, r["team2_slug"], r["team2_name"])]:
+                            with _col:
+                                _recent = _recent_games_for_team(_team_slug, _team_name)
+                                with st.expander(f"📅 {_team_name} — last {len(_recent)} games"):
+                                    if not _recent:
+                                        st.caption("No real recent match history found for this team.")
+                                    for _g in _recent:
+                                        _date_str = (_g["date"] or "")[:10] if _g["date"] else "—"
+                                        _badge_kind = "best" if _g["result"] == "W" else "pass"
+                                        st.markdown(
+                                            f"<span class='mm-badge mm-badge-{_badge_kind}' style='margin-right:8px;'>{_g['result']}</span>"
+                                            f"<span style='font-family: var(--mm-mono); font-size: 0.85rem;'>{_date_str} vs {_g['opponent']}</span>",
+                                            unsafe_allow_html=True,
+                                        )
 
                         stake_info = {
                             'MM Tier': r.get('mm_tier'), 'Model Prob': r.get('recommended_model_prob'),
