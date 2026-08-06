@@ -123,15 +123,25 @@ def _get_player_prop_picks(sport_key):
 
 
 def _get_lol_picks():
+    """Real fix (August 2026, per direct user report — real, confirmed
+    data existing in Supabase, yet the API kept showing 0 picks). This
+    used to read from a real, OLDER, LoL-specific cache location
+    (sport="LOL", the _cached_lol_full_pipeline's own real persistent
+    cache) — but the actual real pipeline that feeds this whole API
+    bridge writes LoL's real, finished picks to the SAME generic
+    all-picks cache every other sport uses now (sport="lol_moneyline"),
+    via build_todays_card_entries(). Two real, different cache
+    locations, only one of which was ever actually being written to by
+    the real, current auto-run flow — this was reading the wrong one."""
     if not supabase:
         return None, "SUPABASE_URL/SUPABASE_KEY not set on this server."
-    row = _fetch_cache_row("LOL", _LOL_PIPELINE_CACHE_SENTINEL)
+    row = _fetch_cache_row("lol_moneyline", _ALL_PICKS_CACHE_SENTINEL)
     if not row:
         return [], None
-    pipeline_output = row.get("projection_data") or {}
-    results = pipeline_output.get("results") or []
+    entries = row.get("projection_data") or []
     picks = []
-    for r in results:
+    for e in entries:
+        r = e.get("info") or {}
         model_prob = r.get("recommended_model_prob")
         market_prob = r.get("recommended_market_prob")
         edge_pct = round((model_prob - market_prob) * 100, 1) if model_prob is not None and market_prob is not None else None
