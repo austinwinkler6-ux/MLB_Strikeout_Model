@@ -187,13 +187,31 @@ async def all_picks(x_api_key: str = Header(default=None)):
     exact real request first and never reaching this one at all."""
     _require_api_key(x_api_key)
     result = {}
+    errors = {}
     for slug, sport_key in SPORT_KEYS.items():
-        picks, _ = _get_player_prop_picks(sport_key)
-        result[slug] = picks or []
-    lol, _ = _get_lol_picks()
-    result["lol"] = lol or []
+        picks, meta = _get_player_prop_picks(sport_key)
+        if picks is None:
+            # Real fix (August 2026, per direct user report — "0 total
+            # picks" showing with no explanation) — this used to
+            # discard the real error message (e.g. "SUPABASE_URL/
+            # SUPABASE_KEY not set") and just show an empty list either
+            # way, making a genuine configuration problem look
+            # identical to "the cache is just empty right now."
+            errors[slug] = meta
+            result[slug] = []
+        else:
+            result[slug] = picks
+    lol, lol_meta = _get_lol_picks()
+    if lol is None:
+        errors["lol"] = lol_meta
+        result["lol"] = []
+    else:
+        result["lol"] = lol
     total = sum(len(v) for v in result.values())
-    return {"sports": result, "total_count": total, "time": datetime.now(timezone.utc).isoformat()}
+    response = {"sports": result, "total_count": total, "time": datetime.now(timezone.utc).isoformat()}
+    if errors:
+        response["errors"] = errors
+    return response
 
 
 @app.get("/api/{sport_slug}-picks")
