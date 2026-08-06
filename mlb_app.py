@@ -11713,7 +11713,15 @@ elif nav == "🎮 Esports (LoL)":
                 if not lol_results:
                     st.info("No live matchups available right now — check back closer to game time.")
                 else:
-                    st.success(f"✅ {len(lol_results)} real matchup(s) with model predictions")
+                    # Real fix (August 2026, per direct user report —
+                    # "can we have this disappear after it pops up
+                    # instead of just sitting there?"). st.toast() is
+                    # Streamlit's own real, built-in mechanism for
+                    # exactly this — a real notification that shows
+                    # briefly then fades on its own, instead of a
+                    # permanent st.success() banner staying on screen
+                    # for the rest of the real session.
+                    st.toast(f"✅ {len(lol_results)} real matchup(s) with model predictions")
                     sorted_lol_results = sorted(
                         lol_results,
                         key=lambda r: (TIER_RANK.get(r.get("mm_tier"), -1), r.get("ev_pct") if r.get("ev_pct") is not None else -999),
