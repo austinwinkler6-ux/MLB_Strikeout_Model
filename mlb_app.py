@@ -2746,6 +2746,32 @@ def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1
         else: confidence_tier = "🔴 Uncertain Workload"
 
         last3_pitches = round(df['pitches'].head(3).mean(), 1)
+
+        # Real fix (August 2026, per direct user report — Ranger
+        # Suarez case: last 3 starts were 2.2/4.0/4.2 IP, the 2.2 a
+        # real, explainable bad outing (got hit hard, pulled early),
+        # not a genuine workload change — yet he's "only thrown under
+        # 4 innings once all year." The plain last3_pitches average
+        # let that ONE rough night drag the whole real projection down
+        # to 3.75 IP, well below even his OTHER two recent starts.
+        # Detects a single, clear outlier among the last 3 real starts
+        # (one start well below the other two, not a real, sustained
+        # pattern) and uses the average of the other two instead —
+        # for both the main blend below AND the downward-cap check —
+        # so one bad, explainable night doesn't single-handedly
+        # override an otherwise-consistent real workload pattern.
+        last3_ip_list = df['innings'].head(3).tolist()
+        last3_pitches_list = df['pitches'].head(3).tolist()
+        if len(last3_ip_list) == 3:
+            _sorted_ip = sorted(last3_ip_list)
+            _shortest_ip, _mid_ip, _longest_ip = _sorted_ip
+            _other_two_avg_ip = (_mid_ip + _longest_ip) / 2
+            if _other_two_avg_ip > 0 and _shortest_ip < _other_two_avg_ip * 0.6:
+                _outlier_idx = last3_ip_list.index(_shortest_ip)
+                _remaining_pitches = [p for i, p in enumerate(last3_pitches_list) if i != _outlier_idx]
+                if _remaining_pitches:
+                    last3_pitches = round(sum(_remaining_pitches) / len(_remaining_pitches), 1)
+
         last10_pitches = round(df['pitches'].head(10).mean(), 1)
         season_avg_pitches = round(df['pitches'].mean(), 1)
         career_high_pitches = df['pitches'].max()
