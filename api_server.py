@@ -173,6 +173,29 @@ async def lol_picks(x_api_key: str = Header(default=None)):
     return {"picks": picks, "count": len(picks), "last_updated": meta}
 
 
+@app.get("/api/all-picks")
+async def all_picks(x_api_key: str = Header(default=None)):
+    """Real, single, convenient endpoint returning every sport's real
+    picks together in one real response, grouped by sport.
+
+    Real fix (August 2026, per direct user report — "Unknown sport
+    'all'" showing up instead of real combined picks). This route MUST
+    be declared before the generic /api/{sport_slug}-picks route below
+    — FastAPI/Starlette match real routes in real declaration order,
+    and "/api/all-picks" itself matches that generic pattern with
+    sport_slug="all", so the generic route was silently capturing this
+    exact real request first and never reaching this one at all."""
+    _require_api_key(x_api_key)
+    result = {}
+    for slug, sport_key in SPORT_KEYS.items():
+        picks, _ = _get_player_prop_picks(sport_key)
+        result[slug] = picks or []
+    lol, _ = _get_lol_picks()
+    result["lol"] = lol or []
+    total = sum(len(v) for v in result.values())
+    return {"sports": result, "total_count": total, "time": datetime.now(timezone.utc).isoformat()}
+
+
 @app.get("/api/{sport_slug}-picks")
 async def sport_picks(sport_slug: str, x_api_key: str = Header(default=None)):
     """Real, single, generic endpoint covering every non-LoL sport —
@@ -187,21 +210,6 @@ async def sport_picks(sport_slug: str, x_api_key: str = Header(default=None)):
     if not picks and meta is None:
         return {"error": "No cached picks available yet — the model hasn't run recently.", "picks": [], "count": 0}
     return {"picks": picks, "count": len(picks), "last_updated": meta}
-
-
-@app.get("/api/all-picks")
-async def all_picks(x_api_key: str = Header(default=None)):
-    """Real, single, convenient endpoint returning every sport's real
-    picks together in one real response, grouped by sport."""
-    _require_api_key(x_api_key)
-    result = {}
-    for slug, sport_key in SPORT_KEYS.items():
-        picks, _ = _get_player_prop_picks(sport_key)
-        result[slug] = picks or []
-    lol, _ = _get_lol_picks()
-    result["lol"] = lol or []
-    total = sum(len(v) for v in result.values())
-    return {"sports": result, "total_count": total, "time": datetime.now(timezone.utc).isoformat()}
 
 
 if __name__ == "__main__":
