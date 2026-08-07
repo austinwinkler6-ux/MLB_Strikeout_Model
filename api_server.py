@@ -22,16 +22,24 @@ reimplementation.
 
 REQUIREMENTS
 ------------
-    pip install fastapi uvicorn supabase
+    pip install fastapi uvicorn supabase stripe
 
 REQUIRED ENVIRONMENT VARIABLES
 -------------------------------
-    SUPABASE_URL    — same value your main Streamlit app uses
-    SUPABASE_KEY    — same value your main Streamlit app uses
-    BRIDGE_API_KEY  — a real, private key YOU choose — required in a
-                      real request header to access this API. Without
-                      this, anyone who finds your API's URL could see
-                      every real pick your model makes, for free.
+    SUPABASE_URL       — same value your main Streamlit app uses
+    SUPABASE_KEY       — same value your main Streamlit app uses (the
+                          service_role key, not anon — needed to write
+                          new trial rows for any real user)
+    BRIDGE_API_KEY     — a real, private key YOU choose — required in a
+                          real request header to access the picks
+                          endpoints. Without this, anyone who finds
+                          your API's URL could see every real pick your
+                          model makes, for free.
+    STRIPE_SECRET_KEY  — same value your main Streamlit app uses. Only
+                          needed for the real /api/subscription-status
+                          endpoint's real Stripe re-verification step —
+                          everything else works fine without it, this
+                          step just gets silently skipped.
 
 RUN LOCALLY
 -----------
@@ -40,7 +48,7 @@ RUN LOCALLY
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
@@ -57,8 +65,18 @@ app.add_middleware(
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY")
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
+if STRIPE_SECRET_KEY:
+    import stripe
+    stripe.api_key = STRIPE_SECRET_KEY
+
+# Real, direct match to the exact same real constants mlb_app.py
+# already uses — must stay in sync if either ever changes.
+TRIAL_LENGTH_DAYS = 3
+STRIPE_RECHECK_INTERVAL_SECONDS = 6 * 60 * 60
 
 # Real sentinel values — must stay exactly in sync with the matching
 # real constants in mlb_app.py (_LOL_PIPELINE_CACHE_SENTINEL and
@@ -170,6 +188,107 @@ def _get_lol_picks():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+def _get_user_from_jwt(authorization: str = Header(default=None)):
+    """Real, direct verification of WHO is asking — completely
+    different from _require_api_key above (which just checks a shared
+    secret, proving "this is a request from our own real frontend,"
+    not who the real, individual user is). This checks a real Supabase
+    session JWT (sent by the Next.js app as a real 'Authorization:
+    Bearer <token>' header, straight from the real, already-logged-in
+    user's own real Supabase session) and asks Supabase itself to
+    verify it and return the real, actual user it belongs to — the
+    same real trust boundary Streamlit's own supabase.auth session
+    already relies on, just verified server-side here instead."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing real Authorization: Bearer <token> header")
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        user_response = supabase.auth.get_user(token)
+        return user_response.user
+    except Exception:
+        raise HTTPException(status_code=401, detail="Real, invalid or expired session token")
+
+
+@app.get("/api/subscription-status")
+async def subscription_status(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's get_or_refresh_subscription —
+    same real trial-creation, same real Stripe re-check throttling,
+    same real returned shape ({status, days_left_in_trial, unlimited}).
+    Kept as a real, single source of truth in ONE place conceptually
+    (this function mirrors that one exactly) rather than letting the
+    two real implementations quietly drift apart over time."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+
+    user = _get_user_from_jwt(authorization)
+    user_id = user.id
+    email = user.email
+    now = datetime.now(timezone.utc)
+
+    try:
+        res = supabase.table("subscriptions").select("*").eq("user_id", user_id).execute()
+        row = res.data[0] if res.data else None
+    except Exception:
+        return {"status": "trialing", "days_left_in_trial": TRIAL_LENGTH_DAYS, "unlimited": False}
+
+    if row is None:
+        trial_end = now + timedelta(days=TRIAL_LENGTH_DAYS)
+        try:
+            supabase.table("subscriptions").insert({
+                "user_id": user_id, "status": "trialing",
+                "trial_start_date": now.isoformat(), "trial_end_date": trial_end.isoformat(),
+            }).execute()
+        except Exception:
+            pass
+        return {"status": "trialing", "days_left_in_trial": TRIAL_LENGTH_DAYS, "unlimited": False}
+
+    status = row.get("status") or "trialing"
+    stripe_subscription_id = row.get("stripe_subscription_id")
+    last_check = row.get("last_stripe_check")
+
+    if stripe_subscription_id and status in ("active", "past_due") and STRIPE_SECRET_KEY:
+        should_recheck = True
+        if last_check:
+            try:
+                last_check_dt = datetime.fromisoformat(str(last_check).replace("Z", "+00:00"))
+                should_recheck = (now - last_check_dt).total_seconds() > STRIPE_RECHECK_INTERVAL_SECONDS
+            except Exception:
+                should_recheck = True
+        if should_recheck:
+            try:
+                sub = stripe.Subscription.retrieve(stripe_subscription_id)
+                new_status = "active" if sub.status in ("active", "trialing") else "expired"
+                period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
+                supabase.table("subscriptions").update({
+                    "status": new_status, "current_period_end": period_end,
+                    "last_stripe_check": now.isoformat(),
+                }).eq("user_id", user_id).execute()
+                status = new_status
+            except Exception:
+                pass
+
+    if status == "active":
+        return {"status": "active", "days_left_in_trial": None, "unlimited": True}
+
+    if status == "trialing":
+        trial_end_raw = row.get("trial_end_date")
+        try:
+            trial_end_dt = datetime.fromisoformat(str(trial_end_raw).replace("Z", "+00:00"))
+        except Exception:
+            trial_end_dt = now + timedelta(days=TRIAL_LENGTH_DAYS)
+        if trial_end_dt <= now:
+            try:
+                supabase.table("subscriptions").update({"status": "expired"}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return {"status": "expired", "days_left_in_trial": 0, "unlimited": False}
+        days_left = max(1, int((trial_end_dt - now).total_seconds() // 86400) + 1)
+        return {"status": "trialing", "days_left_in_trial": days_left, "unlimited": False}
+
+    return {"status": "expired", "days_left_in_trial": 0, "unlimited": False}
 
 
 @app.get("/api/lol-picks")
