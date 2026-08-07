@@ -78,6 +78,13 @@ if STRIPE_SECRET_KEY:
 TRIAL_LENGTH_DAYS = 3
 STRIPE_RECHECK_INTERVAL_SECONDS = 6 * 60 * 60
 
+# Real, direct match to the exact same real constant in mlb_app.py —
+# the admin account always gets real, full access regardless of trial/
+# subscription state there, and needs to get the exact same real
+# bypass here too, or their own real access would be tied to an
+# ordinary trial that can genuinely expire.
+ADMIN_EMAIL = "austinwinkler6@icloud.com"
+
 # Real sentinel values — must stay exactly in sync with the matching
 # real constants in mlb_app.py (_LOL_PIPELINE_CACHE_SENTINEL and
 # _ALL_PICKS_CACHE_SENTINEL). If those ever change there, update here too.
@@ -227,6 +234,12 @@ async def subscription_status(authorization: str = Header(default=None), x_api_k
     user_id = user.id
     email = user.email
     now = datetime.now(timezone.utc)
+
+    # Real, direct match to mlb_app.py's own admin bypass — the admin
+    # account always gets real, full access, no real trial row ever
+    # needed or created for them.
+    if email and email.lower() == ADMIN_EMAIL.lower():
+        return {"status": "active", "days_left_in_trial": None, "unlimited": True}
 
     try:
         res = supabase.table("subscriptions").select("*").eq("user_id", user_id).execute()
