@@ -11759,7 +11759,20 @@ elif nav == "🎮 Esports (LoL)":
                     # briefly then fades on its own, instead of a
                     # permanent st.success() banner staying on screen
                     # for the rest of the real session.
-                    st.toast(f"✅ {len(lol_results)} real matchup(s) with model predictions")
+                    #
+                    # Real fix (round 2, August 2026, per direct user
+                    # report — the toast kept popping up randomly,
+                    # repeatedly). This ran on EVERY real script rerun,
+                    # not just once — and Streamlit reruns the WHOLE
+                    # real script on ANY interaction anywhere on the
+                    # page, including just opening one of the "last 10
+                    # games" dropdowns. Gated now so it only actually
+                    # fires once per genuinely NEW pipeline run (tracked
+                    # via real object identity), not on every real
+                    # rerun triggered by an unrelated click elsewhere.
+                    if st.session_state.get('_lol_toast_shown_for_id') != id(pipeline_output):
+                        st.toast(f"✅ {len(lol_results)} real matchup(s) with model predictions")
+                        st.session_state['_lol_toast_shown_for_id'] = id(pipeline_output)
                     sorted_lol_results = sorted(
                         lol_results,
                         key=lambda r: (TIER_RANK.get(r.get("mm_tier"), -1), r.get("ev_pct") if r.get("ev_pct") is not None else -999),
