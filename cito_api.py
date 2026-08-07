@@ -1077,9 +1077,16 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
     where changed) — deliberately never mutates the original response
     in place, since that's real, shared, cached data (via Streamlit's
     @st.cache_data) that other real callers may still reference."""
+    # Real fix (round 8, August 2026, per direct user report — "Vivo
+    # Keyd Stars has an academy team and their real team, both under
+    # the same API"). "Academy" is a real, different lower-tier naming
+    # convention than "Challenger" — same real shared-slug pattern,
+    # different real keyword. Both recognized together everywhere this
+    # tier-check happens, not just "challenger" specifically.
     requested_slug_lower = (requested_slug or "").lower()
     requested_is_challengers = (
         "challenger" in requested_slug_lower
+        or "academy" in requested_slug_lower
         or requested_slug_lower in MANUAL_CHALLENGERS_SLUGS
         or is_disambiguated_challengers_slug(requested_slug)
     )
@@ -1106,7 +1113,12 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
             continue
 
         tournament_id_lower = (match.get("tournamentId") or "").lower()
-        tournament_is_challengers = "challenger" in tournament_id_lower or "_cl_" in tournament_id_lower or tournament_id_lower.endswith("_cl")
+        tournament_is_challengers = (
+            "challenger" in tournament_id_lower
+            or "academy" in tournament_id_lower
+            or "_cl_" in tournament_id_lower
+            or tournament_id_lower.endswith("_cl")
+        )
 
         if requested_is_challengers and not tournament_is_challengers:
             # Real, direct tier mismatch — we specifically asked for
