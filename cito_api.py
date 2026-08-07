@@ -1083,8 +1083,19 @@ def normalize_requested_team_slug(completed_matches, requested_slug):
         or requested_slug_lower in MANUAL_CHALLENGERS_SLUGS
         or is_disambiguated_challengers_slug(requested_slug)
     )
+    # Real fix (round 7, August 2026, per direct user report — "all
+    # challenger LCK teams are still pulling games from their main LCK
+    # teams"). This used to only apply to real teams pre-registered in
+    # AMBIGUOUS_SINGLE_SLUG_TEAMS — but the same real reasoning that
+    # generalized the forward direction (see build_disambiguated_slug's
+    # own real caller in mlb_app.py) applies here too: excluding
+    # Challengers-tagged real games from a plain, non-disambiguated
+    # slug's real history is safe and correct regardless of whether
+    # that specific real team was ever manually confirmed as
+    # ambiguous — a real main-roster identity should only ever reflect
+    # real main-roster games either way.
     requested_is_ambiguous_main = (
-        resolve_fetchable_slug(requested_slug_lower) in AMBIGUOUS_SINGLE_SLUG_TEAMS
+        not requested_is_challengers
         and not is_disambiguated_challengers_slug(requested_slug)
     )
 
