@@ -37,9 +37,14 @@ REQUIRED ENVIRONMENT VARIABLES
                           model makes, for free.
     STRIPE_SECRET_KEY  — same value your main Streamlit app uses. Only
                           needed for the real /api/subscription-status
-                          endpoint's real Stripe re-verification step —
-                          everything else works fine without it, this
-                          step just gets silently skipped.
+                          endpoint's real Stripe re-verification step,
+                          and the real checkout endpoints below —
+                          everything else works fine without it, those
+                          steps just get silently skipped/disabled.
+    STRIPE_PRICE_ID    — same value your main Streamlit app uses. Only
+                          needed for real checkout — the real
+                          subscription/status checking works fine
+                          without it.
 
 RUN LOCALLY
 -----------
@@ -49,7 +54,7 @@ RUN LOCALLY
 
 import os
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 
@@ -66,6 +71,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
@@ -302,6 +308,78 @@ async def subscription_status(authorization: str = Header(default=None), x_api_k
         return {"status": "trialing", "days_left_in_trial": days_left, "unlimited": False}
 
     return {"status": "expired", "days_left_in_trial": 0, "unlimited": False}
+
+
+@app.post("/api/create-checkout-session")
+async def create_checkout_session(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's create_stripe_checkout_url —
+    same real Stripe Checkout Session, same real allow_promotion_codes
+    behavior. The real difference: success_url/cancel_url point back at
+    whichever real site actually made this request (sent as
+    'site_url' in the real request body, using the real browser's own
+    window.location.origin) instead of the fixed real APP_BASE_URL
+    Streamlit uses — this endpoint may get called from more than one
+    real frontend over time."""
+    _require_api_key(x_api_key)
+    user = _get_user_from_jwt(authorization)
+    if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
+        return {"error": "Stripe isn't configured on this server (STRIPE_SECRET_KEY/STRIPE_PRICE_ID)."}
+    body = await request.json()
+    site_url = body.get("site_url")
+    if not site_url:
+        return {"error": "Missing real 'site_url' in request body."}
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+            client_reference_id=user.id,
+            customer_email=user.email,
+            allow_promotion_codes=True,
+            success_url=f"{site_url}?checkout=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{site_url}?checkout=cancelled",
+        )
+        return {"checkout_url": checkout_session.url}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/confirm-checkout")
+async def confirm_checkout(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's handle_stripe_checkout_return
+    — same real reasoning: no live webhook receiver here either, so a
+    real, successful subscription is confirmed by verifying the real
+    checkout session directly against Stripe's own API when the real
+    frontend calls this after landing back with
+    ?checkout=success&session_id=..., rather than trusting the
+    redirect alone."""
+    _require_api_key(x_api_key)
+    user = _get_user_from_jwt(authorization)
+    if not STRIPE_SECRET_KEY:
+        return {"success": False, "error": "Stripe isn't configured on this server."}
+    body = await request.json()
+    session_id = body.get("session_id")
+    if not session_id:
+        return {"success": False, "error": "Missing real 'session_id' in request body."}
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        if checkout_session.payment_status == "paid" or checkout_session.status == "complete":
+            now = datetime.now(timezone.utc)
+            subscription_id = checkout_session.subscription
+            period_end_iso = None
+            if subscription_id:
+                sub = stripe.Subscription.retrieve(subscription_id)
+                period_end_iso = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
+            supabase.table("subscriptions").upsert({
+                "user_id": user.id, "status": "active",
+                "stripe_customer_id": checkout_session.customer,
+                "stripe_subscription_id": subscription_id,
+                "current_period_end": period_end_iso,
+                "last_stripe_check": now.isoformat(),
+            }, on_conflict="user_id").execute()
+            return {"success": True}
+        return {"success": False, "error": f"Real checkout session status was '{checkout_session.status}' / payment_status '{checkout_session.payment_status}' — not confirmed as paid."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/lol-picks")
