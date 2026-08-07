@@ -9560,13 +9560,23 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
     # and don't need this). AMBIGUOUS_SINGLE_SLUG_TEAMS itself is kept
     # in cito_api.py purely as real, historical documentation of
     # confirmed cases — it's no longer read here.
+    #
+    # Real fix (round 8, August 2026, per direct user report — "Vivo
+    # Keyd Stars has an academy team and their real team, both under
+    # the same API"). "Academy" is a real, DIFFERENT lower-tier naming
+    # convention than "Challenger" (used by some real orgs/regions
+    # instead of, or alongside, "Challengers") — the same real shared-
+    # slug pattern, just a different real keyword. Generalized both
+    # keywords together here as LOWER_TIER_KEYWORDS, rather than only
+    # ever checking for "challenger" specifically.
+    LOWER_TIER_KEYWORDS = ("challenger", "academy")
     from cito_api import build_disambiguated_slug
     for m in resolved_matchups:
         matchup_tournament_text = (m["market"].get("event_title") or "").split(" - ")[-1].strip().lower()
-        if "challenger" in matchup_tournament_text:
-            if "challenger" not in m["team1_slug"].lower():
+        if any(kw in matchup_tournament_text for kw in LOWER_TIER_KEYWORDS):
+            if not any(kw in m["team1_slug"].lower() for kw in LOWER_TIER_KEYWORDS):
                 m["team1_slug"] = build_disambiguated_slug(m["team1_slug"])
-            if "challenger" not in m["team2_slug"].lower():
+            if not any(kw in m["team2_slug"].lower() for kw in LOWER_TIER_KEYWORDS):
                 m["team2_slug"] = build_disambiguated_slug(m["team2_slug"])
 
     def _serialize_candidates_dict(candidates_dict):
