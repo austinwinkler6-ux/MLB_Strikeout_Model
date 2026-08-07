@@ -9536,25 +9536,37 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
         if m["team2_slug"] in KNOWN_WRONG_SLUG_REDIRECTS:
             m["team2_slug"] = KNOWN_WRONG_SLUG_REDIRECTS[m["team2_slug"]]
 
-    # Real fix (August 2026, round 6, per direct user investigation —
-    # "so what was different between DNS and BRO?") — disambiguates a
-    # KNOWN, single-slug-ambiguous real team (see AMBIGUOUS_SINGLE_
-    # SLUG_TEAMS in cito_api.py — a team with NO separate real slug
-    # for their Challengers roster at all) for THIS SPECIFIC real
-    # matchup, using that matchup's own real market text to decide
-    # which real roster is actually meant — BEFORE unique_slugs/team
-    # histories get built, so a real Challengers-tier matchup uses a
-    # real, synthetic, disambiguated identity throughout the rest of
-    # this pipeline (Elo, in-tournament form, head-to-head),
-    # completely separate from that same real team's main-roster
-    # identity used in any other real matchup this same run.
-    from cito_api import AMBIGUOUS_SINGLE_SLUG_TEAMS, build_disambiguated_slug
+    # Real fix (round 7, August 2026, per direct user report — "all
+    # challenger LCK teams are still pulling games from their main LCK
+    # teams"). Rounds 3-6 required each real, ambiguous shared-slug
+    # team to be manually found and added to AMBIGUOUS_SINGLE_SLUG_
+    # TEAMS one at a time (bro, kwangdong-freecs, ...) — but this
+    # turned out to be a real, SYSTEMIC pattern across LCK specifically
+    # (shared main+Challengers slugs appear to be the real norm for
+    # this region on Cito, not the exception), making one-at-a-time
+    # whack-a-mole the wrong real approach.
+    #
+    # Real, key insight: tier-based filtering (see normalize_requested_
+    # team_slug's tier_confirmed logic) is SAFE to apply universally —
+    # even for a real team that turns out NOT to be ambiguous,
+    # filtering a Challengers-context matchup down to only Challengers-
+    # tagged real games is always the correct real behavior either way.
+    # So disambiguation no longer requires a team to be pre-registered
+    # in AMBIGUOUS_SINGLE_SLUG_TEAMS at all — it now applies
+    # automatically to ANY real team slug in a real Challengers-context
+    # matchup, as long as that slug doesn't already self-identify as
+    # Challengers (i.e. doesn't already contain the literal word
+    # "challenger" — those teams have their own real, dedicated slug
+    # and don't need this). AMBIGUOUS_SINGLE_SLUG_TEAMS itself is kept
+    # in cito_api.py purely as real, historical documentation of
+    # confirmed cases — it's no longer read here.
+    from cito_api import build_disambiguated_slug
     for m in resolved_matchups:
         matchup_tournament_text = (m["market"].get("event_title") or "").split(" - ")[-1].strip().lower()
         if "challenger" in matchup_tournament_text:
-            if m["team1_slug"] in AMBIGUOUS_SINGLE_SLUG_TEAMS:
+            if "challenger" not in m["team1_slug"].lower():
                 m["team1_slug"] = build_disambiguated_slug(m["team1_slug"])
-            if m["team2_slug"] in AMBIGUOUS_SINGLE_SLUG_TEAMS:
+            if "challenger" not in m["team2_slug"].lower():
                 m["team2_slug"] = build_disambiguated_slug(m["team2_slug"])
 
     def _serialize_candidates_dict(candidates_dict):
