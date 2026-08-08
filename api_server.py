@@ -493,6 +493,51 @@ async def save_user_settings_endpoint(request: Request, authorization: str = Hea
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bankroll-transactions")
+async def get_bankroll_transactions(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, new feature (August 2026, per direct user request) — NOT
+    a port of anything in mlb_app.py, since Streamlit's own bankroll
+    adjustment flow never kept a real, individual record of each real
+    deposit/withdrawal, just overwrote the same real starting_bankroll
+    number each time. This real, separate table keeps a real, honest
+    log of every real adjustment, letting a real user actually see
+    their own real deposit/withdrawal history."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    try:
+        res = supabase.table("bankroll_transactions").select("*").eq("user_id", user.id).order("transaction_date", desc=True).execute()
+        return {"transactions": res.data or []}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/bankroll-transactions")
+async def create_bankroll_transaction(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct record of one real bankroll adjustment — called
+    alongside the existing real /api/user-settings update whenever a
+    real user applies a deposit/withdrawal, not a replacement for it."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    body = await request.json()
+    amount = body.get("amount")
+    if amount is None:
+        return {"success": False, "error": "Missing real 'amount' in request body."}
+    try:
+        supabase.table("bankroll_transactions").insert({
+            "user_id": user.id,
+            "amount": amount,
+            "transaction_date": mm_today_str(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/mm-stake")
 async def mm_stake_endpoint(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
     """Real, direct computation of the MM Stake recommendation for a
