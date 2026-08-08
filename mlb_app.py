@@ -5118,13 +5118,27 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
     render()
 
     def _run_mlb():
+        # Real addition (August 2026, per direct user report — "we
+        # gotta figure out why the model is so slow too"). Same real
+        # reasoning, same real pattern as NFL's own granular phase
+        # timing above: the real, top-level auto-run panel only ever
+        # showed MLB as ONE combined number, never separating the real,
+        # live props fetch (an external API call, now also fetching
+        # the real alternate-lines market too) from the real, per-
+        # pitcher model computation (now also computing EV for every
+        # real alternate line). Real, granular timing settles which
+        # real half actually grew, instead of guessing.
         if 'all_pitchers' not in st.session_state:
             render("Loading MLB props")
+            _load_start = time.time()
             mlb_props = load_mlb_props_data()
+            _mlb_load_time = round(time.time() - _load_start, 2)
             completed.append("Loading MLB props")
             if mlb_props:
                 render("Running MLB projections")
+                _run_start = time.time()
                 mlb_results = run_all_mlb_projections(mlb_props, '2026')
+                _mlb_run_time = round(time.time() - _run_start, 2)
                 completed.append("Running MLB projections")
                 st.session_state['all_pitchers'] = mlb_props
                 st.session_state['pitcher_results'] = mlb_results
@@ -5132,7 +5146,9 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
                 st.session_state.setdefault('manual_run_order', {})
                 st.session_state.setdefault('manual_run_counter', 0)
             else:
+                _mlb_run_time = 0.0
                 completed.append("Running MLB projections")
+            st.session_state['_last_mlb_phase_timing'] = {'mlb_load': _mlb_load_time, 'mlb_run': _mlb_run_time}
         else:
             completed.extend(["Loading MLB props", "Running MLB projections"])
 
@@ -12517,6 +12533,18 @@ The gap between two teams' ratings is what turns into the win probability you se
                 st.caption("NFL breakdown (load = live odds fetch, run = per-player model computation):")
                 _nfl_phase_df = pd.DataFrame([{"Phase": k, "Seconds": v} for k, v in _nfl_phase_timing.items()]).sort_values("Seconds", ascending=False)
                 st.dataframe(_nfl_phase_df, use_container_width=True)
+
+            # Real addition (August 2026, per direct user report — "we
+            # gotta figure out why the model is so slow too"). Same
+            # real breakdown, applied to MLB — especially relevant
+            # right now since MLB's "run" phase just picked up real,
+            # new work (computing EV for every real alternate line, not
+            # just the one main line).
+            _mlb_phase_timing = st.session_state.get('_last_mlb_phase_timing')
+            if _mlb_phase_timing:
+                st.caption("MLB breakdown (load = live odds fetch, run = per-pitcher model computation):")
+                _mlb_phase_df = pd.DataFrame([{"Phase": k, "Seconds": v} for k, v in _mlb_phase_timing.items()]).sort_values("Seconds", ascending=False)
+                st.dataframe(_mlb_phase_df, use_container_width=True)
 
             st.markdown("---")
             st.subheader("⚠️ Teams Stuck At Default Rating")
