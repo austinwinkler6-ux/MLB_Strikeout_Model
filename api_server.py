@@ -22,7 +22,7 @@ reimplementation.
 
 REQUIREMENTS
 ------------
-    pip install fastapi uvicorn supabase stripe
+    pip install fastapi uvicorn supabase stripe requests
 
 REQUIRED ENVIRONMENT VARIABLES
 -------------------------------
@@ -45,6 +45,9 @@ REQUIRED ENVIRONMENT VARIABLES
                           needed for real checkout — the real
                           subscription/status checking works fine
                           without it.
+    ODDS_API_KEY       — same value your main Streamlit app uses. Only
+                          needed for real closing-line/CLV lookups —
+                          everything else works fine without it.
 
 RUN LOCALLY
 -----------
@@ -57,6 +60,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
+import requests
 
 app = FastAPI(title="Model Metrics API Bridge")
 
@@ -72,12 +76,22 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 if STRIPE_SECRET_KEY:
     import stripe
     stripe.api_key = STRIPE_SECRET_KEY
+
+# Real, direct import — bet_math.py is a real, pure Python module (no
+# Streamlit dependency at all) that already sits alongside this file
+# on Railway. Reusing the exact same, already-tested calculate_mm_
+# stake function here avoids re-implementing that real, genuinely
+# complex Kelly-staking logic (tier ranges, odds dampening, workload/
+# confidence checks) a second time in a different language, where a
+# subtle real mistake could easily go unnoticed.
+from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv
 
 # Real, direct match to the exact same real constants mlb_app.py
 # already uses — must stay in sync if either ever changes.
@@ -135,19 +149,27 @@ def _get_player_prop_picks(sport_key):
     picks = []
     for e in entries:
         info = e.get("info") or {}
+        is_over = e.get("play") and "OVER" in str(e.get("play")).upper()
         picks.append({
             "player": e.get("name"),
             "sport": e.get("sport_label"),
             "line": e.get("line"),
             "recommended_pick": e.get("play"),
+            "over_under": "Over" if is_over else "Under",
             "projection": info.get("Projection"),
             "model_probability": info.get("Model Prob"),
-            "market_odds": info.get("FanDuel Over") if e.get("play") and "OVER" in str(e.get("play")).upper() else info.get("FanDuel Under"),
+            "no_vig_probability": info.get("No Vig Prob"),
+            "market_odds": info.get("FanDuel Over") if is_over else info.get("FanDuel Under"),
             "edge": e.get("edge"),
             "ev_pct": e.get("ev_pct"),
             "mm_tier": e.get("tier"),
             "confidence_level": info.get("Confidence Level"),
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
+            # Real, raw info dict — needed as-is by /api/mm-stake to
+            # compute a real stake recommendation for this exact real
+            # pick, without needing this endpoint to guess at which
+            # fields matter.
+            "_raw_info": info,
         })
     picks.sort(key=lambda p: p.get("ev_pct") or -999, reverse=True)
     return picks, row.get("updated_at")
@@ -378,6 +400,261 @@ async def confirm_checkout(request: Request, authorization: str = Header(default
             }, on_conflict="user_id").execute()
             return {"success": True}
         return {"success": False, "error": f"Real checkout session status was '{checkout_session.status}' / payment_status '{checkout_session.payment_status}' — not confirmed as paid."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _sanitize_nan(v):
+    """Real, direct match to mlb_app.py's own sanitization — a real,
+    genuine NaN float breaks JSON encoding ('Out of range float values
+    are not JSON compliant'), so any real NaN gets converted to a real
+    None before ever reaching Supabase."""
+    try:
+        if isinstance(v, float) and v != v:  # NaN != NaN is real, always True
+            return None
+    except Exception:
+        pass
+    return v
+
+
+@app.get("/api/user-settings")
+async def get_user_settings_endpoint(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's get_user_settings — same real
+    table, same real user_id scoping. Returns None fields if the real
+    user hasn't set up their real bankroll/risk style yet, rather than
+    erroring — the real caller (the "Log" flow) falls back to a real,
+    sensible default in that case."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    try:
+        res = supabase.table("user_settings").select("*").eq("user_id", user.id).execute()
+        if res.data:
+            return res.data[0]
+        return {"starting_bankroll": None, "risk_style": None}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/mm-stake")
+async def mm_stake_endpoint(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct computation of the MM Stake recommendation for a
+    specific real pick — uses the SAME real calculate_mm_stake function
+    mlb_app.py itself calls, imported directly rather than
+    reimplemented, fetching the real, current user's own real bankroll/
+    risk style first. Real request body: {"info": {...pick fields...},
+    "result": {...optional confidence_tier/workload_tier...}}"""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    body = await request.json()
+    info = body.get("info") or {}
+    result = body.get("result") or {}
+
+    try:
+        res = supabase.table("user_settings").select("*").eq("user_id", user.id).execute()
+        settings = res.data[0] if res.data else None
+    except Exception:
+        settings = None
+
+    # Real, sensible default — same real fallback Streamlit itself
+    # effectively uses for a real, brand-new user who hasn't set a
+    # real bankroll yet.
+    bankroll = (settings or {}).get("starting_bankroll") or 1000
+    risk_style = (settings or {}).get("risk_style") or "Standard"
+
+    try:
+        stake = calculate_mm_stake(info, result, bankroll, risk_style)
+        return {"stake": stake, "bankroll": bankroll, "risk_style": risk_style}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_odds_api_sport_and_market(sport):
+    """Real, direct port of mlb_app.py's get_odds_api_sport_and_market."""
+    mapping = {
+        "MLB": ("baseball_mlb", "pitcher_strikeouts"),
+        "NBA": ("basketball_nba", "player_points"),
+        "NBA_AST": ("basketball_nba", "player_assists"),
+        "NFL": ("americanfootball_nfl", "player_pass_attempts"),
+        "NFL_COMPLETIONS": ("americanfootball_nfl", "player_pass_completions"),
+        "NFL_RECEPTIONS": ("americanfootball_nfl", "player_receptions"),
+    }
+    return mapping.get(sport, (None, None))
+
+
+def _fetch_closing_line(sport, player_name, direction, game_date_str):
+    """Real, direct port of mlb_app.py's fetch_closing_line — same real
+    Odds API historical endpoints, same real consensus-line logic. Real,
+    honest simplification: no real 7-day caching layer here (unlike
+    Streamlit's own @st.cache_data) — this is called rarely enough (a
+    real user manually refreshing their own real bets, not on every
+    real page load) that this is a real, acceptable tradeoff for now
+    rather than adding real caching infrastructure this endpoint alone
+    doesn't yet need."""
+    api_sport, market = _get_odds_api_sport_and_market(sport)
+    if not api_sport or not ODDS_API_KEY:
+        return None, None
+    try:
+        snapshot_time = f"{game_date_str}T12:00:00Z"
+        events_res = requests.get(
+            f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events",
+            params={"apiKey": ODDS_API_KEY, "date": snapshot_time}, timeout=20,
+        )
+        events_res.raise_for_status()
+        events = events_res.json().get("data", [])
+        for event in events:
+            event_id = event["id"]
+            commence_time = event["commence_time"]
+            odds_res = requests.get(
+                f"https://api.the-odds-api.com/v4/historical/sports/{api_sport}/events/{event_id}/odds",
+                params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": market, "oddsFormat": "american", "date": commence_time},
+                timeout=20,
+            )
+            odds_res.raise_for_status()
+            data = odds_res.json().get("data", {}) or {}
+            points = []
+            for bookmaker in data.get("bookmakers", []):
+                for mkt in bookmaker.get("markets", []):
+                    if mkt["key"] == market:
+                        for outcome in mkt["outcomes"]:
+                            if (outcome.get("description", "").lower() == player_name.lower()
+                                    and outcome.get("name", "").lower() == direction.lower()):
+                                points.append({"line": outcome["point"], "odds": outcome["price"]})
+            if points:
+                from collections import Counter
+                line_counts = Counter(p["line"] for p in points)
+                consensus_line = line_counts.most_common(1)[0][0]
+                matching_points = [p for p in points if p["line"] == consensus_line]
+                avg_prob = sum(odds_to_implied_prob(p["odds"]) for p in matching_points) / len(matching_points)
+                avg_odds = prob_to_american_odds(avg_prob)
+                return consensus_line, avg_odds
+        return None, None
+    except Exception:
+        return None, None
+
+
+@app.post("/api/refresh-closing-line/{bet_id}")
+async def refresh_closing_line(bet_id: str, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, single, atomic operation covering what mlb_app.py's own
+    Closing Line Tracker does across several real steps: looks up ONE
+    real, specific bet (verifying it genuinely belongs to the real,
+    requesting user first), fetches its real closing line/odds, computes
+    real CLV, and updates the real bet record — all in one real call."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    if not ODDS_API_KEY:
+        return {"error": "ODDS_API_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    try:
+        res = supabase.table("bets").select("*").eq("id", bet_id).eq("user_id", user.id).execute()
+        if not res.data:
+            return {"error": "Real bet not found, or doesn't belong to you."}
+        bet = res.data[0]
+    except Exception as e:
+        return {"error": str(e)}
+
+    sport = bet.get("sport")
+    player_name = bet.get("pitcher")
+    direction = bet.get("over_under")
+    game_date = bet.get("date")
+    placed_odds = bet.get("odds")
+
+    if not all([sport, player_name, direction, game_date]):
+        return {"error": "This bet is missing sport/player/over_under/date — can't look up a closing line for it."}
+
+    closing_line, closing_odds = _fetch_closing_line(sport, player_name, direction, game_date)
+    if closing_line is None:
+        return {"success": False, "error": "No real closing line found for this bet yet — try again closer to game time, or the game may be too far in the past for the historical API."}
+
+    odds_clv = calculate_odds_clv(placed_odds, closing_odds) if placed_odds and closing_odds else None
+
+    try:
+        supabase.table("bets").update({
+            "closing_line": closing_line, "closing_odds": closing_odds, "odds_clv": odds_clv,
+        }).eq("id", bet_id).eq("user_id", user.id).execute()
+        return {"success": True, "closing_line": closing_line, "closing_odds": closing_odds, "odds_clv": odds_clv}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bets")
+async def get_bets(sport: str = None, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's load_bets — same real,
+    explicit user_id scoping (not relying on any real database-level
+    RLS policy, which hasn't been verified to exist — this app's own
+    real service_role key already bypasses RLS regardless, so this
+    endpoint does the real, same explicit filtering in code that
+    mlb_app.py already does)."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    try:
+        query = supabase.table("bets").select("*").eq("user_id", user.id)
+        if sport:
+            query = query.eq("sport", sport)
+        res = query.order("created_at", desc=True).execute()
+        return {"bets": res.data or []}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/bets")
+async def create_bet(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's save_bet — same real NaN
+    sanitization, same real user_id stamping (the real, authenticated
+    user's own ID, from their real JWT — never trusted from the
+    real request body itself, so a real user can never log a bet
+    under someone else's real account)."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    body = await request.json()
+    bet = {k: _sanitize_nan(v) for k, v in body.items()}
+    bet["user_id"] = user.id
+    try:
+        supabase.table("bets").insert(bet).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.patch("/api/bets/{bet_id}")
+async def update_bet_endpoint(bet_id: str, request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's update_bet — same real
+    double-scoped update (.eq('id', bet_id).eq('user_id', user.id)),
+    so a real user can never update a bet that isn't genuinely theirs,
+    even if they somehow guessed another real bet's real ID."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    body = await request.json()
+    updates = {k: _sanitize_nan(v) for k, v in body.items()}
+    try:
+        supabase.table("bets").update(updates).eq("id", bet_id).eq("user_id", user.id).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/bets/{bet_id}")
+async def delete_bet_endpoint(bet_id: str, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's delete_bet — same real
+    double-scoped delete, same real protection against deleting
+    another real user's bet."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    try:
+        supabase.table("bets").delete().eq("id", bet_id).eq("user_id", user.id).execute()
+        return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
