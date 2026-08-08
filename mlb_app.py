@@ -4679,14 +4679,26 @@ def load_mlb_props_data():
             home = event['home_team']
             away = event['away_team']
             event_id = event['id']
+            # Real addition (August 2026, per direct user request — "a
+            # spot to choose which book line im taking... sometimes I
+            # like to bet both"). Real, separate market key from The
+            # Odds API — 'pitcher_strikeouts_alternate' carries every
+            # additional real line a book offers beyond just the one
+            # main line, completely distinct data from
+            # 'pitcher_strikeouts' itself. Requesting both in the SAME
+            # real API call (comma-separated) costs no extra real
+            # request against the real API quota.
             props_data = get_json(
                 f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
-                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'pitcher_strikeouts', 'oddsFormat': 'american'}
+                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'pitcher_strikeouts,pitcher_strikeouts_alternate', 'oddsFormat': 'american'}
             )
 
             for bookmaker in props_data.get('bookmakers', []):
                 if bookmaker['key'] in ['fanduel', 'draftkings']:
                     book_name = bookmaker['title']
+                    book_key = 'FanDuel' if 'FanDuel' in book_name else ('DraftKings' if 'DraftKings' in book_name else None)
+                    if not book_key:
+                        continue
                     for market in bookmaker.get('markets', []):
                         if market['key'] == 'pitcher_strikeouts':
                             for outcome in market['outcomes']:
@@ -4696,6 +4708,7 @@ def load_mlb_props_data():
                                         'home': home, 'away': away, 'commence_time': commence_time_str,
                                         'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
                                         'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Alt Lines': {'FanDuel': {}, 'DraftKings': {}},
                                         'Projection': None, 'Edge': None, 'Play': None,
                                         'Tier': None,
                                         'EV%': None, 'MM Tier': None,
@@ -4703,18 +4716,48 @@ def load_mlb_props_data():
                                         'Model Edge': None, 'Odds': None, 'Direction': None,
                                         'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
                                     }
-                                if 'FanDuel' in book_name:
+                                if book_key == 'FanDuel':
                                     all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
                                     if outcome['name'] == 'Over':
                                         all_pitchers[pitcher]['FanDuel Over'] = outcome['price']
                                     else:
                                         all_pitchers[pitcher]['FanDuel Under'] = outcome['price']
-                                elif 'DraftKings' in book_name:
+                                else:
                                     all_pitchers[pitcher]['DraftKings Line'] = outcome['point']
                                     if outcome['name'] == 'Over':
                                         all_pitchers[pitcher]['DraftKings Over'] = outcome['price']
                                     else:
                                         all_pitchers[pitcher]['DraftKings Under'] = outcome['price']
+                        elif market['key'] == 'pitcher_strikeouts_alternate':
+                            # Real, separate handling — every real
+                            # alternate line gets its own real dict
+                            # entry keyed by its own real point value,
+                            # never overwriting another real line the
+                            # way the main-line loop above correctly
+                            # does for the single main line.
+                            for outcome in market['outcomes']:
+                                pitcher = outcome['description']
+                                if pitcher not in all_pitchers:
+                                    all_pitchers[pitcher] = {
+                                        'home': home, 'away': away, 'commence_time': commence_time_str,
+                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                        'Alt Lines': {'FanDuel': {}, 'DraftKings': {}},
+                                        'Projection': None, 'Edge': None, 'Play': None,
+                                        'Tier': None,
+                                        'EV%': None, 'MM Tier': None,
+                                        'Model Prob': None, 'No Vig Prob': None,
+                                        'Model Edge': None, 'Odds': None, 'Direction': None,
+                                        'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
+                                    }
+                                point = outcome['point']
+                                alt_lines = all_pitchers[pitcher]['Alt Lines'][book_key]
+                                if point not in alt_lines:
+                                    alt_lines[point] = {'over': None, 'under': None}
+                                if outcome['name'] == 'Over':
+                                    alt_lines[point]['over'] = outcome['price']
+                                else:
+                                    alt_lines[point]['under'] = outcome['price']
         return all_pitchers
     except Exception:
         return {}
@@ -4777,6 +4820,37 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
                 })
                 pitcher_results[pitcher] = result
+
+                # Real addition (August 2026, per direct user request)
+                # — computes the exact same real EV/tier analysis for
+                # EVERY real alternate line too, reusing the SAME real
+                # projection/std_dev/cv (properties of the real
+                # pitcher, not the line) — only the real line and its
+                # own real odds change per call. Lets a real user
+                # actually judge whether an alternate line is worth
+                # taking, not just see a raw, uncontextualized number.
+                for book_key, lines in info['Alt Lines'].items():
+                    for point, odds_pair in lines.items():
+                        alt_over = odds_pair.get('over')
+                        alt_under = odds_pair.get('under')
+                        if alt_over is None and alt_under is None:
+                            continue
+                        alt_edge = round(proj - point, 1)
+                        alt_direction = 'over' if alt_edge > 0 else 'under'
+                        alt_ev_result = analyze_prop(
+                            projection=proj, line=point,
+                            std_dev=result['last10_k_std'], cv=result['cv'],
+                            over_odds=alt_over or -110, under_odds=alt_under or -110,
+                            direction=alt_direction, sport='mlb_strikeouts',
+                            workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
+                        )
+                        odds_pair['edge'] = alt_edge
+                        odds_pair['direction'] = alt_direction
+                        odds_pair['play'] = "⬆️ OVER" if alt_edge > 0 else "⬇️ UNDER"
+                        odds_pair['ev_pct'] = alt_ev_result['ev_pct'] if alt_ev_result else None
+                        odds_pair['mm_tier'] = alt_ev_result['tier'] if alt_ev_result else None
+                        odds_pair['model_prob'] = alt_ev_result['model_prob'] if alt_ev_result else None
+                        odds_pair['no_vig_prob'] = alt_ev_result['no_vig_prob'] if alt_ev_result else None
 
                 save_prediction({
                     'date': mm_today_str(),
@@ -8430,6 +8504,46 @@ def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session
                                 else:
                                     st.caption("Couldn't generate an insight right now.")
                     render_mm_stake_block(info, result, bankroll, risk_style)
+
+            # Real addition (August 2026, per direct user request — "a
+            # spot to choose which book line im taking... sometimes I
+            # like to bet both"). Only real MLB pitchers carry 'Alt
+            # Lines' at all (see load_mlb_props_data) — guarded so this
+            # doesn't break for NBA/NFL, which don't have this real
+            # field populated.
+            alt_lines = info.get('Alt Lines')
+            if alt_lines and any(lines for lines in alt_lines.values()):
+                with st.expander(f"📊 Alternate Lines — {player_name}"):
+                    for book_key in ['FanDuel', 'DraftKings']:
+                        lines = alt_lines.get(book_key) or {}
+                        if not lines:
+                            continue
+                        st.markdown(f"**{book_key}**")
+                        sorted_points = sorted(
+                            lines.items(),
+                            key=lambda kv: kv[1].get('ev_pct') if kv[1].get('ev_pct') is not None else -999,
+                            reverse=True,
+                        )
+                        for point, odds_pair in sorted_points:
+                            ev_pct = odds_pair.get('ev_pct')
+                            mm_tier = odds_pair.get('mm_tier')
+                            play = odds_pair.get('play', '—')
+                            over_str = fmt_odds(odds_pair.get('over'))
+                            under_str = fmt_odds(odds_pair.get('under'))
+                            alt_col1, alt_col2, alt_col3, alt_col4 = st.columns([1.2, 1.5, 1.0, 1.2])
+                            with alt_col1:
+                                st.write(f"**{point}**")
+                            with alt_col2:
+                                st.caption(f"O:{over_str} U:{under_str}")
+                            with alt_col3:
+                                st.write(play)
+                            with alt_col4:
+                                if ev_pct is not None:
+                                    st.markdown(tier_badge(mm_tier, compact=True), unsafe_allow_html=True)
+                                    st.caption(f"EV: {ev_pct}%")
+                                else:
+                                    st.caption("—")
+                        st.markdown("---")
 
             if st.session_state.get(f'{session_key}_log_modal_{player_name}'):
                 with st.expander(f"📝 Log Bet — {player_name}", expanded=True):
