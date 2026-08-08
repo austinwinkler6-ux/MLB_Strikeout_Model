@@ -5860,21 +5860,23 @@ def get_nfl_game_context(season, team, opponent, as_of_week):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_nfl_props_data():
-    """Fetches today's live NFL player_pass_attempts props from FanDuel/
-    DraftKings — same shape as load_mlb_props_data()/load_nba_props_data()
-    so the main NFL page can use the identical card UI. Skips any game
-    whose commence_time has already passed — the same fix built for MLB
-    after a real incident; applied here from the start this time instead
-    of needing a second one to catch it.
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_nfl_events_and_props_combined():
+    """Real fix (August 2026, per direct user report — NFL alone eating
+    ~99 of ~120 real total auto-run seconds). Shared, cached real fetch
+    used by all three NFL load_*_props_data() functions below — fetches
+    the real events list ONCE (not three separate times), and for each
+    real event, ONE real combined API call requesting all three real
+    markets together (player_pass_attempts, player_pass_completions,
+    player_receptions) instead of three separate real per-event calls.
+    Cuts real NFL auto-run network calls roughly 3x.
 
-    HTTP validation added (July 2026 review, item 9): explicit timeouts,
-    raise_for_status(), and a check for The Odds API's own error-object
-    responses (e.g. a bad/expired key returns a JSON dict with a
-    'message' field, not a list — which would otherwise silently iterate
-    as zero events with no explanation). The per-event fetch is wrapped
-    in its OWN try/except so one malformed event can't wipe out every
-    other successfully-fetched event by tripping the outer handler."""
+    Returns {event_id: {'home', 'away', 'commence_time', 'props_data'}}
+    — each caller then runs its OWN, UNCHANGED, market-specific parsing
+    loop over this shared real data, exactly as if it had fetched that
+    one market alone (the parsing loop already filters by market key,
+    so it safely, correctly ignores the other two real markets present
+    in this now-shared, combined response)."""
     try:
         events_resp = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
             params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}, timeout=15)
@@ -5883,8 +5885,8 @@ def load_nfl_props_data():
         if isinstance(events_data, dict) and events_data.get('message'):
             raise RuntimeError(f"Odds API error: {events_data['message']}")
 
-        all_qbs = {}
         now_utc = datetime.now(ZoneInfo("UTC"))
+        combined = {}
 
         for event in events_data:
             commence_time_str = event.get('commence_time')
@@ -5902,7 +5904,9 @@ def load_nfl_props_data():
             try:
                 props_resp = requests.get(
                     f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
-                    params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_pass_attempts', 'oddsFormat': 'american'},
+                    params={'apiKey': ODDS_API_KEY, 'regions': 'us',
+                             'markets': 'player_pass_attempts,player_pass_completions,player_receptions',
+                             'oddsFormat': 'american'},
                     timeout=15
                 )
                 props_resp.raise_for_status()
@@ -5911,6 +5915,53 @@ def load_nfl_props_data():
                     continue  # this specific event errored — skip it, don't lose every other event over it
             except Exception:
                 continue  # one malformed/failed event shouldn't wipe out the whole batch
+
+            combined[event_id] = {'home': home, 'away': away, 'commence_time': commence_time_str, 'props_data': props_data}
+        return combined
+    except Exception as e:
+        st.session_state['_nfl_events_fetch_error'] = str(e)
+        return {}
+
+
+def load_nfl_props_data():
+    """Fetches today's live NFL player_pass_attempts props from FanDuel/
+    DraftKings — same shape as load_mlb_props_data()/load_nba_props_data()
+    so the main NFL page can use the identical card UI. Skips any game
+    whose commence_time has already passed — the same fix built for MLB
+    after a real incident; applied here from the start this time instead
+    of needing a second one to catch it.
+
+    HTTP validation added (July 2026 review, item 9): explicit timeouts,
+    raise_for_status(), and a check for The Odds API's own error-object
+    responses (e.g. a bad/expired key returns a JSON dict with a
+    'message' field, not a list — which would otherwise silently iterate
+    as zero events with no explanation). The per-event fetch is wrapped
+    in its OWN try/except so one malformed event can't wipe out every
+    other successfully-fetched event by tripping the outer handler.
+
+    Real fix (August 2026, per direct user report — NFL alone eating
+    ~99 of ~120 real total auto-run seconds, split almost evenly across
+    three real, separate ~32s load times). This function, load_nfl_
+    completions_props_data(), and load_nfl_receptions_props_data() each
+    used to independently re-fetch the SAME real events list, then make
+    their OWN separate real per-event API call — three real, redundant
+    full passes over the same real games. Now shares the real,
+    expensive network calls via _fetch_nfl_events_and_props_combined()
+    below, requesting all three real markets together in ONE real per-
+    event call instead of three. The parsing loop below is completely
+    UNCHANGED — it already filters by market key
+    ('player_pass_attempts' only), so it safely, correctly ignores the
+    other two real markets present in this now-shared, combined
+    response, exactly as if this function had fetched attempts alone."""
+    try:
+        combined = _fetch_nfl_events_and_props_combined()
+        all_qbs = {}
+
+        for event_id, event_info in combined.items():
+            home = event_info['home']
+            away = event_info['away']
+            commence_time_str = event_info['commence_time']
+            props_data = event_info['props_data']
 
             for bookmaker in props_data.get('bookmakers', []):
                 if bookmaker['key'] in ['fanduel', 'draftkings']:
@@ -6330,43 +6381,23 @@ def load_nfl_completions_props_data():
     copy pattern used throughout the Completions/Receptions build —
     Attempts' live pipeline is real, working, and already earning
     trust; no reason to risk it for the sake of avoiding a second,
-    small function."""
+    small function.
+
+    Real fix (August 2026, per direct user report — NFL alone eating
+    ~99 of ~120 real total auto-run seconds). Now shares the real,
+    expensive network calls via _fetch_nfl_events_and_props_combined()
+    instead of independently re-fetching the same real events list and
+    making its own separate real per-event API call. This function's
+    OWN parsing loop below is completely UNCHANGED."""
     try:
-        events_resp = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
-            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}, timeout=15)
-        events_resp.raise_for_status()
-        events_data = events_resp.json()
-        if isinstance(events_data, dict) and events_data.get('message'):
-            raise RuntimeError(f"Odds API error: {events_data['message']}")
-
+        combined = _fetch_nfl_events_and_props_combined()
         all_qbs = {}
-        now_utc = datetime.now(ZoneInfo("UTC"))
 
-        for event in events_data:
-            commence_time_str = event.get('commence_time')
-            if commence_time_str:
-                try:
-                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
-                    if commence_time <= now_utc:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
-            home = event['home_team']
-            away = event['away_team']
-            event_id = event['id']
-            try:
-                props_resp = requests.get(
-                    f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
-                    params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_pass_completions', 'oddsFormat': 'american'},
-                    timeout=15
-                )
-                props_resp.raise_for_status()
-                props_data = props_resp.json()
-                if isinstance(props_data, dict) and props_data.get('message') and 'bookmakers' not in props_data:
-                    continue
-            except Exception:
-                continue
+        for event_id, event_info in combined.items():
+            home = event_info['home']
+            away = event_info['away']
+            commence_time_str = event_info['commence_time']
+            props_data = event_info['props_data']
 
             for bookmaker in props_data.get('bookmakers', []):
                 if bookmaker['key'] in ['fanduel', 'draftkings']:
@@ -8115,43 +8146,23 @@ def load_nfl_receptions_props_data():
     are. Keyed by receiver name; tracks home/away team the same way so
     the display and downstream lookup can match it to a real team side.
     Same per-event error isolation and stale-game skip as every other
-    NFL props loader."""
+    NFL props loader.
+
+    Real fix (August 2026, per direct user report — NFL alone eating
+    ~99 of ~120 real total auto-run seconds). Now shares the real,
+    expensive network calls via _fetch_nfl_events_and_props_combined()
+    instead of independently re-fetching the same real events list and
+    making its own separate real per-event API call. This function's
+    OWN parsing loop below is completely UNCHANGED."""
     try:
-        events_resp = requests.get("https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events",
-            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'}, timeout=15)
-        events_resp.raise_for_status()
-        events_data = events_resp.json()
-        if isinstance(events_data, dict) and events_data.get('message'):
-            raise RuntimeError(f"Odds API error: {events_data['message']}")
-
+        combined = _fetch_nfl_events_and_props_combined()
         all_receivers = {}
-        now_utc = datetime.now(ZoneInfo("UTC"))
 
-        for event in events_data:
-            commence_time_str = event.get('commence_time')
-            if commence_time_str:
-                try:
-                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
-                    if commence_time <= now_utc:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
-            home = event['home_team']
-            away = event['away_team']
-            event_id = event['id']
-            try:
-                props_resp = requests.get(
-                    f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
-                    params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'player_receptions', 'oddsFormat': 'american'},
-                    timeout=15
-                )
-                props_resp.raise_for_status()
-                props_data = props_resp.json()
-                if isinstance(props_data, dict) and props_data.get('message') and 'bookmakers' not in props_data:
-                    continue
-            except Exception:
-                continue
+        for event_id, event_info in combined.items():
+            home = event_info['home']
+            away = event_info['away']
+            commence_time_str = event_info['commence_time']
+            props_data = event_info['props_data']
 
             for bookmaker in props_data.get('bookmakers', []):
                 if bookmaker['key'] in ['fanduel', 'draftkings']:
