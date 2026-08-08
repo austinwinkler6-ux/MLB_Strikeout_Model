@@ -91,7 +91,7 @@ if STRIPE_SECRET_KEY:
 # complex Kelly-staking logic (tier ranges, odds dampening, workload/
 # confidence checks) a second time in a different language, where a
 # subtle real mistake could easily go unnoticed.
-from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv
+from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv, mm_today_str
 
 # Real, direct match to the exact same real constants mlb_app.py
 # already uses — must stay in sync if either ever changes.
@@ -404,6 +404,32 @@ async def confirm_checkout(request: Request, authorization: str = Header(default
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/billing-portal")
+async def billing_portal(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's create_stripe_billing_portal_url
+    — same real self-service flow, letting an active real subscriber
+    update payment method or cancel on their own, real Stripe-hosted
+    page, without needing you to do it manually on their behalf."""
+    _require_api_key(x_api_key)
+    user = _get_user_from_jwt(authorization)
+    if not STRIPE_SECRET_KEY or not supabase:
+        return {"error": "Stripe/Supabase isn't fully configured on this server."}
+    body = await request.json()
+    site_url = body.get("site_url")
+    if not site_url:
+        return {"error": "Missing real 'site_url' in request body."}
+    try:
+        res = supabase.table("subscriptions").select("stripe_customer_id").eq("user_id", user.id).execute()
+        row = res.data[0] if res.data else None
+        stripe_customer_id = row.get("stripe_customer_id") if row else None
+        if not stripe_customer_id:
+            return {"error": "No real Stripe customer on file yet — subscribe first."}
+        portal_session = stripe.billing_portal.Session.create(customer=stripe_customer_id, return_url=site_url)
+        return {"portal_url": portal_session.url}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _sanitize_nan(v):
     """Real, direct match to mlb_app.py's own sanitization — a real,
     genuine NaN float breaks JSON encoding ('Out of range float values
@@ -435,6 +461,36 @@ async def get_user_settings_endpoint(authorization: str = Header(default=None), 
         return {"starting_bankroll": None, "risk_style": None}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.post("/api/user-settings")
+async def save_user_settings_endpoint(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Real, direct port of mlb_app.py's save_user_settings — same real
+    reset_baseline behavior (True sets a real, new baseline dated
+    today; False leaves the existing real baseline/date untouched, so
+    a real risk-style-only change or a real fund adjustment doesn't
+    silently wipe out accumulated real profit-tracking history)."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    user = _get_user_from_jwt(authorization)
+    body = await request.json()
+    starting_bankroll = body.get("starting_bankroll")
+    risk_style = body.get("risk_style")
+    reset_baseline = body.get("reset_baseline", True)
+    try:
+        payload = {
+            "user_id": user.id,
+            "starting_bankroll": starting_bankroll,
+            "risk_style": risk_style,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if reset_baseline:
+            payload["bankroll_set_date"] = mm_today_str()
+        supabase.table("user_settings").upsert(payload, on_conflict="user_id").execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/mm-stake")
