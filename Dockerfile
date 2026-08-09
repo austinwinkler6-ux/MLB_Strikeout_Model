@@ -10,6 +10,14 @@ FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
 
 WORKDIR /app
 
+# Real, deliberate addition — this base image already has the real
+# Chromium browser and every real system dependency baked in (the
+# genuinely slow, expensive part), but NOT the playwright Python
+# package itself pre-installed into the default environment. This
+# install is fast (a few seconds), unlike the browser/system-deps
+# install this whole Dockerfile exists to avoid.
+RUN pip install playwright
+
 COPY warm_cache.py .
 
 CMD ["python", "warm_cache.py"]
