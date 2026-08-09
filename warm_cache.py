@@ -105,6 +105,26 @@ def warm_cache():
             _log("Navigating to the real, live site...")
             page.goto(app_url, timeout=60_000, wait_until="networkidle")
 
+            # Real fix (August 2026, per direct user report — the
+            # warm-up run timing out waiting for the email field right
+            # after a real, fresh Streamlit redeploy). Streamlit
+            # Community Cloud shows a real "Zzz... this app has gone
+            # to sleep" screen with a real wake-up button for any app
+            # that's been freshly deployed or had no recent real
+            # traffic — the real login form never renders until that
+            # button is clicked and the real app finishes rebuilding,
+            # which can genuinely take well over the real 30s this
+            # script used to wait. Best-effort: click it if present,
+            # then give the real rebuild real, generous time.
+            try:
+                wake_button = page.get_by_text("get this app back up", exact=False)
+                if wake_button.is_visible(timeout=5_000):
+                    _log("App appears to be asleep — clicking to wake it up...")
+                    wake_button.click()
+                    page.wait_for_timeout(3_000)
+            except Exception:
+                pass  # no real wake-up screen present — a normally-awake app, proceed as before
+
             # Real, best-effort login flow — targets Streamlit's own
             # real, standard aria-label convention for st.text_input
             # widgets (the label text you gave each field: "Email" and
@@ -114,7 +134,7 @@ def warm_cache():
             # thing to need adjusting — see the troubleshooting notes
             # at the bottom of this file.
             _log("Logging in...")
-            page.wait_for_selector('input[aria-label="Email"]', timeout=30_000)
+            page.wait_for_selector('input[aria-label="Email"]', timeout=120_000)
             page.fill('input[aria-label="Email"]', login_email)
             page.fill('input[aria-label="Password"]', login_password)
 
