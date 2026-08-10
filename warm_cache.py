@@ -64,6 +64,7 @@ at the bottom of this file for how to debug that quickly.
 import os
 import sys
 import time
+import threading
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -75,6 +76,34 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # This should be long enough to comfortably cover a real, full cold
 # run without giving up early and leaving some sports un-warmed.
 MAX_WAIT_SECONDS = 600  # 10 real minutes
+
+# Real, hard, UNCONDITIONAL ceiling on the entire real script — added
+# (August 2026, per direct user report — a real, full day of failed
+# runs, traced to real Railway memory graphs showing ONE run's memory
+# staying flat and steady for HOURS, never dropping to zero: the real
+# process was genuinely stuck, not crashed). Every individual real
+# timeout in this script (page.goto, wait_for_selector, etc.) is only
+# as reliable as Playwright's own internal handling of it — if the
+# real underlying browser process itself gets into a bad, unresponsive
+# state, those real timeouts can fail to fire at all. Since Railway
+# real cron jobs skip a new scheduled run entirely while a real
+# real previous one is still active, ONE real stuck run silently blocks
+# EVERY real subsequent scheduled run until someone notices — exactly
+# what happened here. This watchdog guarantees the real process
+# ALWAYS exits within this real ceiling, no matter what.
+HARD_KILL_SECONDS = 1200  # 20 real minutes — comfortably covers a real, full worst-case cold run (chromium install + wake-up + login wait + the full MAX_WAIT_SECONDS model wait above), while still being far under the real 2-hour gap between scheduled runs
+
+
+def _hard_kill_watchdog():
+    """Runs on a real, separate real background thread — if the real
+    main thread hasn't finished (and exited normally) within
+    HARD_KILL_SECONDS, this force-terminates the whole real process
+    immediately via os._exit(1), which cannot be blocked or ignored by
+    anything stuck in the main thread (unlike a normal Python
+    exception, which a real hang wouldn't even be alive to catch)."""
+    time.sleep(HARD_KILL_SECONDS)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ HARD KILL — real script exceeded {HARD_KILL_SECONDS}s without exiting normally. Force-terminating so this real run can never block future scheduled runs.", flush=True)
+    os._exit(1)
 
 
 def _log(message):
@@ -197,6 +226,14 @@ def warm_cache():
 
 
 if __name__ == "__main__":
+    # Real, deliberate placement — starts BEFORE the actual real
+    # warm-up work, so the real hard-kill ceiling covers the ENTIRE
+    # real run from the very first line, not just part of it. A real
+    # daemon thread so it can never itself prevent the real process
+    # from exiting normally and promptly on a real, successful run.
+    watchdog = threading.Thread(target=_hard_kill_watchdog, daemon=True)
+    watchdog.start()
+
     warm_cache()
 
 
