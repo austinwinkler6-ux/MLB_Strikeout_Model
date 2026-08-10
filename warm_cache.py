@@ -68,6 +68,12 @@ import threading
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+try:
+    from supabase import create_client
+    _SUPABASE_AVAILABLE = True
+except ImportError:
+    _SUPABASE_AVAILABLE = False
+
 
 # Real, generous timeout for the FULL warm-up — a genuinely cold cache
 # across every sport (MLB, both NBA models, all 3 NFL models, LoL) can
@@ -112,6 +118,35 @@ def _log(message):
     should be clearly, honestly logged for debugging a real failed run
     later, without needing to guess what happened."""
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+def _upload_debug_screenshot(page, label):
+    """Real, new addition (August 2026, per direct user report — a
+    real, multi-round debugging cycle based purely on real log text,
+    with several real guesses that didn't pan out). Takes a real
+    screenshot of whatever the real page actually looks like right
+    now and uploads it to a real Supabase Storage bucket, giving real,
+    direct visual evidence of the real failure instead of continuing
+    to guess from real log text alone. Best-effort — a real failure
+    here should never mask or replace the real, original error."""
+    if not _SUPABASE_AVAILABLE:
+        _log("⚠️ Can't upload a debug screenshot — the 'supabase' package isn't installed in this environment.")
+        return
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        _log("⚠️ Can't upload a debug screenshot — SUPABASE_URL/SUPABASE_KEY aren't set on this service.")
+        return
+    try:
+        screenshot_bytes = page.screenshot(full_page=True)
+        filename = f"{label}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+        client = create_client(supabase_url, supabase_key)
+        client.storage.from_("debug-screenshots").upload(
+            filename, screenshot_bytes, {"content-type": "image/png"}
+        )
+        _log(f"📸 Real debug screenshot uploaded — check the 'debug-screenshots' bucket in Supabase Storage for: {filename}")
+    except Exception as e:
+        _log(f"⚠️ Real error trying to upload a debug screenshot: {e}")
 
 
 def warm_cache():
@@ -167,7 +202,20 @@ def warm_cache():
             # thing to need adjusting — see the troubleshooting notes
             # at the bottom of this file.
             _log("Logging in...")
-            page.wait_for_selector('input[aria-label="Email"]', timeout=280_000)
+            _upload_debug_screenshot(page, "before_login_wait")
+
+            try:
+                page.wait_for_selector('input[aria-label="Email"]', timeout=90_000)
+            except PlaywrightTimeoutError:
+                # Real, deliberate mid-wait checkpoint — a real
+                # screenshot here specifically, BEFORE the full real
+                # timeout below, since every real failure so far has
+                # happened somewhere in this exact real wait, and this
+                # is real, direct visual proof of what's actually on
+                # screen partway through it — not just at the very end.
+                _log("Still waiting for the login form 90s in — capturing a real mid-wait screenshot...")
+                _upload_debug_screenshot(page, "mid_login_wait")
+                page.wait_for_selector('input[aria-label="Email"]', timeout=190_000)
             page.fill('input[aria-label="Email"]', login_email)
             page.fill('input[aria-label="Password"]', login_password)
 
@@ -217,6 +265,7 @@ def warm_cache():
 
         except Exception as e:
             _log(f"❌ Real error during warm-up run: {e}")
+            _upload_debug_screenshot(page, "on_exception")
             # Real, non-zero exit so Railway's own Cron Job dashboard
             # correctly shows this run as failed, rather than silently
             # looking successful.
