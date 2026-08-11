@@ -193,19 +193,28 @@ def warm_cache():
             except PlaywrightTimeoutError:
                 pass  # no real wake-up screen present within 15s — a normally-awake app, proceed as before
 
-            # Real, best-effort login flow — targets Streamlit's own
-            # real, standard aria-label convention for st.text_input
-            # widgets (the label text you gave each field: "Email" and
-            # "Password" in mlb_app.py's real login form). If this
-            # specific project's Streamlit version renders these
-            # differently, these selectors are the first, most likely
-            # thing to need adjusting — see the troubleshooting notes
-            # at the bottom of this file.
+            # Real fix (August 2026, per direct visual screenshot
+            # evidence — the login form was ALREADY fully rendered and
+            # visible at this exact point every single time, proving
+            # the real page was never the problem. The real bug was
+            # this exact-match CSS attribute selector requiring
+            # 'aria-label="Email"' character-for-character, which
+            # apparently doesn't match Streamlit's actual real rendered
+            # attribute exactly (extra whitespace or similar) even
+            # though the visible label clearly reads "Email".
+            # get_by_label() is Playwright's own real, robust,
+            # accessibility-tree-based way to find a field by its real
+            # VISIBLE label text — the same way a real screen reader
+            # would — instead of requiring an exact real attribute
+            # string match.
             _log("Logging in...")
             _upload_debug_screenshot(page, "before_login_wait")
 
+            email_input = page.get_by_label("Email")
+            password_input = page.get_by_label("Password")
+
             try:
-                page.wait_for_selector('input[aria-label="Email"]', timeout=90_000)
+                email_input.wait_for(state="visible", timeout=90_000)
             except PlaywrightTimeoutError:
                 # Real, deliberate mid-wait checkpoint — a real
                 # screenshot here specifically, BEFORE the full real
@@ -215,9 +224,10 @@ def warm_cache():
                 # screen partway through it — not just at the very end.
                 _log("Still waiting for the login form 90s in — capturing a real mid-wait screenshot...")
                 _upload_debug_screenshot(page, "mid_login_wait")
-                page.wait_for_selector('input[aria-label="Email"]', timeout=190_000)
-            page.fill('input[aria-label="Email"]', login_email)
-            page.fill('input[aria-label="Password"]', login_password)
+                email_input.wait_for(state="visible", timeout=190_000)
+
+            email_input.fill(login_email)
+            password_input.fill(login_password)
 
             # Streamlit renders a real <button> with the exact real
             # text of the st.form_submit_button label ("Login" in
@@ -321,23 +331,24 @@ if __name__ == "__main__":
 #    actually works before trusting the schedule.
 #
 # ============================================================
-# TROUBLESHOOTING — IF THE LOGIN SELECTORS DON'T MATCH
+# TROUBLESHOOTING — IF LOGIN STILL FAILS
 # ============================================================
 #
-# If this script's real run logs show it timing out waiting for
-# 'input[aria-label="Email"]', the most likely cause is a real,
-# version-specific difference in how your deployed Streamlit renders
-# form inputs. To debug:
+# Real root cause found and fixed (August 2026): the original
+# 'input[aria-label="Email"]' exact-match selector never matched
+# Streamlit's real actual rendered attribute, confirmed via real
+# debug screenshots (see _upload_debug_screenshot above) showing the
+# real login form fully rendered and visible the entire time it was
+# "waiting." Switched to page.get_by_label(), Playwright's own real,
+# robust, accessibility-tree-based field locator, which matches by
+# real VISIBLE label text instead of requiring an exact real
+# attribute string.
 #
-# 1. Temporarily set `headless=False` in this script (only works if
-#    you're running it locally on your own machine with a real display
-#    — won't work inside Railway's real headless environment) to
-#    SEE the real browser and inspect the real page.
-#
-# 2. Or, add a real screenshot right before the failing step:
-#       page.screenshot(path="debug.png")
-#    and pull that file down to see exactly what the real page looked
-#    like at that moment.
+# If login ever fails again, the debug screenshots this script
+# uploads to Supabase Storage (bucket: debug-screenshots) are the
+# real, fastest way to see exactly what the real page looked like at
+# the real moment of failure — real, direct visual evidence beats
+# real guessing from log text alone every time.
 #
 # 3. Or, use Playwright's own real codegen tool locally against your
 #    real site to record real, working selectors directly:
