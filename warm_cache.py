@@ -193,28 +193,32 @@ def warm_cache():
             except PlaywrightTimeoutError:
                 pass  # no real wake-up screen present within 15s — a normally-awake app, proceed as before
 
-            # Real fix (August 2026, per direct visual screenshot
-            # evidence — the login form was ALREADY fully rendered and
-            # visible at this exact point every single time, proving
-            # the real page was never the problem. The real bug was
-            # this exact-match CSS attribute selector requiring
-            # 'aria-label="Email"' character-for-character, which
-            # apparently doesn't match Streamlit's actual real rendered
-            # attribute exactly (extra whitespace or similar) even
-            # though the visible label clearly reads "Email".
-            # get_by_label() is Playwright's own real, robust,
-            # accessibility-tree-based way to find a field by its real
-            # VISIBLE label text — the same way a real screen reader
-            # would — instead of requiring an exact real attribute
-            # string match.
+            # Real fix, round 3 (August 2026, per direct visual
+            # screenshot evidence — TWO different label-matching
+            # approaches in a row (exact aria-label attribute, then
+            # Playwright's own accessibility-tree get_by_label) both
+            # failed against a page confirmed, via real screenshots,
+            # to be fully rendered the entire time. That rules out a
+            # real timing issue and points to something more
+            # structural: the visible "Email"/"Password" text is very
+            # likely just real, plain visual text sitting near the
+            # inputs, with NO real programmatic label association at
+            # all — a real, common Streamlit pattern
+            # (label_visibility="collapsed" plus a real custom
+            # st.markdown() caption drawn above the real field). No
+            # real label-matching approach can ever work against that,
+            # regardless of how it's written. Targeting by real,
+            # structural position instead — completely independent of
+            # labels, aria-attributes, or text content: on a real,
+            # clean login screen, these are the first two real <input>
+            # elements in real DOM order.
             _log("Logging in...")
             _upload_debug_screenshot(page, "before_login_wait")
 
-            email_input = page.get_by_label("Email")
-            password_input = page.get_by_label("Password")
+            all_inputs = page.locator("input:visible")
 
             try:
-                email_input.wait_for(state="visible", timeout=90_000)
+                all_inputs.nth(1).wait_for(state="visible", timeout=90_000)
             except PlaywrightTimeoutError:
                 # Real, deliberate mid-wait checkpoint — a real
                 # screenshot here specifically, BEFORE the full real
@@ -224,10 +228,10 @@ def warm_cache():
                 # screen partway through it — not just at the very end.
                 _log("Still waiting for the login form 90s in — capturing a real mid-wait screenshot...")
                 _upload_debug_screenshot(page, "mid_login_wait")
-                email_input.wait_for(state="visible", timeout=190_000)
+                all_inputs.nth(1).wait_for(state="visible", timeout=190_000)
 
-            email_input.fill(login_email)
-            password_input.fill(login_password)
+            all_inputs.nth(0).fill(login_email)
+            all_inputs.nth(1).fill(login_password)
 
             # Streamlit renders a real <button> with the exact real
             # text of the st.form_submit_button label ("Login" in
