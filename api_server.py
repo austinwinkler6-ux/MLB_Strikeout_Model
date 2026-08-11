@@ -91,7 +91,7 @@ if STRIPE_SECRET_KEY:
 # complex Kelly-staking logic (tier ranges, odds dampening, workload/
 # confidence checks) a second time in a different language, where a
 # subtle real mistake could easily go unnoticed.
-from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv, mm_today_str
+from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv, mm_today_str, generate_why
 
 # Real, direct match to the exact same real constants mlb_app.py
 # already uses — must stay in sync if either ever changes.
@@ -149,7 +149,17 @@ def _get_player_prop_picks(sport_key):
     picks = []
     for e in entries:
         info = e.get("info") or {}
+        result = e.get("result") or {}
         is_over = e.get("play") and "OVER" in str(e.get("play")).upper()
+        direction = "over" if is_over else "under"
+        # Real, direct reuse of the exact same "why this bet" logic
+        # mlb_app.py itself uses — computed here, once, server-side,
+        # rather than asking the Next.js site to reimplement any of
+        # this real betting logic in a second language.
+        try:
+            why_lines = generate_why(info, result, direction, sport_key)
+        except Exception:
+            why_lines = []
         picks.append({
             "player": e.get("name"),
             "sport": e.get("sport_label"),
@@ -165,11 +175,13 @@ def _get_player_prop_picks(sport_key):
             "mm_tier": e.get("tier"),
             "confidence_level": info.get("Confidence Level"),
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
-            # Real, raw info dict — needed as-is by /api/mm-stake to
-            # compute a real stake recommendation for this exact real
+            "why_lines": why_lines,
+            # Real, raw info/result dicts — needed as-is by /api/mm-stake
+            # to compute a real stake recommendation for this exact real
             # pick, without needing this endpoint to guess at which
             # fields matter.
             "_raw_info": info,
+            "_raw_result": result,
         })
     picks.sort(key=lambda p: p.get("ev_pct") or -999, reverse=True)
     return picks, row.get("updated_at")
