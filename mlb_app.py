@@ -29,6 +29,12 @@ from bet_math import (
     calculate_mm_stake, get_stake_deviation_pct, format_stake_deviation_message,
     mm_today_str, RISK_STYLE_CAPS, RISK_STYLE_RANGE_MULTIPLIER,
     TIER_STAKE_RANGES, STAKE_DEVIATION_PERFECT_THRESHOLD,
+    # Real, moved here (August 2026) so api_server.py can call the exact
+    # same real "why this bet" / workload-evidence logic this app uses,
+    # with zero real risk of the two products' explanations drifting
+    # apart over time. Behavior is completely unchanged — same real
+    # functions, just imported instead of defined locally.
+    fmt_odds, workload_evidence_line, generate_why,
 )
 
 # Real fix (July 2026) — nflreadpy's default download timeout is 30
@@ -285,43 +291,9 @@ def short_tier_label(tier_text):
         return "🔴 Uncertain"
     return tier_text
 
-def workload_evidence_line(result):
-    """Builds the strongest available one-line workload explanation from real
-    numbers, instead of just describing which rule fired. Deliberately does NOT
-    guess at a cause (injury, demotion, call-up, workload management, etc.) —
-    we have no data on why a workload changed, only that it did, so the wording
-    stays descriptive rather than diagnostic."""
-    if not result:
-        return None
-    workload_tier = result.get('workload_tier')
-    if not workload_tier:
-        return None
-
-    season_avg_ip = result.get('season_avg_ip')
-    last5_avg_ip = result.get('last5_avg_ip')
-    expected_innings = result.get('expected_innings')
-    recent_5ip_count = result.get('recent_5ip_starts_count')
-
-    if "Stable" in workload_tier:
-        if recent_5ip_count is not None and recent_5ip_count >= 3 and last5_avg_ip is not None and season_avg_ip is not None:
-            return f"✅ {recent_5ip_count} of his last 5 starts have gone 5+ IP — averaging **{last5_avg_ip} IP** over that stretch, in line with his **{season_avg_ip} IP** season average"
-        elif season_avg_ip is not None:
-            return f"✅ Workhorse role — averaging **{season_avg_ip} IP** across the season"
-    elif "Changing" in workload_tier:
-        if last5_avg_ip is not None and season_avg_ip is not None and last5_avg_ip < season_avg_ip - 0.5:
-            gap = round(season_avg_ip - last5_avg_ip, 1)
-            return f"⚠️ Workload running below season norm — averaging **{last5_avg_ip} IP** over his last 5 starts vs **{season_avg_ip} IP** season average ({gap} IP short)"
-        elif expected_innings is not None:
-            return f"⚠️ Workload trending inconsistent — model expects **{expected_innings} IP** tonight"
-    else:
-        if last5_avg_ip is not None and season_avg_ip is not None:
-            gap = round(abs(season_avg_ip - last5_avg_ip), 1)
-            direction = "below" if last5_avg_ip < season_avg_ip else "above"
-            return f"❌ Role remains unsettled — last 5 starts averaging **{last5_avg_ip} IP**, {gap} IP {direction} his season norm"
-        elif expected_innings is not None:
-            return f"❌ Role remains unsettled — model expects only **{expected_innings} IP** tonight"
-
-    return None
+# Real, moved to bet_math.py (August 2026) so api_server.py can call the
+# exact same real logic — imported at the top of this file now instead
+# of defined here. Behavior unchanged.
 
 ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
 ADMIN_EMAIL = "austinwinkler6@icloud.com"
@@ -595,205 +567,9 @@ def _lol_pill(text, kind="neutral"):
     return f"<span class='mm-badge mm-badge-{kind}' style='margin-right:6px; margin-bottom:4px; display:inline-block;'>{text}</span>"
 
 
-def generate_why(info, result, direction, sport='mlb_strikeouts'):
-    lines = []
-    proj = info.get('Projection')
-    line = info.get('FanDuel Line') or info.get('DraftKings Line')
-    over_odds = info.get('FanDuel Over') or info.get('DraftKings Over')
-    under_odds = info.get('FanDuel Under') or info.get('DraftKings Under')
-    odds = over_odds if direction == 'over' else under_odds
-    model_prob = info.get('Model Prob')
-    no_vig_prob = info.get('No Vig Prob')
-    ev_pct = info.get('EV%')
-    tier = info.get('Tier')
-
-    mm_tier = info.get('MM Tier')
-    pass_reason = info.get('Pass Reason')
-    confidence_level = info.get('Confidence Level')
-    if mm_tier == "🔴 Pass" and pass_reason:
-        lines.append(f"🔴 **Pass** — Reason: **{pass_reason}**")
-    elif mm_tier and confidence_level == "🔴 Low":
-        lines.append(f"{mm_tier} · Confidence: **{confidence_level}**")
-
-    if proj and line:
-        diff = round(proj - line, 1)
-        if direction == 'over':
-            icon = "✅" if diff > 0 else "⚠️"
-            lines.append(f"{icon} Model projects **{proj}** vs book line of **{line}** ({'+'if diff>0 else ''}{diff} edge)")
-        else:
-            diff_under = round(line - proj, 1)
-            icon = "✅" if diff_under > 0 else "⚠️"
-            lines.append(f"{icon} Model projects **{proj}** vs book line of **{line}** ({'+'if diff_under>0 else ''}{diff_under} under edge)")
-
-    if odds:
-        if odds > 0:
-            lines.append(f"✅ Book offering **+{odds}** — plus-money on this side")
-        elif odds >= -115:
-            lines.append(f"✅ Book offering **{odds}** — near even money, reasonable")
-        elif odds >= -130:
-            lines.append(f"⚠️ Book offering **{odds}** — moderate juice")
-        else:
-            lines.append(f"⚠️ Book offering **{odds}** — heavy juice, higher break-even needed")
-
-    fair_odds = info.get('Fair Odds')
-    edge_cents = info.get('Edge Cents')
-    if odds and fair_odds is not None and edge_cents is not None:
-        icon = "✅" if edge_cents > 0 else ("⚠️" if edge_cents == 0 else "❌")
-        lines.append(f"{icon} Market Odds: **{fmt_odds(odds)}** → Fair Odds: **{fmt_odds(fair_odds)}** ({'+' if edge_cents > 0 else ''}{edge_cents} cents edge)")
-
-    if no_vig_prob and model_prob:
-        no_vig_pct = round(no_vig_prob * 100, 1)
-        model_pct = round(model_prob * 100, 1)
-        prob_diff = round((model_prob - no_vig_prob) * 100, 1)
-        icon = "✅" if prob_diff > 3 else ("⚠️" if prob_diff > 0 else "❌")
-        lines.append(f"{icon} No-vig probability: **{no_vig_pct}%** → Model probability: **{model_pct}%** ({'+'if prob_diff>0 else ''}{prob_diff}% edge)")
-
-    raw_ev_pct = info.get('Raw EV%')
-    if ev_pct is not None:
-        if raw_ev_pct is not None and abs(raw_ev_pct - ev_pct) >= 3:
-            lines.append(f"⚠️ Raw EV: **+{raw_ev_pct}%** → Confidence-Adjusted EV: **{'+' if ev_pct >= 0 else ''}{ev_pct}%** — the price may be good, but the model doesn't trust the workload enough to fully credit it")
-        elif ev_pct >= 15:
-            lines.append(f"✅ EV: **+{ev_pct}%** — exceptional value")
-        elif ev_pct >= 10:
-            lines.append(f"✅ EV: **+{ev_pct}%** — strong value")
-        elif ev_pct >= 5:
-            lines.append(f"⚠️ EV: **+{ev_pct}%** — good value")
-        elif ev_pct > 0:
-            lines.append(f"⚠️ EV: **+{ev_pct}%** — slight edge")
-        else:
-            lines.append(f"❌ EV: **{ev_pct}%** — negative expected value")
-
-    if info.get('Low Confidence'):
-        lines.append("⚠️ **Low Confidence** — this projection carries very high variance. The EV above is calculated the same as any other prop, but treat it with caution and consider passing.")
-
-    if tier:
-        reliability_label = "Pitcher Reliability" if sport == 'mlb_strikeouts' else "Player Reliability"
-        if "Reliable" in tier:
-            lines.append(f"✅ {reliability_label}: **{tier}** — consistent performer, low variance")
-        elif "Volatile" in tier:
-            lines.append(f"⚠️ {reliability_label}: **{tier}** — results vary significantly game to game")
-        elif "Uncertain Workload" in tier:
-            lines.append(f"❌ {reliability_label}: **{tier}** — extremely high variance, use caution")
-
-    if result:
-        workload_tier = result.get('workload_tier')
-        expected_innings = result.get('expected_innings')
-        expected_minutes = result.get('expected_minutes')
-        if workload_tier:
-            if "Stable" in workload_tier:
-                icon = "✅"
-            elif "Changing" in workload_tier:
-                icon = "⚠️"
-            else:
-                icon = "❌"
-            if expected_innings is not None:
-                workload_note = f" — expected **{expected_innings} IP**"
-            elif expected_minutes is not None:
-                workload_note = f" — expected **{expected_minutes} MIN**"
-            else:
-                workload_note = ""
-            lines.append(f"{icon} Usage Workload: **{workload_tier}**{workload_note}")
-
-        evidence_line = workload_evidence_line(result)
-        if evidence_line:
-            lines.append(evidence_line)
-
-        def _dir_icon(factor_boosts_stat):
-            """✅ if this factor works in favor of the bet's actual direction, ⚠️ if against it."""
-            if direction == 'over':
-                return "✅" if factor_boosts_stat else "⚠️"
-            else:
-                return "⚠️" if factor_boosts_stat else "✅"
-
-        opp_factor = result.get('opp_factor')
-        if opp_factor:
-            # Always describes the matchup from the PITCHER's strikeout-
-            # friendliness (a high opponent K% is genuinely favorable for
-            # strikeouts, full stop) — the icon alone conveys whether
-            # that's good or bad news for THIS specific bet direction.
-            # The old version flipped "favorable"/"tougher" based on
-            # over/under, which read as backwards baseball intuition when
-            # taken out of that context (e.g. "Opponent K% is above
-            # average — tougher matchup" on an Under bet correctly meant
-            # "tougher for the Under," but reads like "tougher for the
-            # pitcher to get strikeouts," which is the opposite of true —
-            # caught in review, July 2026).
-            if opp_factor >= 1.05:
-                lines.append(f"{_dir_icon(True)} Opponent K% is **above average** — favorable matchup for strikeouts")
-            elif opp_factor <= 0.95:
-                lines.append(f"{_dir_icon(False)} Opponent K% is **below average** — tougher matchup for strikeouts")
-            else:
-                lines.append(f"➖ Opponent K% is near league average")
-
-        park_factor = result.get('park_factor')
-        if park_factor:
-            if park_factor >= 1.03:
-                lines.append(f"{_dir_icon(True)} Park factor **{park_factor}** — pitcher-friendly park")
-            elif park_factor <= 0.97:
-                lines.append(f"{_dir_icon(False)} Park factor **{park_factor}** — hitter-friendly park")
-
-        umpire_factor = result.get('umpire_factor')
-        umpire_name = result.get('umpire_name')
-        if umpire_factor and umpire_name:
-            if umpire_factor >= 1.02:
-                lines.append(f"{_dir_icon(True)} Umpire **{umpire_name}** has a larger strike zone — boosts K rate")
-            elif umpire_factor <= 0.98:
-                lines.append(f"{_dir_icon(False)} Umpire **{umpire_name}** has a tighter strike zone — hurts K rate")
-
-        lineup_factor = result.get('lineup_factor')
-        if lineup_factor:
-            if lineup_factor >= 0.24:
-                lines.append(f"{_dir_icon(True)} Today's lineup K% is **above average** — {'favorable' if direction == 'over' else 'tougher'}")
-            elif lineup_factor <= 0.20:
-                lines.append(f"{_dir_icon(False)} Today's lineup K% is **below average** — {'tougher' if direction == 'over' else 'favorable'}")
-
-        if sport in ('nba_points', 'nba_assists'):
-            opp_pace = result.get('opp_pace')
-            if opp_pace:
-                if opp_pace >= league_avg_pace + 2:
-                    lines.append(f"{_dir_icon(True)} Opponent pace **{opp_pace}** — faster pace, more possessions")
-                elif opp_pace <= league_avg_pace - 2:
-                    lines.append(f"{_dir_icon(False)} Opponent pace **{opp_pace}** — slower pace, fewer possessions")
-                else:
-                    lines.append(f"➖ Opponent pace **{opp_pace}** — near league average")
-
-            rest_adj = result.get('rest_adj')
-            days_rest = result.get('days_rest')
-            if rest_adj:
-                icon = _dir_icon(rest_adj > 0)
-                rest_note = f" ({days_rest} days rest)" if days_rest is not None else ""
-                lines.append(f"{icon} Rest adjustment **{rest_adj:+}**{rest_note}")
-
-            if sport == 'nba_points':
-                opp_def_rating = result.get('opp_def_rating')
-                if opp_def_rating:
-                    if opp_def_rating >= league_avg_def_rating + 2:
-                        lines.append(f"{_dir_icon(True)} Opponent defensive rating **{opp_def_rating}** — weaker defense, {'favorable' if direction == 'over' else 'tougher'} matchup")
-                    elif opp_def_rating <= league_avg_def_rating - 2:
-                        lines.append(f"{_dir_icon(False)} Opponent defensive rating **{opp_def_rating}** — stronger defense, {'tougher' if direction == 'over' else 'favorable'} matchup")
-
-                usage_adj = result.get('usage_adj')
-                if usage_adj:
-                    icon = _dir_icon(usage_adj > 0)
-                    lines.append(f"{icon} Usage adjustment **{usage_adj:+}** based on recent shot volume")
-
-            elif sport == 'nba_assists':
-                ast_pct_adj = result.get('ast_pct_adj')
-                if ast_pct_adj:
-                    icon = _dir_icon(ast_pct_adj > 0)
-                    lines.append(f"{icon} Assist rate adjustment **{ast_pct_adj:+}** based on playmaking usage")
-
-                potential_ast_adj = result.get('potential_ast_adj')
-                if potential_ast_adj:
-                    icon = _dir_icon(potential_ast_adj > 0)
-                    lines.append(f"{icon} Potential-assists tracking adjustment **{potential_ast_adj:+}**")
-
-                opp_ast_adj = result.get('opp_ast_adj')
-                if opp_ast_adj:
-                    icon = _dir_icon(opp_ast_adj > 0)
-                    lines.append(f"{icon} Opponent assists-allowed adjustment **{opp_ast_adj:+}**")
-
-    return lines
+# Real, moved to bet_math.py (August 2026) so api_server.py can call the
+# exact same real "why this bet" logic — imported at the top of this
+# file now instead of defined here. Behavior unchanged.
 
 def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction='over', sport='mlb_strikeouts', workload_tier=None, confidence_tier=None):
     if not over_odds or not under_odds:
@@ -2584,10 +2360,8 @@ def get_pitcher_game_info(pitcher_name, game_date=None):
         log_failure_reason('MISSING_PLAYER_MATCH', f"get_pitcher_game_info({pitcher_name}): {e}")
     return None, None, None
 
-def fmt_odds(o):
-    if o is None:
-        return 'N/A'
-    return f"+{o}" if o > 0 else str(o)
+# fmt_odds moved to bet_math.py (August 2026) — imported at the top of
+# this file now instead of defined here. Behavior unchanged.
 
 def get_starters_for_date(game_date_str):
     try:
