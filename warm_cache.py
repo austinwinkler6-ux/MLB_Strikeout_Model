@@ -193,50 +193,84 @@ def warm_cache():
             except PlaywrightTimeoutError:
                 pass  # no real wake-up screen present within 15s — a normally-awake app, proceed as before
 
-            # Real fix, round 3 (August 2026, per direct visual
-            # screenshot evidence — TWO different label-matching
-            # approaches in a row (exact aria-label attribute, then
-            # Playwright's own accessibility-tree get_by_label) both
-            # failed against a page confirmed, via real screenshots,
-            # to be fully rendered the entire time. That rules out a
-            # real timing issue and points to something more
-            # structural: the visible "Email"/"Password" text is very
-            # likely just real, plain visual text sitting near the
-            # inputs, with NO real programmatic label association at
-            # all — a real, common Streamlit pattern
-            # (label_visibility="collapsed" plus a real custom
-            # st.markdown() caption drawn above the real field). No
-            # real label-matching approach can ever work against that,
-            # regardless of how it's written. Targeting by real,
-            # structural position instead — completely independent of
-            # labels, aria-attributes, or text content: on a real,
-            # clean login screen, these are the first two real <input>
-            # elements in real DOM order.
+            # Real fix, round 4 (August 2026, per direct visual
+            # screenshot evidence — THREE different targeting
+            # approaches in a row (exact aria-label attribute,
+            # Playwright's accessibility-tree get_by_label, and raw
+            # positional visible-input matching) ALL failed against a
+            # page confirmed, via real screenshots, to be fully
+            # rendered the entire time. That rules out both a real
+            # timing issue and a real label-association issue, and
+            # points to something more fundamental: these real inputs
+            # are very likely rendered inside a real <iframe> —
+            # Streamlit's own real widget architecture uses this for
+            # some real component types. Playwright's real page.locator()
+            # ONLY searches the real main frame by default and will
+            # NEVER find elements inside a real nested iframe, no
+            # matter how the selector is written — explaining every
+            # real failure mode tonight. Searching every real frame on
+            # the real page instead of assuming the main one, with
+            # real diagnostic logging so this is confirmed either way,
+            # not guessed at again.
             _log("Logging in...")
             _upload_debug_screenshot(page, "before_login_wait")
 
-            all_inputs = page.locator("input:visible")
+            def _find_login_frame():
+                """Real helper — checks every real frame on the real
+                page (main frame first, then any real iframes) and
+                returns the first one with at least 2 real visible
+                <input> elements, logging real counts along the way."""
+                frames = page.frames
+                _log(f"Found {len(frames)} real frame(s) on the page.")
+                for i, frame in enumerate(frames):
+                    try:
+                        count = frame.locator("input:visible").count()
+                    except Exception:
+                        count = 0
+                    _log(f"  Frame {i} ({frame.url[:80]}): {count} real visible input(s)")
+                    if count >= 2:
+                        return frame
+                return None
 
-            try:
-                all_inputs.nth(1).wait_for(state="visible", timeout=90_000)
-            except PlaywrightTimeoutError:
-                # Real, deliberate mid-wait checkpoint — a real
-                # screenshot here specifically, BEFORE the full real
-                # timeout below, since every real failure so far has
-                # happened somewhere in this exact real wait, and this
-                # is real, direct visual proof of what's actually on
-                # screen partway through it — not just at the very end.
-                _log("Still waiting for the login form 90s in — capturing a real mid-wait screenshot...")
+            login_frame = None
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                login_frame = _find_login_frame()
+                if login_frame:
+                    break
+                page.wait_for_timeout(3_000)
+
+            if not login_frame:
+                _log("Still no frame with 2+ inputs 90s in — capturing a real mid-wait screenshot...")
                 _upload_debug_screenshot(page, "mid_login_wait")
-                all_inputs.nth(1).wait_for(state="visible", timeout=190_000)
+                deadline = time.time() + 190
+                while time.time() < deadline:
+                    login_frame = _find_login_frame()
+                    if login_frame:
+                        break
+                    page.wait_for_timeout(3_000)
 
+            if not login_frame:
+                raise RuntimeError("No frame with 2+ real visible inputs found after the full real wait.")
+
+            all_inputs = login_frame.locator("input:visible")
             all_inputs.nth(0).fill(login_email)
             all_inputs.nth(1).fill(login_password)
 
             # Streamlit renders a real <button> with the exact real
             # text of the st.form_submit_button label ("Login" in
-            # mlb_app.py's real login form).
-            page.click('button:has-text("Login")')
+            # mlb_app.py's real login form) — searched the same real
+            # way, across every real frame, for the same real reason.
+            login_button = None
+            for frame in page.frames:
+                btn = frame.locator('button:has-text("Login")')
+                if btn.count() > 0:
+                    login_button = btn.first
+                    break
+            if login_button:
+                login_button.click()
+            else:
+                raise RuntimeError("No real 'Login' button found in any real frame.")
 
             # Real, honest wait for the real login + initial Home page
             # render to settle before the real auto-run kicks off.
