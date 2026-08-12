@@ -273,39 +273,6 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
             stake_units *= 1.15
             reasoning.append("Exceptional EV increased stake")
 
-    # Real fix (August 2026, per direct user report — "make it so that
-    # I am not max betting on a +3000 odds play just because it has
-    # such good EV"). A real, well-known Kelly-criterion pitfall: at
-    # extreme underdog odds, the decimal-odds payout multiplier
-    # dominates the Kelly fraction's math — a real, honest but modest
-    # overestimate in model_prob (say, 20% true vs 25% modeled) barely
-    # matters at typical odds, but at +3000 that same-sized error
-    # inflates the apparent edge enormously, since Kelly's formula
-    # scales with the payout, not just the probability gap. The
-    # model's real confidence at these extremes is genuinely shakier
-    # than at ordinary odds (less real historical data at this
-    # precision, more room for a small miscalibration to look like a
-    # huge edge).
-    #
-    # Real fix (round 2, August 2026, per direct user report — a real,
-    # live example: a +506 LPL underdog still landed at the tier's own
-    # $35 FLOOR even with round 1's dampener applied, since that
-    # dampener originally ran BEFORE the tier_min/tier_max clamp below
-    # and couldn't push below it. Odds-driven risk (payout variance,
-    # real model uncertainty at extreme prices) is a genuinely
-    # DIFFERENT real dimension than confidence-tier risk (signal
-    # strength) — this now runs as the real, FINAL word, after every
-    # other real adjustment including the tier floor itself (see
-    # further below), so extreme real odds can override even a "Best
-    # Bet" tier's own minimum. Real, direct target set by the user: a
-    # +500 underdog should land around $15-20, not $50+. Confirmed
-    # real reasoning: LoL runs far more real games per day than MLB/
-    # NBA/NFL, and most of its real value picks skew toward real
-    # underdogs — a bettor following these real recommendations is
-    # realistically stacking several real underdog stakes on the same
-    # real day, so each individual real stake needs to be meaningfully
-    # smaller.
-
     # Modifiers can nudge within the tier's range, but never push outside it —
     # the tier's judgment is the outer boundary, not just a starting point.
     stake_units = max(tier_min, min(tier_max, stake_units))
@@ -552,51 +519,51 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
             else:
                 return "⚠️" if factor_boosts_stat else "✅"
 
-        opp_factor = result.get('opp_factor')
-        if opp_factor:
-            # Always describes the matchup from the PITCHER's strikeout-
-            # friendliness (a high opponent K% is genuinely favorable for
-            # strikeouts, full stop) — the icon alone conveys whether
-            # that's good or bad news for THIS specific bet direction.
-            # The old version flipped "favorable"/"tougher" based on
-            # over/under, which read as backwards baseball intuition when
-            # taken out of that context (e.g. "Opponent K% is above
-            # average — tougher matchup" on an Under bet correctly meant
-            # "tougher for the Under," but reads like "tougher for the
-            # pitcher to get strikeouts," which is the opposite of true —
-            # caught in review, July 2026).
-            if opp_factor >= 1.05:
-                lines.append(f"{_dir_icon(True)} Opponent K% is **above average** — favorable matchup for strikeouts")
-            elif opp_factor <= 0.95:
-                lines.append(f"{_dir_icon(False)} Opponent K% is **below average** — tougher matchup for strikeouts")
-            else:
-                lines.append(f"➖ Opponent K% is near league average")
+        # ---- MLB-SPECIFIC FACTORS ----
+        # Real fix (August 2026) — gated to MLB only. Previously the
+        # opp_factor block was ungated, which meant NFL's own, different
+        # opp_factor (opponent pass funnel, not opponent K%) would
+        # incorrectly produce "Opponent K% is above average" text for
+        # NFL picks. park_factor/umpire_factor/lineup_factor naturally
+        # only fire for MLB (only MLB results have those fields), but
+        # opp_factor exists in both MLB and NFL results.
+        if sport == 'mlb_strikeouts':
+            opp_factor = result.get('opp_factor')
+            if opp_factor:
+                if opp_factor >= 1.05:
+                    lines.append(f"{_dir_icon(True)} Opponent K% is **above average** — favorable matchup for strikeouts")
+                elif opp_factor <= 0.95:
+                    lines.append(f"{_dir_icon(False)} Opponent K% is **below average** — tougher matchup for strikeouts")
+                else:
+                    lines.append(f"➖ Opponent K% is near league average")
 
-        park_factor = result.get('park_factor')
-        if park_factor:
-            if park_factor >= 1.03:
-                lines.append(f"{_dir_icon(True)} Park factor **{park_factor}** — pitcher-friendly park")
-            elif park_factor <= 0.97:
-                lines.append(f"{_dir_icon(False)} Park factor **{park_factor}** — hitter-friendly park")
+            park_factor = result.get('park_factor')
+            if park_factor:
+                if park_factor >= 1.03:
+                    lines.append(f"{_dir_icon(True)} Park factor **{park_factor}** — pitcher-friendly park")
+                elif park_factor <= 0.97:
+                    lines.append(f"{_dir_icon(False)} Park factor **{park_factor}** — hitter-friendly park")
 
-        umpire_factor = result.get('umpire_factor')
-        umpire_name = result.get('umpire_name')
-        if umpire_factor and umpire_name:
-            if umpire_factor >= 1.02:
-                lines.append(f"{_dir_icon(True)} Umpire **{umpire_name}** has a larger strike zone — boosts K rate")
-            elif umpire_factor <= 0.98:
-                lines.append(f"{_dir_icon(False)} Umpire **{umpire_name}** has a tighter strike zone — hurts K rate")
+            umpire_factor = result.get('umpire_factor')
+            umpire_name = result.get('umpire_name')
+            if umpire_factor and umpire_name:
+                if umpire_factor >= 1.02:
+                    lines.append(f"{_dir_icon(True)} Umpire **{umpire_name}** has a larger strike zone — boosts K rate")
+                elif umpire_factor <= 0.98:
+                    lines.append(f"{_dir_icon(False)} Umpire **{umpire_name}** has a tighter strike zone — hurts K rate")
 
-        lineup_factor = result.get('lineup_factor')
-        if lineup_factor:
-            if lineup_factor >= 0.24:
-                lines.append(f"{_dir_icon(True)} Today's lineup K% is **above average** — {'favorable' if direction == 'over' else 'tougher'}")
-            elif lineup_factor <= 0.20:
-                lines.append(f"{_dir_icon(False)} Today's lineup K% is **below average** — {'tougher' if direction == 'over' else 'favorable'}")
+            lineup_factor = result.get('lineup_factor')
+            if lineup_factor:
+                if lineup_factor >= 0.24:
+                    lines.append(f"{_dir_icon(True)} Today's lineup K% is **above average** — {'favorable' if direction == 'over' else 'tougher'}")
+                elif lineup_factor <= 0.20:
+                    lines.append(f"{_dir_icon(False)} Today's lineup K% is **below average** — {'tougher' if direction == 'over' else 'favorable'}")
 
+        # ---- NBA-SPECIFIC FACTORS ----
         if sport in ('nba_points', 'nba_assists'):
             opp_pace = result.get('opp_pace')
             if opp_pace:
+                league_avg_pace = 98.5
                 if opp_pace >= league_avg_pace + 2:
                     lines.append(f"{_dir_icon(True)} Opponent pace **{opp_pace}** — faster pace, more possessions")
                 elif opp_pace <= league_avg_pace - 2:
@@ -612,6 +579,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 lines.append(f"{icon} Rest adjustment **{rest_adj:+}**{rest_note}")
 
             if sport == 'nba_points':
+                league_avg_def_rating = 114.0
                 opp_def_rating = result.get('opp_def_rating')
                 if opp_def_rating:
                     if opp_def_rating >= league_avg_def_rating + 2:
@@ -639,5 +607,161 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                 if opp_ast_adj:
                     icon = _dir_icon(opp_ast_adj > 0)
                     lines.append(f"{icon} Opponent assists-allowed adjustment **{opp_ast_adj:+}**")
+
+        # ---- NFL-SPECIFIC FACTORS ----
+        # Real, new addition (August 2026, per direct user request —
+        # "why this bet" for NFL). Mirrors the depth of the MLB/NBA
+        # branches above, using only fields that actually exist in the
+        # real NFL projection result dicts (confirmed by inspecting
+        # run_nfl_pass_attempts_projection, run_nfl_pass_completions_
+        # projection, and run_nfl_receptions_projection directly).
+        if sport in ('nfl_pass_attempts', 'nfl_pass_completions', 'nfl_receptions'):
+            game_context = result.get('game_context') or {}
+
+            # -- Game script (spread) --
+            # A team's spread directly impacts expected passing volume:
+            # underdogs tend to throw more (playing catch-up), favorites
+            # tend to throw less (protecting a lead with the run game).
+            spread = game_context.get('spread')
+            if spread is not None:
+                if spread >= 6:
+                    lines.append(f"{_dir_icon(True)} Spread: **+{spread}** (big underdog) — game script favors more passing volume")
+                elif spread >= 3:
+                    lines.append(f"{_dir_icon(True)} Spread: **+{spread}** (underdog) — likely chasing, boosting pass volume")
+                elif spread <= -6:
+                    lines.append(f"{_dir_icon(False)} Spread: **{spread}** (big favorite) — game script favors running the ball late")
+                elif spread <= -3:
+                    lines.append(f"{_dir_icon(False)} Spread: **{spread}** (favorite) — may lean on the run game with a lead")
+                else:
+                    lines.append(f"➖ Spread: **{'+' if spread > 0 else ''}{spread}** — close game expected, neutral game script")
+
+            # -- Game total --
+            # A higher total implies a shootout (more possessions, more
+            # passing), a lower total implies a grind-it-out game.
+            total = game_context.get('total')
+            if total is not None:
+                if total >= 49:
+                    lines.append(f"{_dir_icon(True)} Game total: **{total}** — shootout expected, more passing volume likely")
+                elif total >= 45:
+                    lines.append(f"{_dir_icon(True)} Game total: **{total}** — above-average total, slightly higher volume expected")
+                elif total <= 39:
+                    lines.append(f"{_dir_icon(False)} Game total: **{total}** — low total, a grind-it-out defensive game expected")
+                elif total <= 42:
+                    lines.append(f"{_dir_icon(False)} Game total: **{total}** — below-average total, lower volume expected")
+                else:
+                    lines.append(f"➖ Game total: **{total}** — near average, neutral volume signal")
+
+            # -- Weather (wind) --
+            wind = game_context.get('wind')
+            roof = game_context.get('roof')
+            if roof in ('dome', 'closed'):
+                lines.append("✅ Playing indoors — no weather risk to passing")
+            elif roof in ('outdoors', 'open') and wind is not None:
+                if wind >= 20:
+                    lines.append(f"{_dir_icon(False)} Wind: **{wind} mph** — significant passing-game risk, both volume and accuracy affected")
+                elif wind >= 15:
+                    lines.append(f"{_dir_icon(False)} Wind: **{wind} mph** — moderate wind, a real factor for the passing game")
+
+            # -- Rest days --
+            rest_days = game_context.get('rest_days')
+            if rest_days is not None:
+                if rest_days <= 4:
+                    lines.append(f"⚠️ Short week (**{rest_days} days rest**) — less prep time, often a simpler game plan")
+                elif rest_days >= 10:
+                    lines.append(f"✅ Extra rest (**{rest_days} days**) — more prep time and recovery")
+
+            # -- Opponent factor (shared across all 3 NFL models) --
+            opp_factor = result.get('opp_factor')
+            if opp_factor is not None and opp_factor != 1.0:
+                if sport == 'nfl_pass_attempts':
+                    if opp_factor >= 1.05:
+                        lines.append(f"{_dir_icon(True)} Opponent pass-funnel factor: **{opp_factor}** — this defense tends to face more passing than average")
+                    elif opp_factor <= 0.95:
+                        lines.append(f"{_dir_icon(False)} Opponent pass-funnel factor: **{opp_factor}** — this defense limits opposing pass volume")
+                    else:
+                        lines.append(f"➖ Opponent pass-funnel factor: **{opp_factor}** — near league average")
+                elif sport == 'nfl_pass_completions':
+                    if opp_factor >= 1.05:
+                        lines.append(f"{_dir_icon(True)} Opponent completion factor: **{opp_factor}** — this defense allows a higher completion rate")
+                    elif opp_factor <= 0.95:
+                        lines.append(f"{_dir_icon(False)} Opponent completion factor: **{opp_factor}** — this defense suppresses completion rate")
+                    else:
+                        lines.append(f"➖ Opponent completion factor: **{opp_factor}** — near league average")
+
+            # -- Pass Attempts-specific factors --
+            if sport == 'nfl_pass_attempts':
+                # QB rushing tendency — a mobile QB converts some
+                # would-be pass attempts into scrambles.
+                qb_carries = result.get('qb_carries_per_game')
+                qb_rush_factor = result.get('qb_rush_factor')
+                if qb_carries is not None and qb_rush_factor is not None and qb_rush_factor < 0.99:
+                    lines.append(f"{_dir_icon(False)} QB averages **{qb_carries:.1f} carries/game** — mobile QB, some dropbacks become scrambles instead of pass attempts")
+
+                # Vegas factor — overall game-environment adjustment
+                vegas_factor = result.get('vegas_factor')
+                if vegas_factor is not None and abs(vegas_factor - 1.0) >= 0.02:
+                    vegas_pct = round((vegas_factor - 1.0) * 100, 1)
+                    icon = _dir_icon(vegas_factor > 1.0)
+                    lines.append(f"{icon} Vegas environment adjustment: **{'+' if vegas_pct > 0 else ''}{vegas_pct}%** based on spread + game total combined")
+
+            # -- Pass Completions-specific factors --
+            elif sport == 'nfl_pass_completions':
+                proj_comp_pct = result.get('projected_completion_pct')
+                proj_attempts = result.get('projected_attempts')
+                if proj_comp_pct is not None and proj_attempts is not None:
+                    lines.append(f"📊 Built from **{proj_attempts}** projected attempts × **{round(proj_comp_pct * 100, 1)}%** completion rate")
+
+                opp_comp_pct_allowed = result.get('opp_completion_pct_allowed')
+                if opp_comp_pct_allowed is not None:
+                    opp_pct_display = round(opp_comp_pct_allowed * 100, 1)
+                    if opp_comp_pct_allowed >= 0.67:
+                        lines.append(f"{_dir_icon(True)} Opponent allows **{opp_pct_display}%** completions — soft secondary")
+                    elif opp_comp_pct_allowed <= 0.61:
+                        lines.append(f"{_dir_icon(False)} Opponent allows **{opp_pct_display}%** completions — tough secondary")
+
+                weather_factor = result.get('weather_factor')
+                if weather_factor is not None and weather_factor < 0.99:
+                    lines.append(f"{_dir_icon(False)} Weather is impacting projected completion rate (factor: **{weather_factor}**)")
+
+            # -- Receptions-specific factors --
+            elif sport == 'nfl_receptions':
+                target_share = result.get('projected_target_share')
+                proj_team_attempts = result.get('projected_team_attempts')
+                catch_rate = result.get('projected_catch_rate')
+                if target_share is not None and proj_team_attempts is not None and catch_rate is not None:
+                    lines.append(f"📊 Built from **{proj_team_attempts}** team attempts × **{round(target_share * 100, 1)}%** target share × **{round(catch_rate * 100, 1)}%** catch rate")
+
+                opp_targets_allowed = result.get('opp_targets_allowed')
+                if opp_targets_allowed is not None:
+                    if opp_targets_allowed >= 35:
+                        lines.append(f"{_dir_icon(True)} Opponent allows **{opp_targets_allowed:.1f}** WR/TE targets per game — soft coverage")
+                    elif opp_targets_allowed <= 28:
+                        lines.append(f"{_dir_icon(False)} Opponent allows **{opp_targets_allowed:.1f}** WR/TE targets per game — tight coverage")
+
+                opp_catch_rate = result.get('opp_catch_rate_allowed')
+                if opp_catch_rate is not None:
+                    opp_cr_display = round(opp_catch_rate * 100, 1)
+                    if opp_catch_rate >= 0.72:
+                        lines.append(f"{_dir_icon(True)} Opponent allows **{opp_cr_display}%** catch rate — receivers complete at a high rate against them")
+                    elif opp_catch_rate <= 0.62:
+                        lines.append(f"{_dir_icon(False)} Opponent allows **{opp_cr_display}%** catch rate — difficult to haul in passes against them")
+
+                share_cv = result.get('target_share_cv')
+                if share_cv is not None:
+                    if share_cv >= 0.60:
+                        lines.append(f"⚠️ Target share volatility is **high** (CV: {share_cv}) — this player's usage varies significantly week to week")
+                    elif share_cv <= 0.30:
+                        lines.append(f"✅ Target share volatility is **low** (CV: {share_cv}) — consistent, stable role in the offense")
+
+            # -- Prior-season bridge (shared across all 3 NFL models) --
+            prior_weight = result.get('prior_season_weight')
+            if prior_weight is not None and prior_weight > 0:
+                prior_pct = round(prior_weight * 100)
+                starts = result.get('starts_this_season', result.get('games_this_season'))
+                team_changed = result.get('team_changed')
+                bridge_note = f"⚠️ Limited current-season data (**{starts}** game{'s' if starts != 1 else ''} so far) — projection blends **{prior_pct}%** prior-season data"
+                if team_changed:
+                    bridge_note += " (reduced further — QB changed teams)"
+                lines.append(bridge_note)
 
     return lines
