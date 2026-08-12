@@ -245,7 +245,9 @@ async def play_of_the_day(x_api_key: str = Header(default=None)):
     to real, non-subscribed users too) single best pick across every
     real sport today, using the exact same real ranking logic as
     mlb_app.py's own top_ranked_entry(): tier first, then EV%, then
-    edge."""
+    edge. Real, deliberate exclusion — LoL is never eligible here, by
+    real, direct user request: esports picks are meant to stay their
+    own real, exclusive thing, not given away as a free teaser."""
     _require_api_key(x_api_key)
     all_picks = []
     for slug, sport_key in SPORT_KEYS.items():
@@ -254,17 +256,12 @@ async def play_of_the_day(x_api_key: str = Header(default=None)):
             for p in picks:
                 p["_kind"] = "prop"
                 all_picks.append(p)
-    lol_picks, _ = _get_lol_picks()
-    if lol_picks:
-        for p in lol_picks:
-            p["_kind"] = "lol"
-            all_picks.append(p)
     if not all_picks:
         return {"pick": None}
 
     def _rank_key(p):
         ev = p.get("ev_pct")
-        edge = p.get("edge") if p.get("_kind") == "prop" else p.get("edge_pct")
+        edge = p.get("edge")
         return (
             _TIER_RANK.get(p.get("mm_tier"), -1),
             ev if ev is not None else -999,
