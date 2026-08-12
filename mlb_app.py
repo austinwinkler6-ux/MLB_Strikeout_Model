@@ -2287,7 +2287,155 @@ def top_ranked_entry(card_entries):
     )
     return ranked[0]
 
-# ---- PARK FACTORS ----
+# ---- MODEL TRACK RECORD (PHASE 1: MLB + NBA) ----
+# Real, new addition (August 2026, per direct user request — "how has
+# the model been" shown to non-subscribed users on the new site).
+# Deliberately separate from the existing "bets" table, which only
+# ever reflects what ONE real user chose to log — this tracks every
+# real, actionable pick the model itself makes, graded automatically
+# against the real final result, independent of anyone's own betting
+# decisions. Phased deliberately: NFL and LoL picks are still
+# RECORDED here (so nothing needs to change again once Phase 2 ships),
+# but only actually GRADED for MLB and NBA right now — NFL has no real
+# games to verify grading logic against until the season starts, and
+# LoL's data has been the most fragile part of this whole app all
+# session, so real automatic grading for it needs real games to test
+# against first.
+
+def record_picks_for_grading(card_entries):
+    """Real, upserting insert of every real, actionable (non-Pass)
+    pick into the graded_picks table — safe to call on every real
+    auto-run, since the real (pick_date, sport_key, player_name)
+    unique constraint means re-running today's auto-run multiple times
+    never creates real duplicate rows, just refreshes the same one."""
+    if not supabase:
+        return
+    today_str = mm_today_str()
+
+    # Real, single, lightweight lookup — built once per real auto-run,
+    # not once per pitcher, specifically so MLB grading later has a
+    # real game_pk to work with without needing to touch or modify the
+    # real, deep MLB projection pipeline itself.
+    mlb_game_pk_by_pitcher = {}
+    try:
+        for s in get_starters_for_date(today_str):
+            mlb_game_pk_by_pitcher[s['pitcher']] = s['game_pk']
+    except Exception:
+        pass
+
+    for e in card_entries:
+        tier = e.get('tier')
+        if not tier or tier == "🔴 Pass":
+            continue  # only real, actionable picks belong in a real track record
+        info = e.get('info') or {}
+        play_text = str(e.get('play') or '')
+        is_over = "OVER" in play_text.upper()
+        direction = "over" if "OVER" in play_text.upper() else ("under" if "UNDER" in play_text.upper() else None)
+        odds = info.get('FanDuel Over') if is_over else info.get('FanDuel Under')
+        if odds is None:
+            odds = info.get('DraftKings Over') if is_over else info.get('DraftKings Under')
+
+        payload = {
+            "pick_date": today_str,
+            "sport_key": e['sport_key'],
+            "sport_label": e['sport_label'],
+            "player_name": e['name'],
+            "line": e.get('line'),
+            "direction": direction,
+            "odds": odds,
+            "mm_tier": tier,
+            "ev_pct": e.get('ev_pct'),
+        }
+        if e['sport_key'] == 'mlb_strikeouts':
+            payload["game_pk"] = mlb_game_pk_by_pitcher.get(e['name'])
+
+        try:
+            supabase.table("graded_picks").upsert(
+                payload, on_conflict="pick_date,sport_key,player_name"
+            ).execute()
+        except Exception:
+            pass  # real, best-effort — a real recording failure should never break the real auto-run
+
+
+def _grade_one_pick(row):
+    """Returns (actual_stat, result) for one real, pending row, or
+    (None, None) if the real actual result genuinely isn't available
+    yet (a real game that hasn't been played, or box score data that
+    hasn't posted yet — NOT the same as a real 0-for-something, which
+    IS a real, gradeable result)."""
+    sport_key = row.get('sport_key')
+    player_name = row.get('player_name')
+    line = row.get('line')
+    direction = row.get('direction')
+    if line is None or direction is None:
+        return None, None
+
+    actual = None
+    if sport_key == 'mlb_strikeouts':
+        game_pk = row.get('game_pk')
+        if not game_pk:
+            return None, None
+        actual = get_actual_strikeouts(game_pk, player_name)
+    elif sport_key in ('nba_points', 'nba_assists'):
+        try:
+            box_df = get_bdl_games_for_date(row['pick_date'])
+        except Exception:
+            return None, None
+        if box_df is None or box_df.empty:
+            return None, None
+        stat_col = 'ast' if sport_key == 'nba_assists' else 'pts'
+        for _, r in box_df.iterrows():
+            p = r.get('player') or {}
+            full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+            if full_name.lower() == str(player_name).lower():
+                val = r.get(stat_col)
+                if val is not None:
+                    actual = val
+                break
+    else:
+        return None, None  # Phase 2 — NFL/LoL grading not implemented yet
+
+    if actual is None:
+        return None, None
+
+    if actual == line:
+        return actual, "push"
+    won = (actual > line) if direction == "over" else (actual < line)
+    return actual, ("win" if won else "loss")
+
+
+def grade_pending_picks():
+    """Real, best-effort grading pass over every real pending pick from
+    a real PAST date (never today's — those games likely haven't
+    finished yet). Safe to call on every real auto-run: picks that
+    genuinely can't be graded yet (game not finished, box score not
+    posted) are silently left pending and get tried again on the real
+    next auto-run."""
+    if not supabase:
+        return
+    today_str = mm_today_str()
+    try:
+        res = supabase.table("graded_picks").select("*") \
+            .eq("result", "pending").lt("pick_date", today_str) \
+            .limit(200).execute()
+        pending = res.data or []
+    except Exception:
+        return
+
+    for row in pending:
+        try:
+            actual, result = _grade_one_pick(row)
+            if result is None:
+                continue
+            supabase.table("graded_picks").update({
+                "actual_stat": actual,
+                "result": result,
+                "graded_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            }).eq("id", row["id"]).execute()
+        except Exception:
+            continue  # real, best-effort — one bad row should never stop the rest from grading
+
+
 park_factors = {
     'Los Angeles Angels': 0.97, 'Baltimore Orioles': 1.02, 'Boston Red Sox': 0.95,
     'Chicago White Sox': 1.01, 'Cleveland Guardians': 0.98, 'Detroit Tigers': 0.99,
@@ -5073,6 +5221,17 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
             set_persistent_all_picks_cache(_sport_key, _entries)
         st.session_state['_last_all_picks_persist_error'] = None
         st.session_state['_last_all_picks_persist_counts'] = {k: len(v) for k, v in _entries_by_sport.items()}
+
+        # Real, new addition (August 2026) — records today's real,
+        # actionable picks for the real model track record, then
+        # grades any real, past pending picks. Both are real,
+        # best-effort and silently no-op on any real failure, so a
+        # problem here can never break the real auto-run itself.
+        try:
+            record_picks_for_grading(_all_card_entries)
+            grade_pending_picks()
+        except Exception:
+            pass
     except Exception as _e:
         # Real fix (August 2026, per direct user report — the API
         # bridge showing "0 total picks" even right after a real,
