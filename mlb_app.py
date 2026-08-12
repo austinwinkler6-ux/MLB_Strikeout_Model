@@ -2189,7 +2189,14 @@ def build_todays_card_entries():
     mlb_pitchers = st.session_state.get('all_pitchers', {})
     mlb_results = st.session_state.get('pitcher_results', {})
     for name, info in mlb_pitchers.items():
-        if info.get('Projection') is not None and info.get('MM Tier'):
+        # Real, deliberate exclusion (August 2026, per direct user
+        # request — "take out all plays that read pass") — a Pass
+        # tier isn't a real actionable pick, so it never belonged in
+        # this real, curated "today's picks" list to begin with. The
+        # full per-sport analysis tables elsewhere in this app still
+        # show every real player regardless of tier, unaffected by
+        # this — this only trims the real, actionable picks feed.
+        if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '⚾ MLB', 'sport_key': 'mlb_strikeouts', 'name': name,
                 'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
@@ -2201,7 +2208,7 @@ def build_todays_card_entries():
     nba_pts = st.session_state.get('all_nba_players', {})
     nba_pts_results = st.session_state.get('nba_pts_results', {})
     for name, info in nba_pts.items():
-        if info.get('Projection') is not None and info.get('MM Tier'):
+        if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '🏀 NBA Pts', 'sport_key': 'nba_points', 'name': name,
                 'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
@@ -2213,7 +2220,7 @@ def build_todays_card_entries():
     nba_ast = st.session_state.get('all_nba_assist_players', {})
     nba_ast_results = st.session_state.get('nba_ast_results', {})
     for name, info in nba_ast.items():
-        if info.get('Projection') is not None and info.get('MM Tier'):
+        if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '🏀 NBA Ast', 'sport_key': 'nba_assists', 'name': name,
                 'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
@@ -2234,7 +2241,7 @@ def build_todays_card_entries():
         nfl_players = st.session_state.get(all_players_key, {})
         nfl_results = st.session_state.get(results_key, {})
         for name, info in nfl_players.items():
-            if info.get('Projection') is not None and info.get('MM Tier'):
+            if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
                 card_entries.append({
                     'sport_label': sport_label, 'sport_key': sport_key, 'name': name,
                     'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
@@ -2253,7 +2260,7 @@ def build_todays_card_entries():
     lol_pipeline_output = st.session_state.get('lol_pipeline_output') or {}
     lol_results = lol_pipeline_output.get('results') or []
     for r in lol_results:
-        if r.get('ev_pct') is not None and r.get('mm_tier'):
+        if r.get('ev_pct') is not None and r.get('mm_tier') and r.get('mm_tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '🎮 LoL', 'sport_key': 'lol_moneyline',
                 'name': f"{r.get('team1_name')} vs {r.get('team2_name')}",
