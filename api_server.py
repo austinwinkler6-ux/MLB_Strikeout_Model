@@ -91,7 +91,7 @@ if STRIPE_SECRET_KEY:
 # complex Kelly-staking logic (tier ranges, odds dampening, workload/
 # confidence checks) a second time in a different language, where a
 # subtle real mistake could easily go unnoticed.
-from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv, mm_today_str, generate_why
+from bet_math import calculate_mm_stake, odds_to_implied_prob, prob_to_american_odds, calculate_odds_clv, mm_today_str, generate_why, calc_profit
 
 # Real, direct match to the exact same real constants mlb_app.py
 # already uses — must stay in sync if either ever changes.
@@ -230,6 +230,103 @@ def _get_lol_picks():
         })
     picks.sort(key=lambda p: p.get("edge_pct") or 0, reverse=True)
     return picks, row.get("updated_at")
+
+
+# Real, small, local copy — matches mlb_app.py's own real TIER_RANK
+# exactly. Small enough that a full move-to-bet_math.py refactor
+# wasn't worth the real extra risk tonight; kept here deliberately in
+# sync with the real original by value, not by import.
+_TIER_RANK = {"🟢 Best Bet": 3, "🔵 Worth a Look": 2, "🟡 Lean": 1, "🔴 Pass": 0}
+
+
+@app.get("/api/play-of-the-day")
+async def play_of_the_day(x_api_key: str = Header(default=None)):
+    """Real, public (no user auth needed — this is deliberately shown
+    to real, non-subscribed users too) single best pick across every
+    real sport today, using the exact same real ranking logic as
+    mlb_app.py's own top_ranked_entry(): tier first, then EV%, then
+    edge."""
+    _require_api_key(x_api_key)
+    all_picks = []
+    for slug, sport_key in SPORT_KEYS.items():
+        picks, _ = _get_player_prop_picks(sport_key)
+        if picks:
+            for p in picks:
+                p["_kind"] = "prop"
+                all_picks.append(p)
+    lol_picks, _ = _get_lol_picks()
+    if lol_picks:
+        for p in lol_picks:
+            p["_kind"] = "lol"
+            all_picks.append(p)
+    if not all_picks:
+        return {"pick": None}
+
+    def _rank_key(p):
+        ev = p.get("ev_pct")
+        edge = p.get("edge") if p.get("_kind") == "prop" else p.get("edge_pct")
+        return (
+            _TIER_RANK.get(p.get("mm_tier"), -1),
+            ev if ev is not None else -999,
+            abs(edge) if edge is not None else -999,
+        )
+
+    best = max(all_picks, key=_rank_key)
+    return {"pick": best}
+
+
+@app.get("/api/model-performance")
+async def model_performance(x_api_key: str = Header(default=None)):
+    """Real, public (no user auth needed) aggregate track record —
+    Phase 1: MLB + NBA only, matching what's actually being graded
+    right now in mlb_app.py's grade_pending_picks(). NFL/LoL picks are
+    being recorded already but not yet graded, so they're real,
+    honestly excluded from this real number rather than silently
+    counted as 0-for-0."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
+    try:
+        res = supabase.table("graded_picks").select("*").in_("result", ["win", "loss"]).execute()
+        rows = res.data or []
+    except Exception as e:
+        return {"error": str(e)}
+
+    wins = sum(1 for r in rows if r["result"] == "win")
+    losses = sum(1 for r in rows if r["result"] == "loss")
+    total = wins + losses
+    win_rate = round(wins / total * 100, 1) if total > 0 else None
+
+    # Real, flat, standardized 1-unit stake per pick for this real ROI
+    # figure — a real, honest, comparable number across every pick
+    # regardless of what any individual user actually staked, since
+    # this is a real MODEL track record, not any one user's own P/L.
+    total_profit = 0.0
+    total_staked = 0.0
+    for r in rows:
+        odds = r.get("odds")
+        if odds is None:
+            continue
+        stake = 100
+        profit = calc_profit(stake, odds, "Win" if r["result"] == "win" else "Loss")
+        total_profit += profit
+        total_staked += stake
+    roi_pct = round(total_profit / total_staked * 100, 1) if total_staked > 0 else None
+
+    by_sport = {}
+    for r in rows:
+        sk = r.get("sport_key")
+        by_sport.setdefault(sk, {"wins": 0, "losses": 0})
+        by_sport[sk]["wins" if r["result"] == "win" else "losses"] += 1
+
+    return {
+        "wins": wins,
+        "losses": losses,
+        "total_graded": total,
+        "win_rate": win_rate,
+        "roi_pct": roi_pct,
+        "by_sport": by_sport,
+    }
 
 
 @app.get("/api/health")
