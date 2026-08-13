@@ -409,7 +409,128 @@ def workload_evidence_line(result):
     return None
 
 
+def _generate_lol_why(info, result):
+    """LoL-specific 'why this bet' lines — structurally different from
+    player props (a moneyline matchup between two teams, not a player
+    stat vs. an over/under line), so it has its own dedicated builder
+    rather than trying to force LoL's data through the prop-oriented
+    generic lines. Uses only fields confirmed to exist in the real LoL
+    pipeline result dict (team ratings, model/market probabilities,
+    head-to-head, in-tournament form, roster continuity, etc.)."""
+    lines = []
+
+    rec_side = info.get('recommended_side')
+    rec_team = info.get('recommended_team_name')
+    rec_prob = info.get('recommended_model_prob')
+    market_prob = info.get('recommended_market_prob')
+    rec_odds = info.get('recommended_odds')
+
+    rec_is_team1 = rec_side == 'team1'
+    rec_rating = info.get('team1_rating') if rec_is_team1 else info.get('team2_rating')
+    opp_rating = info.get('team2_rating') if rec_is_team1 else info.get('team1_rating')
+
+    # -- Edge vs market --
+    if rec_prob is not None and market_prob is not None:
+        edge_pp = round((rec_prob - market_prob) * 100, 1)
+        rec_pct = round(rec_prob * 100, 1)
+        market_pct = round(market_prob * 100, 1)
+        icon = "✅" if edge_pp >= 5 else ("⚠️" if edge_pp > 0 else "❌")
+        lines.append(f"{icon} Model gives **{rec_team}** a **{rec_pct}%** win probability vs **{market_pct}%** implied by the market — **+{edge_pp}pp** edge")
+
+    # -- Rating comparison --
+    if rec_rating is not None and opp_rating is not None:
+        if rec_rating > opp_rating:
+            lines.append(f"✅ **{rec_team}** is higher-rated (**{rec_rating}** vs **{opp_rating}**) — Elo built from real, completed match history")
+        elif rec_rating < opp_rating:
+            lines.append(f"⚠️ **{rec_team}** is lower-rated (**{rec_rating}** vs **{opp_rating}**) — other signals (H2H, tournament form, market price) outweigh the raw rating gap")
+        else:
+            lines.append(f"➖ Both teams rated similarly (**{rec_rating}** vs **{opp_rating}**)")
+
+    # -- Odds --
+    if rec_odds is not None:
+        if rec_odds > 0:
+            lines.append(f"✅ Getting **+{rec_odds}** — plus-money on the model's recommended side")
+        elif rec_odds >= -130:
+            lines.append(f"✅ Getting **{rec_odds}** — reasonable price")
+        else:
+            lines.append(f"⚠️ Getting **{rec_odds}** — heavy favorite price, less margin for error")
+
+    # -- EV --
+    ev_pct = info.get('ev_pct')
+    if ev_pct is not None:
+        if ev_pct >= 15:
+            lines.append(f"✅ EV: **+{ev_pct}%** — exceptional value")
+        elif ev_pct >= 7:
+            lines.append(f"✅ EV: **+{ev_pct}%** — strong value")
+        elif ev_pct >= 2:
+            lines.append(f"⚠️ EV: **+{ev_pct}%** — moderate value")
+        elif ev_pct > 0:
+            lines.append(f"⚠️ EV: **+{ev_pct}%** — slight edge")
+        else:
+            lines.append(f"❌ EV: **{ev_pct}%** — negative expected value")
+
+    # -- Head-to-head --
+    h2h = info.get('head_to_head') or {}
+    total_h2h = h2h.get('total_h2h_series', 0)
+    if total_h2h > 0:
+        rec_h2h = h2h.get('team1_h2h_wins', 0) if rec_is_team1 else h2h.get('team2_h2h_wins', 0)
+        opp_h2h = h2h.get('team2_h2h_wins', 0) if rec_is_team1 else h2h.get('team1_h2h_wins', 0)
+        if rec_h2h > opp_h2h:
+            lines.append(f"✅ Head-to-head favors **{rec_team}** — **{round(rec_h2h, 1)}** to **{round(opp_h2h, 1)}** (recency-weighted)")
+        elif opp_h2h > rec_h2h:
+            lines.append(f"⚠️ Head-to-head favors the opponent — **{round(opp_h2h, 1)}** to **{round(rec_h2h, 1)}** (recency-weighted)")
+        else:
+            lines.append("➖ Head-to-head is even between these two teams")
+
+    # -- In-tournament form --
+    in_tourn = info.get('in_tournament_form') or {}
+    t1_total = in_tourn.get('team1_total', 0)
+    t2_total = in_tourn.get('team2_total', 0)
+    combined_tourn = t1_total + t2_total
+    if combined_tourn >= 4:
+        rec_wins = in_tourn.get('team1_wins', 0) if rec_is_team1 else in_tourn.get('team2_wins', 0)
+        rec_losses = in_tourn.get('team1_losses', 0) if rec_is_team1 else in_tourn.get('team2_losses', 0)
+        if rec_wins > rec_losses:
+            lines.append(f"✅ **{rec_team}** is **{rec_wins}-{rec_losses}** recently in this event — strong current form")
+        elif rec_wins < rec_losses:
+            lines.append(f"⚠️ **{rec_team}** is **{rec_wins}-{rec_losses}** recently in this event — current form is a concern")
+        else:
+            lines.append(f"➖ **{rec_team}** is **{rec_wins}-{rec_losses}** recently in this event — even form")
+    elif combined_tourn > 0:
+        lines.append(f"⚠️ Limited recent tournament data — only **{combined_tourn}** game(s) played so far between both teams in this event")
+
+    # -- Best-of format --
+    best_of = info.get('best_of')
+    if best_of == 1:
+        lines.append("⚠️ **Bo1** format — single game, higher variance than a series")
+    elif best_of == 5:
+        lines.append("✅ **Bo5** format — longer series reduces upset variance")
+
+    # -- Warnings --
+    if info.get('no_real_data'):
+        lines.append("⚠️ **Limited match history** — at least one team has minimal completed games in this dataset, treat with extra caution")
+
+    if info.get('is_low_volume'):
+        raw_ev = info.get('raw_ev_pct_before_volume_discount')
+        vol_note = f" (raw EV was +{raw_ev}%, discounted for volume uncertainty)" if raw_ev is not None else ""
+        lines.append(f"⚠️ **Low trading volume** on this market — the price hasn't been genuinely tested by much real money yet{vol_note}")
+
+    roster = info.get('roster_continuity') or {}
+    worse_cont = roster.get('worse_continuity_pct', 1.0)
+    if worse_cont < 0.8:
+        lines.append("⚠️ **Recent roster change** detected — the existing rating was built before this change, may not reflect current strength")
+
+    return lines
+
+
 def generate_why(info, result, direction, sport='mlb_strikeouts'):
+    # LoL is structurally different from player props (a moneyline
+    # matchup, not a stat vs. a line) — its own dedicated function
+    # handles it entirely, skipping the prop-oriented generic lines
+    # below which would all be empty/wrong for LoL's data shape.
+    if sport == 'lol_moneyline':
+        return _generate_lol_why(info, result)
+
     lines = []
     proj = info.get('Projection')
     line = info.get('FanDuel Line') or info.get('DraftKings Line')
