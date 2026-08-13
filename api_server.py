@@ -211,6 +211,17 @@ def _get_lol_picks():
         market_prob = r.get("recommended_market_prob")
         edge_pct = round((model_prob - market_prob) * 100, 1) if model_prob is not None and market_prob is not None else None
         odds = r.get("recommended_odds")
+        # Real, new addition (August 2026) — LoL picks now get the
+        # same real "why this bet" lines every other sport already
+        # has, using generate_why with sport='lol_moneyline' which
+        # routes to a dedicated LoL-specific builder (rating
+        # comparison, model vs market edge, H2H, tournament form,
+        # roster continuity, etc.) rather than the prop-oriented
+        # generic lines which would all be wrong for LoL's data shape.
+        try:
+            why_lines = generate_why(r, r, None, 'lol_moneyline')
+        except Exception:
+            why_lines = []
         picks.append({
             "home_team": r.get("team1_name"),
             "away_team": r.get("team2_name"),
@@ -227,6 +238,7 @@ def _get_lol_picks():
             "start_time": r.get("match_date"),
             "team1_rating": r.get("team1_rating"),
             "team2_rating": r.get("team2_rating"),
+            "why_lines": why_lines,
         })
     picks.sort(key=lambda p: p.get("edge_pct") or 0, reverse=True)
     return picks, row.get("updated_at")
@@ -551,11 +563,6 @@ def _sanitize_nan(v):
 
 @app.get("/api/user-settings")
 async def get_user_settings_endpoint(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct port of mlb_app.py's get_user_settings — same real
-    table, same real user_id scoping. Returns None fields if the real
-    user hasn't set up their real bankroll/risk style yet, rather than
-    erroring — the real caller (the "Log" flow) falls back to a real,
-    sensible default in that case."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -571,11 +578,6 @@ async def get_user_settings_endpoint(authorization: str = Header(default=None), 
 
 @app.post("/api/user-settings")
 async def save_user_settings_endpoint(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct port of mlb_app.py's save_user_settings — same real
-    reset_baseline behavior (True sets a real, new baseline dated
-    today; False leaves the existing real baseline/date untouched, so
-    a real risk-style-only change or a real fund adjustment doesn't
-    silently wipe out accumulated real profit-tracking history)."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -601,13 +603,6 @@ async def save_user_settings_endpoint(request: Request, authorization: str = Hea
 
 @app.get("/api/bankroll-transactions")
 async def get_bankroll_transactions(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, new feature (August 2026, per direct user request) — NOT
-    a port of anything in mlb_app.py, since Streamlit's own bankroll
-    adjustment flow never kept a real, individual record of each real
-    deposit/withdrawal, just overwrote the same real starting_bankroll
-    number each time. This real, separate table keeps a real, honest
-    log of every real adjustment, letting a real user actually see
-    their own real deposit/withdrawal history."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -621,9 +616,6 @@ async def get_bankroll_transactions(authorization: str = Header(default=None), x
 
 @app.post("/api/bankroll-transactions")
 async def create_bankroll_transaction(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct record of one real bankroll adjustment — called
-    alongside the existing real /api/user-settings update whenever a
-    real user applies a deposit/withdrawal, not a replacement for it."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -646,12 +638,6 @@ async def create_bankroll_transaction(request: Request, authorization: str = Hea
 
 @app.post("/api/mm-stake")
 async def mm_stake_endpoint(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct computation of the MM Stake recommendation for a
-    specific real pick — uses the SAME real calculate_mm_stake function
-    mlb_app.py itself calls, imported directly rather than
-    reimplemented, fetching the real, current user's own real bankroll/
-    risk style first. Real request body: {"info": {...pick fields...},
-    "result": {...optional confidence_tier/workload_tier...}}"""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -666,9 +652,6 @@ async def mm_stake_endpoint(request: Request, authorization: str = Header(defaul
     except Exception:
         settings = None
 
-    # Real, sensible default — same real fallback Streamlit itself
-    # effectively uses for a real, brand-new user who hasn't set a
-    # real bankroll yet.
     bankroll = (settings or {}).get("starting_bankroll") or 1000
     risk_style = (settings or {}).get("risk_style") or "Standard"
 
@@ -680,7 +663,6 @@ async def mm_stake_endpoint(request: Request, authorization: str = Header(defaul
 
 
 def _get_odds_api_sport_and_market(sport):
-    """Real, direct port of mlb_app.py's get_odds_api_sport_and_market."""
     mapping = {
         "MLB": ("baseball_mlb", "pitcher_strikeouts"),
         "NBA": ("basketball_nba", "player_points"),
@@ -693,14 +675,6 @@ def _get_odds_api_sport_and_market(sport):
 
 
 def _fetch_closing_line(sport, player_name, direction, game_date_str):
-    """Real, direct port of mlb_app.py's fetch_closing_line — same real
-    Odds API historical endpoints, same real consensus-line logic. Real,
-    honest simplification: no real 7-day caching layer here (unlike
-    Streamlit's own @st.cache_data) — this is called rarely enough (a
-    real user manually refreshing their own real bets, not on every
-    real page load) that this is a real, acceptable tradeoff for now
-    rather than adding real caching infrastructure this endpoint alone
-    doesn't yet need."""
     api_sport, market = _get_odds_api_sport_and_market(sport)
     if not api_sport or not ODDS_API_KEY:
         return None, None
@@ -745,11 +719,6 @@ def _fetch_closing_line(sport, player_name, direction, game_date_str):
 
 @app.post("/api/refresh-closing-line/{bet_id}")
 async def refresh_closing_line(bet_id: str, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, single, atomic operation covering what mlb_app.py's own
-    Closing Line Tracker does across several real steps: looks up ONE
-    real, specific bet (verifying it genuinely belongs to the real,
-    requesting user first), fetches its real closing line/odds, computes
-    real CLV, and updates the real bet record — all in one real call."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -790,12 +759,6 @@ async def refresh_closing_line(bet_id: str, authorization: str = Header(default=
 
 @app.get("/api/bets")
 async def get_bets(sport: str = None, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct port of mlb_app.py's load_bets — same real,
-    explicit user_id scoping (not relying on any real database-level
-    RLS policy, which hasn't been verified to exist — this app's own
-    real service_role key already bypasses RLS regardless, so this
-    endpoint does the real, same explicit filtering in code that
-    mlb_app.py already does)."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -812,11 +775,6 @@ async def get_bets(sport: str = None, authorization: str = Header(default=None),
 
 @app.post("/api/bets")
 async def create_bet(request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct port of mlb_app.py's save_bet — same real NaN
-    sanitization, same real user_id stamping (the real, authenticated
-    user's own ID, from their real JWT — never trusted from the
-    real request body itself, so a real user can never log a bet
-    under someone else's real account)."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -833,10 +791,6 @@ async def create_bet(request: Request, authorization: str = Header(default=None)
 
 @app.patch("/api/bets/{bet_id}")
 async def update_bet_endpoint(bet_id: str, request: Request, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct port of mlb_app.py's update_bet — same real
-    double-scoped update (.eq('id', bet_id).eq('user_id', user.id)),
-    so a real user can never update a bet that isn't genuinely theirs,
-    even if they somehow guessed another real bet's real ID."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -852,9 +806,6 @@ async def update_bet_endpoint(bet_id: str, request: Request, authorization: str 
 
 @app.delete("/api/bets/{bet_id}")
 async def delete_bet_endpoint(bet_id: str, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
-    """Real, direct port of mlb_app.py's delete_bet — same real
-    double-scoped delete, same real protection against deleting
-    another real user's bet."""
     _require_api_key(x_api_key)
     if not supabase:
         return {"error": "SUPABASE_URL/SUPABASE_KEY not set on this server."}
@@ -895,12 +846,6 @@ async def all_picks(x_api_key: str = Header(default=None)):
     for slug, sport_key in SPORT_KEYS.items():
         picks, meta = _get_player_prop_picks(sport_key)
         if picks is None:
-            # Real fix (August 2026, per direct user report — "0 total
-            # picks" showing with no explanation) — this used to
-            # discard the real error message (e.g. "SUPABASE_URL/
-            # SUPABASE_KEY not set") and just show an empty list either
-            # way, making a genuine configuration problem look
-            # identical to "the cache is just empty right now."
             errors[slug] = meta
             result[slug] = []
         else:
@@ -920,8 +865,6 @@ async def all_picks(x_api_key: str = Header(default=None)):
 
 @app.get("/api/{sport_slug}-picks")
 async def sport_picks(sport_slug: str, x_api_key: str = Header(default=None)):
-    """Real, single, generic endpoint covering every non-LoL sport —
-    e.g. /api/mlb-picks, /api/nba-points-picks, /api/nfl-attempts-picks."""
     _require_api_key(x_api_key)
     sport_key = SPORT_KEYS.get(sport_slug)
     if not sport_key:
