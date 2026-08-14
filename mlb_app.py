@@ -2307,7 +2307,13 @@ def record_picks_for_grading(card_entries):
     pick into the graded_picks table — safe to call on every real
     auto-run, since the real (pick_date, sport_key, player_name)
     unique constraint means re-running today's auto-run multiple times
-    never creates real duplicate rows, just refreshes the same one."""
+    never creates real duplicate rows, just refreshes the same one.
+
+    Phase 2 (August 2026) — now stores LoL-specific data (recommended
+    team name in direction, recommended odds in odds, recommended
+    team's Cito slug in game_pk) so the grading function can look up
+    the actual match result later without needing to re-run the full
+    LoL resolution pipeline."""
     if not supabase:
         return
     today_str = mm_today_str()
@@ -2328,6 +2334,48 @@ def record_picks_for_grading(card_entries):
         if not tier or tier == "🔴 Pass":
             continue  # only real, actionable picks belong in a real track record
         info = e.get('info') or {}
+        sport_key = e.get('sport_key')
+
+        # ---- LoL-specific payload ----
+        # LoL is a moneyline bet, not an over/under prop — the
+        # concepts of "direction" (over/under) and "odds" (FanDuel
+        # over/under price) don't apply. Instead:
+        # - direction: stores the recommended team NAME (used to
+        #   identify which side was picked when grading)
+        # - odds: stores the recommended American odds (used for
+        #   ROI calculation in model-performance)
+        # - game_pk: stores the recommended team's Cito slug (used
+        #   to fetch match history for grading)
+        if sport_key == 'lol_moneyline':
+            rec_team = info.get('recommended_team_name')
+            rec_side = info.get('recommended_side')
+            rec_odds = info.get('recommended_odds')
+            if rec_side == 'team1':
+                rec_slug = info.get('team1_slug')
+            else:
+                rec_slug = info.get('team2_slug')
+
+            payload = {
+                "pick_date": today_str,
+                "sport_key": sport_key,
+                "sport_label": e.get('sport_label'),
+                "player_name": e['name'],
+                "line": e.get('line'),
+                "direction": rec_team,
+                "odds": rec_odds,
+                "mm_tier": tier,
+                "ev_pct": e.get('ev_pct'),
+                "game_pk": rec_slug,
+            }
+            try:
+                supabase.table("graded_picks").upsert(
+                    payload, on_conflict="pick_date,sport_key,player_name"
+                ).execute()
+            except Exception:
+                pass
+            continue
+
+        # ---- Standard prop-sport payload (MLB/NBA/NFL) ----
         play_text = str(e.get('play') or '')
         is_over = "OVER" in play_text.upper()
         direction = "over" if "OVER" in play_text.upper() else ("under" if "UNDER" in play_text.upper() else None)
@@ -2337,8 +2385,8 @@ def record_picks_for_grading(card_entries):
 
         payload = {
             "pick_date": today_str,
-            "sport_key": e['sport_key'],
-            "sport_label": e['sport_label'],
+            "sport_key": sport_key,
+            "sport_label": e.get('sport_label'),
             "player_name": e['name'],
             "line": e.get('line'),
             "direction": direction,
@@ -2346,7 +2394,7 @@ def record_picks_for_grading(card_entries):
             "mm_tier": tier,
             "ev_pct": e.get('ev_pct'),
         }
-        if e['sport_key'] == 'mlb_strikeouts':
+        if sport_key == 'mlb_strikeouts':
             payload["game_pk"] = mlb_game_pk_by_pitcher.get(e['name'])
 
         try:
@@ -2357,26 +2405,67 @@ def record_picks_for_grading(card_entries):
             pass  # real, best-effort — a real recording failure should never break the real auto-run
 
 
+def _nfl_date_to_week(pick_date_str, season):
+    """Maps a pick date to the NFL week it belongs to, using the real
+    schedule. Needed for grading NFL picks — the weekly player stats
+    are keyed by week number, not date, so this bridge is required to
+    look up actual results. Returns the week number (int) or None if
+    no matching game is found within 1 day of the pick date."""
+    try:
+        schedules = get_nfl_schedules([int(season)])
+        schedules = schedules.copy()
+        schedules['gameday_dt'] = pd.to_datetime(schedules['gameday'], errors='coerce')
+        pick_dt = pd.Timestamp(pick_date_str)
+        # Exact date match first
+        same_day = schedules[schedules['gameday_dt'].dt.normalize() == pick_dt.normalize()]
+        if not same_day.empty:
+            return int(same_day.iloc[0]['week'])
+        # If no exact match (e.g. a pick recorded slightly before/after
+        # midnight relative to the game), find the closest game within
+        # 1 day — NFL games are spread across Thu/Sun/Mon so a 1-day
+        # window is safe without risk of matching the wrong week.
+        schedules['_date_diff'] = (schedules['gameday_dt'] - pick_dt).abs()
+        closest = schedules.nsmallest(1, '_date_diff')
+        if not closest.empty and closest.iloc[0]['_date_diff'].days <= 1:
+            return int(closest.iloc[0]['week'])
+        return None
+    except Exception:
+        return None
+
+
 def _grade_one_pick(row):
     """Returns (actual_stat, result) for one real, pending row, or
     (None, None) if the real actual result genuinely isn't available
     yet (a real game that hasn't been played, or box score data that
     hasn't posted yet — NOT the same as a real 0-for-something, which
-    IS a real, gradeable result)."""
+    IS a real, gradeable result).
+
+    Phase 2 (August 2026) — NFL and LoL grading added alongside the
+    existing MLB and NBA grading."""
     sport_key = row.get('sport_key')
     player_name = row.get('player_name')
     line = row.get('line')
     direction = row.get('direction')
-    if line is None or direction is None:
-        return None, None
 
-    actual = None
+    # ---- MLB STRIKEOUTS ----
     if sport_key == 'mlb_strikeouts':
+        if line is None or direction is None:
+            return None, None
         game_pk = row.get('game_pk')
         if not game_pk:
             return None, None
         actual = get_actual_strikeouts(game_pk, player_name)
+        if actual is None:
+            return None, None
+        if actual == line:
+            return actual, "push"
+        won = (actual > line) if direction == "over" else (actual < line)
+        return actual, ("win" if won else "loss")
+
+    # ---- NBA POINTS / ASSISTS ----
     elif sport_key in ('nba_points', 'nba_assists'):
+        if line is None or direction is None:
+            return None, None
         try:
             box_df = get_bdl_games_for_date(row['pick_date'])
         except Exception:
@@ -2390,18 +2479,129 @@ def _grade_one_pick(row):
             if full_name.lower() == str(player_name).lower():
                 val = r.get(stat_col)
                 if val is not None:
-                    actual = val
+                    if val == line:
+                        return val, "push"
+                    won = (val > line) if direction == "over" else (val < line)
+                    return val, ("win" if won else "loss")
                 break
-    else:
-        return None, None  # Phase 2 — NFL/LoL grading not implemented yet
-
-    if actual is None:
         return None, None
 
-    if actual == line:
-        return actual, "push"
-    won = (actual > line) if direction == "over" else (actual < line)
-    return actual, ("win" if won else "loss")
+    # ---- NFL PASS ATTEMPTS / COMPLETIONS / RECEPTIONS ----
+    elif sport_key in ('nfl_pass_attempts', 'nfl_pass_completions', 'nfl_receptions'):
+        if line is None or direction is None:
+            return None, None
+        # Determine the NFL season from the pick date — if the pick is
+        # in Jan/Feb, it belongs to the prior year's season.
+        try:
+            pick_year = int(row['pick_date'][:4])
+            pick_month = int(row['pick_date'][5:7])
+            nfl_season = pick_year if pick_month >= 3 else pick_year - 1
+        except (ValueError, TypeError):
+            return None, None
+
+        week = _nfl_date_to_week(row['pick_date'], nfl_season)
+        if week is None:
+            return None, None
+
+        stat_col_map = {
+            'nfl_pass_attempts': 'attempts',
+            'nfl_pass_completions': 'completions',
+            'nfl_receptions': 'receptions',
+        }
+        stat_col = stat_col_map.get(sport_key)
+        if not stat_col:
+            return None, None
+
+        try:
+            weekly = get_nfl_player_stats([nfl_season])
+        except Exception:
+            return None, None
+
+        # Real, defensive filtering — same season_type guard already
+        # used in get_qb_starter_rows and get_wr_te_rows, applied here
+        # too so a preseason or playoff row can never accidentally
+        # grade a regular-season pick.
+        if 'season_type' in weekly.columns:
+            weekly = weekly[weekly['season_type'] == 'REG']
+
+        # Match by player name + week. For receptions, match across
+        # all receiving-eligible positions (WR/TE/RB/FB), same as the
+        # live pipeline's RECEPTION_POSITIONS.
+        if sport_key == 'nfl_receptions':
+            player_rows = weekly[
+                (weekly['player_display_name'] == player_name) &
+                (weekly['week'] == week) &
+                (weekly['position'].isin(RECEPTION_POSITIONS))
+            ]
+        else:
+            player_rows = weekly[
+                (weekly['player_display_name'] == player_name) &
+                (weekly['week'] == week) &
+                (weekly['position'] == 'QB')
+            ]
+
+        if player_rows.empty:
+            return None, None
+
+        actual = player_rows.iloc[0].get(stat_col)
+        if actual is None or (isinstance(actual, float) and pd.isna(actual)):
+            return None, None
+        actual = int(actual)
+
+        if actual == line:
+            return actual, "push"
+        won = (actual > line) if direction == "over" else (actual < line)
+        return actual, ("win" if won else "loss")
+
+    # ---- LOL MONEYLINE ----
+    elif sport_key == 'lol_moneyline':
+        # LoL is a moneyline bet (team win/loss), not an over/under
+        # prop — there's no "line" to compare against, just whether
+        # the recommended team won. The recommended team's name is
+        # stored in the `direction` field (repurposed from over/under
+        # since that concept doesn't apply to moneyline), and the
+        # recommended team's Cito slug is stored in `game_pk` — both
+        # set by record_picks_for_grading's LoL-specific block.
+        recommended_team_name = row.get('direction')
+        team_slug = row.get('game_pk')
+        if not recommended_team_name or not team_slug:
+            return None, None
+
+        try:
+            from cito_api import get_lol_team_matches, extract_completed_matches
+            cito_api_key = st.secrets.get("CITO_API_KEY")
+            if not cito_api_key:
+                return None, None
+            team_matches = _call_cito_with_backoff(
+                get_lol_team_matches, cito_api_key, team_slug
+            )
+            completed = extract_completed_matches(team_matches)
+        except Exception:
+            return None, None
+
+        pick_date = row['pick_date']
+        for match in completed:
+            # Match by date — Cito startTime is a full ISO timestamp,
+            # pick_date is YYYY-MM-DD, so compare just the date part.
+            match_date = (match.get('startTime') or '')[:10]
+            if match_date != pick_date:
+                continue
+
+            winner_slug = match.get('winner')
+            if not winner_slug:
+                continue  # match completed but winner not recorded yet
+
+            # Check if the recommended team won
+            if winner_slug == team_slug:
+                return 1, "win"
+            elif winner_slug:
+                # The other team won
+                return 0, "loss"
+
+        return None, None  # no completed match found for this date
+
+    else:
+        return None, None
 
 
 def grade_pending_picks():
