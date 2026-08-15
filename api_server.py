@@ -183,7 +183,7 @@ def _get_player_prop_picks(sport_key):
             "_raw_info": info,
             "_raw_result": result,
         })
-    picks.sort(key=lambda p: p.get("ev_pct") or -999, reverse=True)
+    picks.sort(key=lambda p: (_TIER_RANK.get(p.get("mm_tier"), -1), p.get("ev_pct") or -999), reverse=True)
     return picks, row.get("updated_at")
 
 
@@ -240,7 +240,7 @@ def _get_lol_picks():
             "team2_rating": r.get("team2_rating"),
             "why_lines": why_lines,
         })
-    picks.sort(key=lambda p: p.get("edge_pct") or 0, reverse=True)
+    picks.sort(key=lambda p: (_TIER_RANK.get(p.get("mm_tier"), -1), p.get("edge_pct") or -999), reverse=True)
     return picks, row.get("updated_at")
 
 
