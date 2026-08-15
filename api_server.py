@@ -175,6 +175,7 @@ def _get_player_prop_picks(sport_key):
             "mm_tier": e.get("tier"),
             "confidence_level": info.get("Confidence Level"),
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
+            "start_time": info.get("commence_time"),
             "why_lines": why_lines,
             # Real, raw info/result dicts — needed as-is by /api/mm-stake
             # to compute a real stake recommendation for this exact real
@@ -222,6 +223,20 @@ def _get_lol_picks():
             why_lines = generate_why(r, r, None, 'lol_moneyline')
         except Exception:
             why_lines = []
+        # Real, adapted info dict — calculate_mm_stake expects field
+        # names like 'MM Tier', 'Model Prob', 'Odds' (the standard
+        # format every prop-sport evaluate_*_quotes function produces),
+        # but LoL's pipeline result uses its own names ('mm_tier',
+        # 'recommended_model_prob', etc.). This adapter translates
+        # LoL's real fields into the standard format so the same real
+        # calculate_mm_stake function works for LoL too.
+        lol_adapted_info = {
+            'MM Tier': r.get('mm_tier'),
+            'Model Prob': r.get('recommended_model_prob'),
+            'Odds': r.get('recommended_odds'),
+            'Edge': r.get('edge_pct'),
+            'EV%': r.get('ev_pct'),
+        }
         picks.append({
             "home_team": r.get("team1_name"),
             "away_team": r.get("team2_name"),
@@ -239,6 +254,8 @@ def _get_lol_picks():
             "team1_rating": r.get("team1_rating"),
             "team2_rating": r.get("team2_rating"),
             "why_lines": why_lines,
+            "_raw_info": lol_adapted_info,
+            "_raw_result": {},
         })
     picks.sort(key=lambda p: (_TIER_RANK.get(p.get("mm_tier"), -1), p.get("edge_pct") or -999), reverse=True)
     return picks, row.get("updated_at")
