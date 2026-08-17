@@ -9695,10 +9695,25 @@ def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
     filtered_bad_price_data = []
     filtered_as_too_far_ahead = []
     filtered_as_already_started = []
+    filtered_as_excluded_tournament = []
+
+    # Real, direct exclusion of specific tournaments where the model's
+    # Elo ratings don't apply — e.g. KeSPA Cup, where big orgs field
+    # academy/substitute rosters instead of their main starters, making
+    # the ratings misleading. Case-insensitive substring matching on
+    # the Polymarket event_title field (the tournament identifier).
+    EXCLUDED_TOURNAMENTS = ("kespa",)
 
     for m in resolved_matchups:
         market = m["market"]
         prices = market.get("outcomePrices_parsed", [])
+
+        # Tournament exclusion — checked first, before any other filter,
+        # so these matches never reach the expensive pricing pipeline.
+        event_title = (market.get("event_title") or "").lower()
+        if any(kw in event_title for kw in EXCLUDED_TOURNAMENTS):
+            filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title")})
+            continue
 
         real_match_time = None
         if match_time_map:
@@ -9749,6 +9764,7 @@ def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
         "filtered_bad_price_data": filtered_bad_price_data,
         "filtered_as_too_far_ahead": filtered_as_too_far_ahead,
         "filtered_as_already_started": filtered_as_already_started,
+        "filtered_as_excluded_tournament": filtered_as_excluded_tournament,
     }
 
 
