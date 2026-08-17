@@ -437,10 +437,8 @@ async def subscription_status(authorization: str = Header(default=None), x_api_k
             try:
                 sub = stripe.Subscription.retrieve(stripe_subscription_id)
                 new_status = "active" if sub.status in ("active", "trialing") else "expired"
-                period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
                 supabase.table("subscriptions").update({
-                    "status": new_status, "current_period_end": period_end,
-                    "last_stripe_check": now.isoformat(),
+                    "status": new_status,
                 }).eq("user_id", user_id).execute()
                 status = new_status
             except Exception:
@@ -522,38 +520,15 @@ async def confirm_checkout(request: Request, authorization: str = Header(default
         if checkout_session.payment_status == "paid" or checkout_session.payment_status == "no_payment_required" or checkout_session.status == "complete":
             now = datetime.now(timezone.utc)
             subscription_id = checkout_session.subscription
-            period_end_iso = None
-            if subscription_id:
-                sub = stripe.Subscription.retrieve(subscription_id)
-                period_end_iso = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
 
-            # Try the full upsert first; if it fails (e.g. column
-            # type mismatch or missing column), fall back to just the
-            # essential fields that MUST succeed for the subscription
-            # to work — status="active" is the only one that really
-            # matters for unlocking picks.
             payload = {
                 "user_id": user.id, "status": "active",
                 "stripe_customer_id": checkout_session.customer,
                 "stripe_subscription_id": subscription_id,
-                "current_period_end": period_end_iso,
-                "last_stripe_check": now.isoformat(),
             }
-            try:
-                supabase.table("subscriptions").upsert(
-                    payload, on_conflict="user_id"
-                ).execute()
-            except Exception:
-                # Fallback — drop optional fields that might not exist
-                # in the table or have a type mismatch.
-                fallback = {
-                    "user_id": user.id, "status": "active",
-                    "stripe_customer_id": checkout_session.customer,
-                    "stripe_subscription_id": subscription_id,
-                }
-                supabase.table("subscriptions").upsert(
-                    fallback, on_conflict="user_id"
-                ).execute()
+            supabase.table("subscriptions").upsert(
+                payload, on_conflict="user_id"
+            ).execute()
             return {"success": True}
         return {"success": False, "error": f"Real checkout session status was '{checkout_session.status}' / payment_status '{checkout_session.payment_status}' — not confirmed as paid."}
     except Exception as e:
