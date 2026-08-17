@@ -521,14 +521,16 @@ async def confirm_checkout(request: Request, authorization: str = Header(default
             now = datetime.now(timezone.utc)
             subscription_id = checkout_session.subscription
 
-            payload = {
-                "user_id": user.id, "status": "active",
+            # Update the existing row rather than upsert — the row
+            # already exists (created during trial signup), so we just
+            # need to flip the status to active and store the Stripe IDs.
+            # This avoids NOT NULL constraint issues on columns like
+            # trial_end_date that were set during the original insert.
+            supabase.table("subscriptions").update({
+                "status": "active",
                 "stripe_customer_id": checkout_session.customer,
                 "stripe_subscription_id": subscription_id,
-            }
-            supabase.table("subscriptions").upsert(
-                payload, on_conflict="user_id"
-            ).execute()
+            }).eq("user_id", user.id).execute()
             return {"success": True}
         return {"success": False, "error": f"Real checkout session status was '{checkout_session.status}' / payment_status '{checkout_session.payment_status}' — not confirmed as paid."}
     except Exception as e:
