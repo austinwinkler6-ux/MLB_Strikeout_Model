@@ -519,7 +519,7 @@ async def confirm_checkout(request: Request, authorization: str = Header(default
         return {"success": False, "error": "Missing real 'session_id' in request body."}
     try:
         checkout_session = stripe.checkout.Session.retrieve(session_id)
-        if checkout_session.payment_status == "paid" or checkout_session.status == "complete":
+        if checkout_session.payment_status == "paid" or checkout_session.payment_status == "no_payment_required" or checkout_session.status == "complete":
             now = datetime.now(timezone.utc)
             subscription_id = checkout_session.subscription
             period_end_iso = None
