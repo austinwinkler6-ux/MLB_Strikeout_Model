@@ -9710,9 +9710,14 @@ def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
 
         # Tournament exclusion — checked first, before any other filter,
         # so these matches never reach the expensive pricing pipeline.
+        # Checks multiple fields since the tournament name may appear in
+        # different places depending on how Polymarket structured the event.
         event_title = (market.get("event_title") or "").lower()
-        if any(kw in event_title for kw in EXCLUDED_TOURNAMENTS):
-            filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title")})
+        question = (market.get("question") or "").lower()
+        slug = (market.get("slug") or "").lower()
+        tournament_text = f"{event_title} {question} {slug}"
+        if any(kw in tournament_text for kw in EXCLUDED_TOURNAMENTS):
+            filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title"), "question": market.get("question")})
             continue
 
         real_match_time = None
