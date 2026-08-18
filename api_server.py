@@ -176,6 +176,7 @@ def _get_player_prop_picks(sport_key):
             "confidence_level": info.get("Confidence Level"),
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
             "start_time": info.get("commence_time"),
+            "book_odds": info.get("book_odds", []),
             "why_lines": why_lines,
             # Real, raw info/result dicts — needed as-is by /api/mm-stake
             # to compute a real stake recommendation for this exact real
