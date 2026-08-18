@@ -4823,28 +4823,34 @@ def load_mlb_props_data():
             )
 
             for bookmaker in props_data.get('bookmakers', []):
-                if bookmaker['key'] in ['fanduel', 'draftkings']:
-                    book_name = bookmaker['title']
-                    book_key = 'FanDuel' if 'FanDuel' in book_name else ('DraftKings' if 'DraftKings' in book_name else None)
-                    if not book_key:
-                        continue
-                    for market in bookmaker.get('markets', []):
-                        if market['key'] == 'pitcher_strikeouts':
-                            for outcome in market['outcomes']:
-                                pitcher = outcome['description']
-                                if pitcher not in all_pitchers:
-                                    all_pitchers[pitcher] = {
-                                        'home': home, 'away': away, 'commence_time': commence_time_str,
-                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                        'Alt Lines': {'FanDuel': {}, 'DraftKings': {}},
-                                        'Projection': None, 'Edge': None, 'Play': None,
-                                        'Tier': None,
-                                        'EV%': None, 'MM Tier': None,
-                                        'Model Prob': None, 'No Vig Prob': None,
-                                        'Model Edge': None, 'Odds': None, 'Direction': None,
-                                        'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
-                                    }
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                is_primary = bookmaker['key'] in ['fanduel', 'draftkings']
+                book_key = None
+                if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
+                    book_key = 'FanDuel'
+                elif 'DraftKings' in book_title or bookmaker['key'] == 'draftkings':
+                    book_key = 'DraftKings'
+
+                for market in bookmaker.get('markets', []):
+                    if market['key'] == 'pitcher_strikeouts':
+                        for outcome in market['outcomes']:
+                            pitcher = outcome['description']
+                            if pitcher not in all_pitchers:
+                                all_pitchers[pitcher] = {
+                                    'home': home, 'away': away, 'commence_time': commence_time_str,
+                                    'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                    'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                    'Alt Lines': {'FanDuel': {}, 'DraftKings': {}},
+                                    'Projection': None, 'Edge': None, 'Play': None,
+                                    'Tier': None,
+                                    'EV%': None, 'MM Tier': None,
+                                    'Model Prob': None, 'No Vig Prob': None,
+                                    'Model Edge': None, 'Odds': None, 'Direction': None,
+                                    'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None,
+                                    '_book_odds_raw': {},
+                                }
+                            # Primary FD/DK extraction (unchanged)
+                            if is_primary and book_key:
                                 if book_key == 'FanDuel':
                                     all_pitchers[pitcher]['FanDuel Line'] = outcome['point']
                                     if outcome['name'] == 'Over':
@@ -4857,7 +4863,16 @@ def load_mlb_props_data():
                                         all_pitchers[pitcher]['DraftKings Over'] = outcome['price']
                                     else:
                                         all_pitchers[pitcher]['DraftKings Under'] = outcome['price']
-                        elif market['key'] == 'pitcher_strikeouts_alternate':
+                            # Capture ALL books into _book_odds_raw
+                            bor = all_pitchers[pitcher].setdefault('_book_odds_raw', {})
+                            if book_title not in bor:
+                                bor[book_title] = {'book': book_title, 'line': outcome.get('point'), 'over': None, 'under': None}
+                            if outcome['name'] == 'Over':
+                                bor[book_title]['over'] = outcome['price']
+                            else:
+                                bor[book_title]['under'] = outcome['price']
+                            bor[book_title]['line'] = outcome.get('point')
+                    if market['key'] == 'pitcher_strikeouts_alternate':
                             # Real, separate handling — every real
                             # alternate line gets its own real dict
                             # entry keyed by its own real point value,
@@ -4887,6 +4902,10 @@ def load_mlb_props_data():
                                     alt_lines[point]['over'] = outcome['price']
                                 else:
                                     alt_lines[point]['under'] = outcome['price']
+        # Convert _book_odds_raw dicts to clean book_odds lists
+        for pitcher in all_pitchers.values():
+            raw = pitcher.pop('_book_odds_raw', {})
+            pitcher['book_odds'] = sorted(raw.values(), key=lambda b: b.get('book', ''))
         return all_pitchers
     except Exception:
         return {}
@@ -5044,34 +5063,51 @@ def load_nba_props_data(prop_market):
             )
 
             for bookmaker in props_data.get('bookmakers', []):
-                if bookmaker['key'] in ['fanduel', 'draftkings']:
-                    book_name = bookmaker['title']
-                    for market in bookmaker.get('markets', []):
-                        if market['key'] == prop_market:
-                            for outcome in market['outcomes']:
-                                player = outcome['description']
-                                if player not in all_players:
-                                    all_players[player] = {
-                                        'home': home, 'away': away,
-                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                        'Projection': None, 'Edge': None, 'Play': None,
-                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
-                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
-                                        'Model Prob': None, 'No Vig Prob': None
-                                    }
-                                if 'FanDuel' in book_name:
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                is_primary = bookmaker['key'] in ['fanduel', 'draftkings']
+
+                for market in bookmaker.get('markets', []):
+                    if market['key'] == prop_market:
+                        for outcome in market['outcomes']:
+                            player = outcome['description']
+                            if player not in all_players:
+                                all_players[player] = {
+                                    'home': home, 'away': away, 'commence_time': commence_time_str,
+                                    'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                    'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                    'Projection': None, 'Edge': None, 'Play': None,
+                                    'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                    'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                    'Model Prob': None, 'No Vig Prob': None,
+                                    '_book_odds_raw': {},
+                                }
+                            # Primary FD/DK extraction
+                            if is_primary:
+                                if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
                                     all_players[player]['FanDuel Line'] = outcome['point']
                                     if outcome['name'] == 'Over':
                                         all_players[player]['FanDuel Over'] = outcome['price']
                                     else:
                                         all_players[player]['FanDuel Under'] = outcome['price']
-                                elif 'DraftKings' in book_name:
+                                elif 'DraftKings' in book_title or bookmaker['key'] == 'draftkings':
                                     all_players[player]['DraftKings Line'] = outcome['point']
                                     if outcome['name'] == 'Over':
                                         all_players[player]['DraftKings Over'] = outcome['price']
                                     else:
                                         all_players[player]['DraftKings Under'] = outcome['price']
+                            # Capture ALL books
+                            bor = all_players[player].setdefault('_book_odds_raw', {})
+                            if book_title not in bor:
+                                bor[book_title] = {'book': book_title, 'line': outcome.get('point'), 'over': None, 'under': None}
+                            if outcome['name'] == 'Over':
+                                bor[book_title]['over'] = outcome['price']
+                            else:
+                                bor[book_title]['under'] = outcome['price']
+                            bor[book_title]['line'] = outcome.get('point')
+        # Convert _book_odds_raw to clean book_odds lists
+        for player in all_players.values():
+            raw = player.pop('_book_odds_raw', {})
+            player['book_odds'] = sorted(raw.values(), key=lambda b: b.get('book', ''))
         return all_players
     except Exception:
         return {}
@@ -6104,36 +6140,50 @@ def load_nfl_props_data():
             props_data = event_info['props_data']
 
             for bookmaker in props_data.get('bookmakers', []):
-                if bookmaker['key'] in ['fanduel', 'draftkings']:
-                    book_name = bookmaker['title']
-                    for market in bookmaker.get('markets', []):
-                        if market.get('key') == 'player_pass_attempts':
-                            for outcome in market.get('outcomes', []):
-                                qb_name = outcome.get('description')
-                                if not qb_name:
-                                    continue
-                                if qb_name not in all_qbs:
-                                    all_qbs[qb_name] = {
-                                        'home': home, 'away': away, 'commence_time': commence_time_str,
-                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                        'Projection': None, 'Edge': None, 'Play': None,
-                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
-                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
-                                        'Model Prob': None, 'No Vig Prob': None,
-                                    }
-                                if 'FanDuel' in book_name:
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                is_primary = bookmaker['key'] in ['fanduel', 'draftkings']
+
+                for market in bookmaker.get('markets', []):
+                    if market.get('key') == 'player_pass_attempts':
+                        for outcome in market.get('outcomes', []):
+                            qb_name = outcome.get('description')
+                            if not qb_name:
+                                continue
+                            if qb_name not in all_qbs:
+                                all_qbs[qb_name] = {
+                                    'home': home, 'away': away, 'commence_time': commence_time_str,
+                                    'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                    'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                    'Projection': None, 'Edge': None, 'Play': None,
+                                    'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                    'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                    'Model Prob': None, 'No Vig Prob': None,
+                                    '_book_odds_raw': {},
+                                }
+                            if is_primary:
+                                if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
                                     all_qbs[qb_name]['FanDuel Line'] = outcome.get('point')
                                     if outcome.get('name') == 'Over':
                                         all_qbs[qb_name]['FanDuel Over'] = outcome.get('price')
                                     else:
                                         all_qbs[qb_name]['FanDuel Under'] = outcome.get('price')
-                                elif 'DraftKings' in book_name:
+                                elif 'DraftKings' in book_title or bookmaker['key'] == 'draftkings':
                                     all_qbs[qb_name]['DraftKings Line'] = outcome.get('point')
                                     if outcome.get('name') == 'Over':
                                         all_qbs[qb_name]['DraftKings Over'] = outcome.get('price')
                                     else:
                                         all_qbs[qb_name]['DraftKings Under'] = outcome.get('price')
+                            bor = all_qbs[qb_name].setdefault('_book_odds_raw', {})
+                            if book_title not in bor:
+                                bor[book_title] = {'book': book_title, 'line': outcome.get('point'), 'over': None, 'under': None}
+                            if outcome.get('name') == 'Over':
+                                bor[book_title]['over'] = outcome.get('price')
+                            else:
+                                bor[book_title]['under'] = outcome.get('price')
+                            bor[book_title]['line'] = outcome.get('point')
+        for qb in all_qbs.values():
+            raw = qb.pop('_book_odds_raw', {})
+            qb['book_odds'] = sorted(raw.values(), key=lambda b: b.get('book', ''))
         return all_qbs
     except Exception as e:
         st.session_state['_nfl_props_load_error'] = str(e)
@@ -6540,36 +6590,50 @@ def load_nfl_completions_props_data():
             props_data = event_info['props_data']
 
             for bookmaker in props_data.get('bookmakers', []):
-                if bookmaker['key'] in ['fanduel', 'draftkings']:
-                    book_name = bookmaker['title']
-                    for market in bookmaker.get('markets', []):
-                        if market.get('key') == 'player_pass_completions':
-                            for outcome in market.get('outcomes', []):
-                                qb_name = outcome.get('description')
-                                if not qb_name:
-                                    continue
-                                if qb_name not in all_qbs:
-                                    all_qbs[qb_name] = {
-                                        'home': home, 'away': away, 'commence_time': commence_time_str,
-                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                        'Projection': None, 'Edge': None, 'Play': None,
-                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
-                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
-                                        'Model Prob': None, 'No Vig Prob': None,
-                                    }
-                                if 'FanDuel' in book_name:
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                is_primary = bookmaker['key'] in ['fanduel', 'draftkings']
+
+                for market in bookmaker.get('markets', []):
+                    if market.get('key') == 'player_pass_completions':
+                        for outcome in market.get('outcomes', []):
+                            qb_name = outcome.get('description')
+                            if not qb_name:
+                                continue
+                            if qb_name not in all_qbs:
+                                all_qbs[qb_name] = {
+                                    'home': home, 'away': away, 'commence_time': commence_time_str,
+                                    'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                    'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                    'Projection': None, 'Edge': None, 'Play': None,
+                                    'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                    'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                    'Model Prob': None, 'No Vig Prob': None,
+                                    '_book_odds_raw': {},
+                                }
+                            if is_primary:
+                                if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
                                     all_qbs[qb_name]['FanDuel Line'] = outcome.get('point')
                                     if outcome.get('name') == 'Over':
                                         all_qbs[qb_name]['FanDuel Over'] = outcome.get('price')
                                     else:
                                         all_qbs[qb_name]['FanDuel Under'] = outcome.get('price')
-                                elif 'DraftKings' in book_name:
+                                elif 'DraftKings' in book_title or bookmaker['key'] == 'draftkings':
                                     all_qbs[qb_name]['DraftKings Line'] = outcome.get('point')
                                     if outcome.get('name') == 'Over':
                                         all_qbs[qb_name]['DraftKings Over'] = outcome.get('price')
                                     else:
                                         all_qbs[qb_name]['DraftKings Under'] = outcome.get('price')
+                            bor = all_qbs[qb_name].setdefault('_book_odds_raw', {})
+                            if book_title not in bor:
+                                bor[book_title] = {'book': book_title, 'line': outcome.get('point'), 'over': None, 'under': None}
+                            if outcome.get('name') == 'Over':
+                                bor[book_title]['over'] = outcome.get('price')
+                            else:
+                                bor[book_title]['under'] = outcome.get('price')
+                            bor[book_title]['line'] = outcome.get('point')
+        for qb in all_qbs.values():
+            raw = qb.pop('_book_odds_raw', {})
+            qb['book_odds'] = sorted(raw.values(), key=lambda b: b.get('book', ''))
         return all_qbs
     except Exception as e:
         st.session_state['_nfl_completions_props_load_error'] = str(e)
@@ -8305,36 +8369,50 @@ def load_nfl_receptions_props_data():
             props_data = event_info['props_data']
 
             for bookmaker in props_data.get('bookmakers', []):
-                if bookmaker['key'] in ['fanduel', 'draftkings']:
-                    book_name = bookmaker['title']
-                    for market in bookmaker.get('markets', []):
-                        if market.get('key') == 'player_receptions':
-                            for outcome in market.get('outcomes', []):
-                                receiver_name = outcome.get('description')
-                                if not receiver_name:
-                                    continue
-                                if receiver_name not in all_receivers:
-                                    all_receivers[receiver_name] = {
-                                        'home': home, 'away': away, 'commence_time': commence_time_str,
-                                        'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
-                                        'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
-                                        'Projection': None, 'Edge': None, 'Play': None,
-                                        'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
-                                        'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
-                                        'Model Prob': None, 'No Vig Prob': None,
-                                    }
-                                if 'FanDuel' in book_name:
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                is_primary = bookmaker['key'] in ['fanduel', 'draftkings']
+
+                for market in bookmaker.get('markets', []):
+                    if market.get('key') == 'player_receptions':
+                        for outcome in market.get('outcomes', []):
+                            receiver_name = outcome.get('description')
+                            if not receiver_name:
+                                continue
+                            if receiver_name not in all_receivers:
+                                all_receivers[receiver_name] = {
+                                    'home': home, 'away': away, 'commence_time': commence_time_str,
+                                    'FanDuel Line': None, 'FanDuel Over': None, 'FanDuel Under': None,
+                                    'DraftKings Line': None, 'DraftKings Over': None, 'DraftKings Under': None,
+                                    'Projection': None, 'Edge': None, 'Play': None,
+                                    'Tier': None, 'EV%': None, 'MM Tier': None, 'Low Confidence': None,
+                                    'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
+                                    'Model Prob': None, 'No Vig Prob': None,
+                                    '_book_odds_raw': {},
+                                }
+                            if is_primary:
+                                if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
                                     all_receivers[receiver_name]['FanDuel Line'] = outcome.get('point')
                                     if outcome.get('name') == 'Over':
                                         all_receivers[receiver_name]['FanDuel Over'] = outcome.get('price')
                                     else:
                                         all_receivers[receiver_name]['FanDuel Under'] = outcome.get('price')
-                                elif 'DraftKings' in book_name:
+                                elif 'DraftKings' in book_title or bookmaker['key'] == 'draftkings':
                                     all_receivers[receiver_name]['DraftKings Line'] = outcome.get('point')
                                     if outcome.get('name') == 'Over':
                                         all_receivers[receiver_name]['DraftKings Over'] = outcome.get('price')
                                     else:
                                         all_receivers[receiver_name]['DraftKings Under'] = outcome.get('price')
+                            bor = all_receivers[receiver_name].setdefault('_book_odds_raw', {})
+                            if book_title not in bor:
+                                bor[book_title] = {'book': book_title, 'line': outcome.get('point'), 'over': None, 'under': None}
+                            if outcome.get('name') == 'Over':
+                                bor[book_title]['over'] = outcome.get('price')
+                            else:
+                                bor[book_title]['under'] = outcome.get('price')
+                            bor[book_title]['line'] = outcome.get('point')
+        for rec in all_receivers.values():
+            raw = rec.pop('_book_odds_raw', {})
+            rec['book_odds'] = sorted(raw.values(), key=lambda b: b.get('book', ''))
         return all_receivers
     except Exception as e:
         st.session_state['_nfl_receptions_props_load_error'] = str(e)
