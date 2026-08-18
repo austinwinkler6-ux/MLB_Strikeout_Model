@@ -4872,13 +4872,19 @@ def load_mlb_props_data():
                             else:
                                 bor[book_title]['under'] = outcome['price']
                             bor[book_title]['line'] = outcome.get('point')
-                    if market['key'] == 'pitcher_strikeouts_alternate':
+                    if market['key'] == 'pitcher_strikeouts_alternate' and book_key:
                             # Real, separate handling — every real
                             # alternate line gets its own real dict
                             # entry keyed by its own real point value,
                             # never overwriting another real line the
                             # way the main-line loop above correctly
                             # does for the single main line.
+                            # Guard: book_key is only set for FanDuel/
+                            # DraftKings — Alt Lines only has those two
+                            # keys, so a non-FD/DK bookmaker here would
+                            # KeyError on Alt Lines[None] and silently
+                            # kill the entire MLB pipeline (caught
+                            # August 2026).
                             for outcome in market['outcomes']:
                                 pitcher = outcome['description']
                                 if pitcher not in all_pitchers:
@@ -4892,7 +4898,8 @@ def load_mlb_props_data():
                                         'EV%': None, 'MM Tier': None,
                                         'Model Prob': None, 'No Vig Prob': None,
                                         'Model Edge': None, 'Odds': None, 'Direction': None,
-                                        'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None
+                                        'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None,
+                                        '_book_odds_raw': {},
                                     }
                                 point = outcome['point']
                                 alt_lines = all_pitchers[pitcher]['Alt Lines'][book_key]
