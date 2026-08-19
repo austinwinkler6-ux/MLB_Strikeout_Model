@@ -852,13 +852,14 @@ async def live_odds(
     event_id: str,
     sport: str,
     market: str,
+    player: str = None,
     x_api_key: str = Header(default=None),
 ):
     """Fetches fresh, real-time odds from The Odds API for a single
-    event + market — called on-demand by the frontend when a user opens
-    the odds comparison dropdown, so they always see current prices
-    instead of stale cached data. One API credit per call, only burned
-    when a user actually clicks."""
+    event + market + player — called on-demand by the frontend when a
+    user opens the odds comparison dropdown, so they always see current
+    prices instead of stale cached data. One API credit per call, only
+    burned when a user actually clicks."""
     _require_api_key(x_api_key)
     if not ODDS_API_KEY:
         return {"error": "ODDS_API_KEY not configured", "book_odds": []}
@@ -876,6 +877,9 @@ async def live_odds(
             for mkt in bookmaker.get("markets", []):
                 if mkt.get("key") == market:
                     for outcome in mkt.get("outcomes", []):
+                        # Filter by player name if provided
+                        if player and outcome.get("description", "").lower() != player.lower():
+                            continue
                         if book_title not in book_odds_raw:
                             book_odds_raw[book_title] = {"book": book_title, "line": outcome.get("point"), "over": None, "under": None}
                         if outcome.get("name") == "Over":
