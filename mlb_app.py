@@ -4848,6 +4848,9 @@ def load_mlb_props_data():
                                     'Model Edge': None, 'Odds': None, 'Direction': None,
                                     'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None,
                                     '_book_odds_raw': {},
+                                    'odds_api_event_id': event_id,
+                                    'odds_api_sport': 'baseball_mlb',
+                                    'odds_api_market': 'pitcher_strikeouts',
                                 }
                             # Primary FD/DK extraction (unchanged)
                             if is_primary and book_key:
@@ -4900,6 +4903,9 @@ def load_mlb_props_data():
                                         'Model Edge': None, 'Odds': None, 'Direction': None,
                                         'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None,
                                         '_book_odds_raw': {},
+                                        'odds_api_event_id': event_id,
+                                        'odds_api_sport': 'baseball_mlb',
+                                        'odds_api_market': 'pitcher_strikeouts',
                                     }
                                 point = outcome['point']
                                 alt_lines = all_pitchers[pitcher]['Alt Lines'][book_key]
@@ -5087,6 +5093,9 @@ def load_nba_props_data(prop_market):
                                     'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
                                     'Model Prob': None, 'No Vig Prob': None,
                                     '_book_odds_raw': {},
+                                    'odds_api_event_id': event_id,
+                                    'odds_api_sport': 'basketball_nba',
+                                    'odds_api_market': prop_market,
                                 }
                             # Primary FD/DK extraction
                             if is_primary:
@@ -6166,6 +6175,9 @@ def load_nfl_props_data():
                                     'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
                                     'Model Prob': None, 'No Vig Prob': None,
                                     '_book_odds_raw': {},
+                                    'odds_api_event_id': event_id,
+                                    'odds_api_sport': 'americanfootball_nfl',
+                                    'odds_api_market': 'player_pass_attempts',
                                 }
                             if is_primary:
                                 if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
@@ -6616,6 +6628,9 @@ def load_nfl_completions_props_data():
                                     'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
                                     'Model Prob': None, 'No Vig Prob': None,
                                     '_book_odds_raw': {},
+                                    'odds_api_event_id': event_id,
+                                    'odds_api_sport': 'americanfootball_nfl',
+                                    'odds_api_market': 'player_pass_completions',
                                 }
                             if is_primary:
                                 if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
@@ -8395,6 +8410,9 @@ def load_nfl_receptions_props_data():
                                     'Fair Odds': None, 'Edge Cents': None, 'Direction': None, 'Odds': None,
                                     'Model Prob': None, 'No Vig Prob': None,
                                     '_book_odds_raw': {},
+                                    'odds_api_event_id': event_id,
+                                    'odds_api_sport': 'americanfootball_nfl',
+                                    'odds_api_market': 'player_receptions',
                                 }
                             if is_primary:
                                 if 'FanDuel' in book_title or bookmaker['key'] == 'fanduel':
