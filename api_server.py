@@ -177,6 +177,9 @@ def _get_player_prop_picks(sport_key):
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
             "start_time": info.get("commence_time"),
             "book_odds": info.get("book_odds", []),
+            "odds_api_event_id": info.get("odds_api_event_id"),
+            "odds_api_sport": info.get("odds_api_sport"),
+            "odds_api_market": info.get("odds_api_market"),
             "why_lines": why_lines,
             # Real, raw info/result dicts — needed as-is by /api/mm-stake
             # to compute a real stake recommendation for this exact real
@@ -842,6 +845,48 @@ async def lol_picks(x_api_key: str = Header(default=None)):
     if not picks and meta is None:
         return {"error": "No cached picks available yet — the model hasn't run recently.", "picks": [], "count": 0}
     return {"picks": picks, "count": len(picks), "last_updated": meta}
+
+
+@app.get("/api/live-odds")
+async def live_odds(
+    event_id: str,
+    sport: str,
+    market: str,
+    x_api_key: str = Header(default=None),
+):
+    """Fetches fresh, real-time odds from The Odds API for a single
+    event + market — called on-demand by the frontend when a user opens
+    the odds comparison dropdown, so they always see current prices
+    instead of stale cached data. One API credit per call, only burned
+    when a user actually clicks."""
+    _require_api_key(x_api_key)
+    if not ODDS_API_KEY:
+        return {"error": "ODDS_API_KEY not configured", "book_odds": []}
+    try:
+        resp = requests.get(
+            f"https://api.the-odds-api.com/v4/sports/{sport}/events/{event_id}/odds",
+            params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": market, "oddsFormat": "american"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        book_odds_raw = {}
+        for bookmaker in data.get("bookmakers", []):
+            book_title = bookmaker.get("title", bookmaker.get("key", ""))
+            for mkt in bookmaker.get("markets", []):
+                if mkt.get("key") == market:
+                    for outcome in mkt.get("outcomes", []):
+                        if book_title not in book_odds_raw:
+                            book_odds_raw[book_title] = {"book": book_title, "line": outcome.get("point"), "over": None, "under": None}
+                        if outcome.get("name") == "Over":
+                            book_odds_raw[book_title]["over"] = outcome.get("price")
+                        else:
+                            book_odds_raw[book_title]["under"] = outcome.get("price")
+                        book_odds_raw[book_title]["line"] = outcome.get("point")
+        book_odds = sorted(book_odds_raw.values(), key=lambda b: b.get("book", ""))
+        return {"book_odds": book_odds, "fetched_at": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        return {"error": str(e), "book_odds": []}
 
 
 @app.get("/api/all-picks")
