@@ -4455,9 +4455,25 @@ def get_nfl_player_stats(seasons):
     """Weekly player stats — confirmed columns include attempts,
     completions, receptions, targets, target_share, passing_cpoe,
     wopr, air_yards_share, sacks_suffered, and more. This is the core
-    box-score input for all three NFL models."""
+    box-score input for all three NFL models.
+
+    Real fix (August 2026): if the current season's data isn't
+    available yet (nflverse hasn't published it — common in preseason
+    before regular-season games are played), falls back to the
+    previous season so the pipeline doesn't crash."""
     import nflreadpy as nfl
-    return nfl.load_player_stats(seasons).to_pandas()
+    try:
+        return nfl.load_player_stats(seasons).to_pandas()
+    except (ConnectionError, Exception) as e:
+        # If we're requesting a single season and it fails, try
+        # the previous season as a fallback
+        if len(seasons) == 1 and seasons[0] > 2020:
+            fallback_seasons = [seasons[0] - 1]
+            try:
+                return nfl.load_player_stats(fallback_seasons).to_pandas()
+            except Exception:
+                raise e  # re-raise original if fallback also fails
+        raise
 
 @st.cache_data(ttl=86400)
 def get_nfl_pbp(seasons):
@@ -4470,11 +4486,20 @@ def get_nfl_pbp(seasons):
     exceed a standard instance's memory limit, especially once cached
     (July 2026)."""
     import nflreadpy as nfl
-    full_df = nfl.load_pbp(seasons).to_pandas()
     needed_cols = ['pass_attempt', 'rush_attempt', 'xpass', 'pass_oe', 'posteam', 'defteam',
                    'game_id', 'season', 'week', 'play_type', 'pass', 'down',
                    'complete_pass', 'incomplete_pass', 'passer_player_name', 'passer_player_id',
                    'wp', 'score_differential']
+    try:
+        full_df = nfl.load_pbp(seasons).to_pandas()
+    except (ConnectionError, Exception) as e:
+        if len(seasons) == 1 and seasons[0] > 2020:
+            try:
+                full_df = nfl.load_pbp([seasons[0] - 1]).to_pandas()
+            except Exception:
+                raise e
+        else:
+            raise
     available_cols = [c for c in needed_cols if c in full_df.columns]
     return full_df[available_cols].copy()
 
@@ -4486,7 +4511,15 @@ def get_nfl_schedules(seasons):
     temp, wind. A genuinely rich single source covering most of the
     Game Environment category and real historical odds."""
     import nflreadpy as nfl
-    return nfl.load_schedules(seasons).to_pandas()
+    try:
+        return nfl.load_schedules(seasons).to_pandas()
+    except (ConnectionError, Exception) as e:
+        if len(seasons) == 1 and seasons[0] > 2020:
+            try:
+                return nfl.load_schedules([seasons[0] - 1]).to_pandas()
+            except Exception:
+                raise e
+        raise
 
 @st.cache_data(ttl=3600)
 def get_nfl_injuries(seasons):
