@@ -9800,27 +9800,37 @@ def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
     filtered_as_already_started = []
     filtered_as_excluded_tournament = []
 
-    # Real, direct exclusion of specific tournaments where the model's
-    # Elo ratings don't apply — e.g. KeSPA Cup, where big orgs field
-    # academy/substitute rosters instead of their main starters, making
-    # the ratings misleading. Case-insensitive substring matching on
-    # the Polymarket event_title field (the tournament identifier).
-    EXCLUDED_TOURNAMENTS = ("kespa",)
+    # Allowlist of leagues/tournaments — only matches from these
+    # competitions will reach the pricing pipeline. Substring-matched
+    # (case-insensitive) against event_title, question, and slug fields
+    # from Polymarket. Flipped from the old blocklist approach (which
+    # only excluded KeSPA) because the user wants to control exactly
+    # which leagues are covered rather than playing whack-a-mole with
+    # minor tournaments that keep appearing.
+    ALLOWED_LEAGUES = (
+        # Tier 1 — major regional leagues
+        "lck", "lpl", "lec", "lcs", "lta",
+        # International events
+        "worlds", "world championship", "msi", "first stand",
+        # Regional leagues
+        "tcl", "prime league", " lit ", "lcp", "les", "cbl",
+    )
 
     for m in resolved_matchups:
         market = m["market"]
         prices = market.get("outcomePrices_parsed", [])
 
-        # Tournament exclusion — checked first, before any other filter,
-        # so these matches never reach the expensive pricing pipeline.
-        # Checks multiple fields since the tournament name may appear in
-        # different places depending on how Polymarket structured the event.
+        # League allowlist — checked first, before any other filter,
+        # so matches from minor/unknown tournaments never reach the
+        # expensive pricing pipeline. Checks multiple fields since the
+        # tournament name may appear in different places depending on
+        # how Polymarket structured the event.
         event_title = (market.get("event_title") or "").lower()
         question = (market.get("question") or "").lower()
         slug = (market.get("slug") or "").lower()
-        tournament_text = f"{event_title} {question} {slug}"
-        if any(kw in tournament_text for kw in EXCLUDED_TOURNAMENTS):
-            filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title"), "question": market.get("question")})
+        tournament_text = f" {event_title} {question} {slug} "
+        if not any(kw in tournament_text for kw in ALLOWED_LEAGUES):
+            filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title"), "question": market.get("question"), "reason": "not in allowed leagues"})
             continue
 
         real_match_time = None
