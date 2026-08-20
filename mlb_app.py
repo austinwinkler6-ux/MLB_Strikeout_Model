@@ -5452,7 +5452,13 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
     _timing_log = {}
     for key in order:
         _block_start = time.time()
-        blocks[key]()
+        try:
+            blocks[key]()
+        except Exception as _sport_err:
+            # One sport crashing (e.g. NFL's nflreadpy failing to
+            # download external data) must NOT kill the entire pipeline
+            # — MLB and LoL should still run and cache their picks.
+            st.session_state[f'_auto_run_error_{key}'] = str(_sport_err)
         _timing_log[key] = round(time.time() - _block_start, 2)
     st.session_state['_last_auto_run_timing'] = _timing_log
 
