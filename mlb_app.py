@@ -9809,12 +9809,16 @@ def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
     # minor tournaments that keep appearing.
     ALLOWED_LEAGUES = (
         # Tier 1 — major regional leagues
-        "lck", "lpl", "lec", "lcs", "lta",
+        "lck", "lpl", "lec", "lcs", "lta ",
         # International events
-        "worlds", "world championship", "msi", "first stand",
+        "worlds", "world championship", "msi ",
         # Regional leagues
-        "tcl", "prime league", " lit ", "lcp", "les", "cbl",
+        "first stand", "tcl", "prime league", "lcp", "les ", "cbl",
     )
+
+    # Exclude developmental/lower-tier divisions WITHIN allowed leagues
+    # (e.g. LCK Challengers is tagged "lck" but is NOT main LCK).
+    EXCLUDED_SUBLEVEL = ("challengers", "academy", "promotion", "youth", "desafiante", "kespa")
 
     for m in resolved_matchups:
         market = m["market"]
@@ -9831,6 +9835,13 @@ def _prefilter_lol_matchups(resolved_matchups, match_time_map, cutoff_date):
         tournament_text = f" {event_title} {question} {slug} "
         if not any(kw in tournament_text for kw in ALLOWED_LEAGUES):
             filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title"), "question": market.get("question"), "reason": "not in allowed leagues"})
+            continue
+
+        # Sub-level exclusion — catches developmental divisions within
+        # allowed leagues (e.g. "LCK Challengers League" matches "lck"
+        # but should not be shown as main LCK competition).
+        if any(kw in tournament_text for kw in EXCLUDED_SUBLEVEL):
+            filtered_as_excluded_tournament.append({"team1": m["team1_name"], "team2": m["team2_name"], "event_title": market.get("event_title"), "question": market.get("question"), "reason": "excluded sub-level tournament"})
             continue
 
         real_match_time = None
