@@ -1572,6 +1572,7 @@ SAVE_LABEL_TO_MODEL_KEY = {
     'NFL': 'nfl_pass_attempts',
     'NFL_COMPLETIONS': 'nfl_pass_completions',
     'NFL_RECEPTIONS': 'nfl_receptions',
+    'NFL_TD': 'nfl_td',
     'LOL': 'lol_moneyline',
 }
 MODEL_KEY_TO_SAVE_LABEL = {v: k for k, v in SAVE_LABEL_TO_MODEL_KEY.items()}
@@ -2236,6 +2237,7 @@ def build_todays_card_entries():
         ('all_qbs', 'nfl_attempts_results', '🏈 NFL Att', 'nfl_pass_attempts'),
         ('all_qbs_completions', 'nfl_completions_results', '🏈 NFL Comp', 'nfl_pass_completions'),
         ('all_receivers', 'nfl_receptions_results', '🏈 NFL Rec', 'nfl_receptions'),
+        ('all_td_scorers', 'nfl_td_results', '🏈 NFL TD', 'nfl_td'),
     ]
     for all_players_key, results_key, sport_label, sport_key in nfl_models:
         nfl_players = st.session_state.get(all_players_key, {})
@@ -5411,6 +5413,8 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
              "Loading NFL completions props", "Running NFL completions projections"),
             ('all_receivers', 'nfl_receptions', load_nfl_receptions_props_data, run_all_nfl_receptions_projections,
              "Loading NFL receptions props", "Running NFL receptions projections"),
+            ('all_td_scorers', 'nfl_td', load_nfl_td_props_data, run_all_nfl_td_projections,
+             "Loading NFL TD props", "Running NFL TD projections"),
         ]
         # Real addition (August 2026, per direct user report — the
         # real, top-level timing panel showed NFL alone eating 105 of
@@ -6136,7 +6140,7 @@ def _fetch_nfl_events_and_props_combined():
                 props_resp = requests.get(
                     f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
                     params={'apiKey': ODDS_API_KEY, 'regions': 'us',
-                             'markets': 'player_pass_attempts,player_pass_completions,player_receptions',
+                             'markets': 'player_pass_attempts,player_pass_completions,player_receptions,player_anytime_td_scorer',
                              'oddsFormat': 'american'},
                     timeout=15
                 )
@@ -8631,6 +8635,185 @@ def run_all_nfl_receptions_projections(all_receivers, season, progress_callback=
                     'game_week': game_week, 'commence_time': info.get('commence_time'),
                 })
     return results
+
+
+
+# ---- NFL ANYTIME TOUCHDOWN MODEL (August 2026) ----
+TD_ELIGIBLE_POSITIONS = ('RB', 'WR', 'TE', 'QB')
+
+def load_nfl_td_props_data():
+    try:
+        if '_nfl_combined_events_cache' not in st.session_state:
+            combined = _fetch_nfl_events_and_props_combined()
+            st.session_state['_nfl_combined_events_cache'] = combined
+        else:
+            combined = st.session_state['_nfl_combined_events_cache']
+        all_players = {}
+        for event_id, event_info in combined.items():
+            home = event_info['home']
+            away = event_info['away']
+            commence_time_str = event_info['commence_time']
+            props_data = event_info['props_data']
+            for bookmaker in props_data.get('bookmakers', []):
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                for market in bookmaker.get('markets', []):
+                    if market.get('key') != 'player_anytime_td_scorer':
+                        continue
+                    for outcome in market.get('outcomes', []):
+                        if outcome.get('name') != 'Yes':
+                            continue
+                        player = outcome.get('description')
+                        if not player:
+                            continue
+                        odds = outcome.get('price')
+                        if odds is None:
+                            continue
+                        if player not in all_players:
+                            all_players[player] = {
+                                'home': home, 'away': away, 'commence_time': commence_time_str,
+                                'td_odds': None, 'td_book': None, '_td_book_odds': {},
+                                'Projection': None, 'Model Prob': None, 'Implied Prob': None,
+                                'EV%': None, 'MM Tier': None, 'Direction': 'td', 'Odds': None,
+                                'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None,
+                                'odds_api_event_id': event_id,
+                                'odds_api_sport': 'americanfootball_nfl',
+                                'odds_api_market': 'player_anytime_td_scorer',
+                            }
+                        all_players[player]['_td_book_odds'][book_title] = {'book': book_title, 'odds': odds}
+                        current_best = all_players[player]['td_odds']
+                        if current_best is None or odds > current_best:
+                            all_players[player]['td_odds'] = odds
+                            all_players[player]['td_book'] = book_title
+        for player in all_players.values():
+            raw = player.pop('_td_book_odds', {})
+            player['book_odds'] = sorted(
+                [{'book': v['book'], 'line': None, 'over': v['odds'], 'under': None} for v in raw.values()],
+                key=lambda b: b.get('book', ''))
+        return all_players
+    except Exception as e:
+        st.session_state['_nfl_td_props_load_error'] = str(e)
+        return {}
+
+
+def american_odds_to_implied_prob(odds):
+    if odds is None:
+        return None
+    if odds > 0:
+        return 100 / (odds + 100)
+    else:
+        return abs(odds) / (abs(odds) + 100)
+
+
+def run_all_nfl_td_projections(all_players, season, progress_callback=None):
+    from math import exp
+    results = {}
+    try:
+        weekly = get_nfl_player_stats([int(season)])
+    except Exception:
+        try:
+            weekly = get_nfl_player_stats([int(season) - 1])
+        except Exception:
+            return results
+    name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
+    skill_players = weekly[weekly['position'].isin(TD_ELIGIBLE_POSITIONS)].copy()
+    if skill_players.empty:
+        return results
+    if 'rushing_tds' in skill_players.columns and 'receiving_tds' in skill_players.columns:
+        skill_players['total_tds'] = skill_players['rushing_tds'].fillna(0) + skill_players['receiving_tds'].fillna(0)
+    elif 'rushing_tds' in skill_players.columns:
+        skill_players['total_tds'] = skill_players['rushing_tds'].fillna(0)
+    else:
+        return results
+    league_avg_td_rate = skill_players['total_tds'].mean() if len(skill_players) > 0 else 0.35
+    team_col = 'recent_team' if 'recent_team' in skill_players.columns else ('team' if 'team' in skill_players.columns else None)
+    team_tds_scored = {}
+    if team_col:
+        team_game_tds = skill_players.groupby([team_col, 'week'])['total_tds'].sum().reset_index()
+        team_avg_tds = team_game_tds.groupby(team_col)['total_tds'].mean()
+        team_tds_scored = team_avg_tds.to_dict()
+    league_avg_team_tds = sum(team_tds_scored.values()) / len(team_tds_scored) if team_tds_scored else 2.5
+    count = 0
+    total = len(all_players)
+    for player_name, info in all_players.items():
+        count += 1
+        if progress_callback and count % 5 == 0:
+            progress_callback(count, total, f"TD model: {player_name}")
+        td_odds = info.get('td_odds')
+        if td_odds is None:
+            continue
+        player_rows = weekly[weekly['player_display_name'] == player_name].sort_values('week')
+        if player_rows.empty:
+            continue
+        player_pos = player_rows.iloc[-1].get('position', '')
+        if player_pos not in TD_ELIGIBLE_POSITIONS:
+            continue
+        player_rows = player_rows.copy()
+        if 'rushing_tds' in player_rows.columns and 'receiving_tds' in player_rows.columns:
+            player_rows['total_tds'] = player_rows['rushing_tds'].fillna(0) + player_rows['receiving_tds'].fillna(0)
+        elif 'rushing_tds' in player_rows.columns:
+            player_rows['total_tds'] = player_rows['rushing_tds'].fillna(0)
+        else:
+            continue
+        games_played = len(player_rows)
+        if games_played >= 5:
+            recent_rate = player_rows.tail(5)['total_tds'].mean()
+            season_rate = player_rows['total_tds'].mean()
+            raw_td_rate = (recent_rate * 0.6) + (season_rate * 0.4)
+        else:
+            raw_td_rate = player_rows['total_tds'].mean()
+        regression_games = 10
+        regressed_td_rate = (raw_td_rate * games_played + league_avg_td_rate * regression_games) / (games_played + regression_games)
+        home_name = info.get('home', '')
+        away_name = info.get('away', '')
+        home_abbrev = name_to_abbrev.get(home_name)
+        away_abbrev = name_to_abbrev.get(away_name)
+        player_team = player_rows.iloc[-1].get(team_col, '') if team_col else ''
+        opp_abbrev = away_abbrev if player_team == home_abbrev else (home_abbrev if player_team == away_abbrev else None)
+        opp_factor = 1.0
+        if opp_abbrev and team_tds_scored:
+            opp_tds = team_tds_scored.get(opp_abbrev, league_avg_team_tds)
+            opp_factor = 1 + ((opp_tds / league_avg_team_tds) - 1) * 0.25
+        expected_tds = regressed_td_rate * opp_factor
+        model_prob = 1 - exp(-expected_tds) if expected_tds > 0 else 0.0
+        model_prob = max(0.03, min(0.85, model_prob))
+        implied_prob = american_odds_to_implied_prob(td_odds)
+        if implied_prob is None or implied_prob <= 0:
+            continue
+        if td_odds > 0:
+            decimal_odds = 1 + (td_odds / 100)
+        else:
+            decimal_odds = 1 + (100 / abs(td_odds))
+        ev_pct = round(((model_prob * decimal_odds) - 1) * 100, 2)
+        low_confidence = games_played < 5
+        if ev_pct >= 15:
+            mm_tier = "🟢 Best Bet"
+        elif ev_pct >= 8:
+            mm_tier = "🔵 Worth a Look"
+        elif ev_pct >= 3:
+            mm_tier = "🟡 Lean"
+        else:
+            mm_tier = "🔴 Pass"
+        if low_confidence and mm_tier in ("🟢 Best Bet", "🔵 Worth a Look"):
+            mm_tier = "🟡 Lean"
+        fair_odds = prob_to_american_odds(model_prob)
+        edge_cents = calculate_odds_edge_cents(td_odds, fair_odds) if fair_odds else None
+        info.update({
+            'Projection': round(expected_tds, 2), 'Model Prob': round(model_prob, 4),
+            'Implied Prob': round(implied_prob, 4), 'EV%': ev_pct, 'MM Tier': mm_tier,
+            'Odds': td_odds, 'Fair Odds': fair_odds, 'Edge Cents': edge_cents,
+            'Low Confidence': low_confidence, 'Direction': 'td',
+            'Book': info.get('td_book'), 'player_position': player_pos,
+            'games_played': games_played, 'raw_td_rate': round(raw_td_rate, 3),
+            'regressed_td_rate': round(regressed_td_rate, 3),
+        })
+        results[player_name] = {
+            'player': player_name, 'matchup': f"{info['away']} @ {info['home']}",
+            'projected_tds': round(expected_tds, 2), 'model_prob': round(model_prob, 4),
+            'implied_prob': round(implied_prob, 4), 'ev_pct': ev_pct, 'mm_tier': mm_tier,
+            'odds': td_odds, 'book': info.get('td_book'), 'commence_time': info.get('commence_time'),
+        }
+    return results
+
 
 def run_nfl_display(all_players_key, load_fn, run_all_fn, run_single_fn, session_key, player_label, sport_save_label, model_sport_key):
     """Generic NFL model display (July 2026) — built to give NFL the
