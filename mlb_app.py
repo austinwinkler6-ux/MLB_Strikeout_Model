@@ -9743,6 +9743,14 @@ def _price_and_tier_lol_matchup(m, ratings, max_days_ahead, cutoff_date, interna
         except Exception:
             pass  # real, honest fallback — no roster discount applied, not a pipeline failure
 
+    # EV cap (August 2026) — a +173% EV is never real, it means the
+    # model is wildly overconfident (stale ratings, missing roster
+    # data, thin market). Cap at 40% so unrealistic numbers don't
+    # mislead users into oversizing bets on bad predictions.
+    _LOL_MAX_EV_PCT = 40.0
+    if ev_pct is not None and ev_pct > _LOL_MAX_EV_PCT:
+        ev_pct = _LOL_MAX_EV_PCT
+
     # Real, honest first-attempt tier thresholds specific to moneyline
     # EV — genuinely different distribution than prop betting EV, not
     # borrowed from another sport's calibration. Needs real calibration
@@ -10110,6 +10118,20 @@ def run_lol_matchup_projections(api_key, tag_slug="league-of-legends", max_days_
 
     sorted_history, fetch_errors, per_team_fetch_counts = _fetch_lol_team_histories(resolved_matchups, api_key, unique_slugs=unique_slugs, on_step=_tick)
     ratings = build_team_ratings_from_history(sorted_history, team_region_map=team_region_map)
+
+    # Between-split Elo regression (August 2026) — standard practice
+    # in every serious Elo system (FiveThirtyEight does 1/3 for NFL
+    # between seasons). Without this, a team that dominated last split
+    # keeps an extreme rating even after roster changes, meta shifts,
+    # and months of off-time — producing absurdly overconfident
+    # predictions (+173% EV) that are clearly wrong. 25% regression
+    # pulls every rating 25% of the way back toward 1500, shrinking
+    # the gap between model probability and market probability to
+    # something realistic.
+    _LOL_REGRESSION_FACTOR = 0.25
+    _LOL_MEAN_RATING = 1500.0
+    for _slug in ratings:
+        ratings[_slug] = _LOL_MEAN_RATING + (ratings[_slug] - _LOL_MEAN_RATING) * (1 - _LOL_REGRESSION_FACTOR)
     from lol_elo import count_international_matches
     international_counts = count_international_matches(sorted_history, team_region_map)
 
