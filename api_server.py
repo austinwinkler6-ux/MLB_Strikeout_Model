@@ -121,6 +121,7 @@ SPORT_KEYS = {
     "nfl-attempts": "nfl_pass_attempts",
     "nfl-completions": "nfl_pass_completions",
     "nfl-receptions": "nfl_receptions",
+    "nfl-td": "nfl_td",
 }
 
 
@@ -689,6 +690,7 @@ def _get_odds_api_sport_and_market(sport):
         "NFL": ("americanfootball_nfl", "player_pass_attempts"),
         "NFL_COMPLETIONS": ("americanfootball_nfl", "player_pass_completions"),
         "NFL_RECEPTIONS": ("americanfootball_nfl", "player_receptions"),
+        "NFL_TD": ("americanfootball_nfl", "player_anytime_td_scorer"),
     }
     return mapping.get(sport, (None, None))
 
