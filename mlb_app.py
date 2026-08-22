@@ -8705,20 +8705,15 @@ def american_odds_to_implied_prob(odds):
 
 
 def run_all_nfl_td_projections(all_players, season, progress_callback=None):
-    """NFL Anytime TD model V1.3 (August 2026).
+    """NFL Anytime TD model V1.4 (August 2026).
 
-    Fixes from external review:
-    1. Opponent adjustment flipped — now uses TDs ALLOWED by opponent
-       defense, not opponent offensive TDs (which was backwards).
-    2. Position-specific league averages for Bayesian regression — RB/
-       WR/TE/QB each have their own prior instead of one pooled rate.
-    3. Opportunity modeling — blends TD history (30%) with opportunity
-       metrics (70%): targets for WR/TE, carries+targets for RB,
-       rush attempts for QB. Touchdowns are outcomes; opportunities
-       are the repeatable inputs that predict them.
+    Architecture: Opportunity x Efficiency = Expected TDs -> Poisson.
 
-    Still uses Poisson for the final probability conversion:
-    P(≥1 TD) = 1 - e^(-expected_tds)
+    V1.4 fixes:
+    1. Opponent adjustment DISABLED — V1.3 used skill-player TDs only,
+       missing passing TDs entirely. Worse than nothing.
+    2. Separated opportunity from efficiency — no double-counting.
+    3. Removed TD-history blend — purely volume x regressed efficiency.
     """
     from math import exp
     results = {}
@@ -8735,7 +8730,6 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
     if skill_players.empty:
         return results
 
-    # Add total_tds column
     if 'rushing_tds' in skill_players.columns and 'receiving_tds' in skill_players.columns:
         skill_players['total_tds'] = skill_players['rushing_tds'].fillna(0) + skill_players['receiving_tds'].fillna(0)
     elif 'rushing_tds' in skill_players.columns:
@@ -8743,92 +8737,35 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
     else:
         return results
 
-    # ── FIX #2: Position-specific league averages ──
-    league_td_rate_by_pos = {}
+    # Position-specific league baselines for efficiency and volume
+    pos_efficiency = {}
+    pos_opportunity = {}
     for pos in TD_ELIGIBLE_POSITIONS:
         pos_data = skill_players[skill_players['position'] == pos]
-        if len(pos_data) > 0:
-            league_td_rate_by_pos[pos] = pos_data['total_tds'].mean()
-        else:
-            league_td_rate_by_pos[pos] = 0.25  # safe fallback
-    # Overall fallback
-    league_avg_td_rate = skill_players['total_tds'].mean() if len(skill_players) > 0 else 0.30
-
-    # ── FIX #3: Position-specific opportunity baselines ──
-    # League-average opportunity rates per position for the
-    # opportunity-based TD rate estimate
-    league_opp_by_pos = {}
-    for pos in TD_ELIGIBLE_POSITIONS:
-        pos_data = skill_players[skill_players['position'] == pos]
-        if pos in ('WR', 'TE'):
-            if 'targets' in pos_data.columns and len(pos_data) > 0:
-                avg_targets = pos_data['targets'].fillna(0).mean()
-                avg_tds = pos_data['total_tds'].mean()
-                td_per_target = avg_tds / avg_targets if avg_targets > 0 else 0.05
-                league_opp_by_pos[pos] = {'targets_avg': avg_targets, 'td_per_target': td_per_target}
-            else:
-                league_opp_by_pos[pos] = {'targets_avg': 5.0, 'td_per_target': 0.05}
+        if len(pos_data) == 0:
+            continue
+        if pos in ('WR', 'TE') and 'targets' in pos_data.columns:
+            t_targets = pos_data['targets'].fillna(0).sum()
+            t_tds = pos_data['total_tds'].sum()
+            pos_efficiency[pos] = t_tds / t_targets if t_targets > 0 else 0.05
+            pos_opportunity[pos] = pos_data['targets'].fillna(0).mean()
         elif pos == 'RB':
-            if 'carries' in pos_data.columns and len(pos_data) > 0:
-                avg_carries = pos_data['carries'].fillna(0).mean()
-                avg_targets = pos_data['targets'].fillna(0).mean() if 'targets' in pos_data.columns else 2.0
-                avg_tds = pos_data['total_tds'].mean()
-                total_touches = avg_carries + avg_targets
-                td_per_touch = avg_tds / total_touches if total_touches > 0 else 0.04
-                league_opp_by_pos[pos] = {'touches_avg': total_touches, 'td_per_touch': td_per_touch}
-            else:
-                league_opp_by_pos[pos] = {'touches_avg': 15.0, 'td_per_touch': 0.04}
-        elif pos == 'QB':
-            if 'carries' in pos_data.columns and len(pos_data) > 0:
-                avg_rush_att = pos_data['carries'].fillna(0).mean()
-                avg_pass_tds = pos_data.get('passing_tds', pos_data.get('rushing_tds', pos_data['total_tds'])).fillna(0).mean() if 'passing_tds' in pos_data.columns else 0
-                league_opp_by_pos[pos] = {'rush_att_avg': avg_rush_att}
-            else:
-                league_opp_by_pos[pos] = {'rush_att_avg': 4.0}
+            t_carries = pos_data['carries'].fillna(0).sum() if 'carries' in pos_data.columns else 0
+            t_targets = pos_data['targets'].fillna(0).sum() if 'targets' in pos_data.columns else 0
+            t_touches = t_carries + t_targets
+            t_tds = pos_data['total_tds'].sum()
+            pos_efficiency[pos] = t_tds / t_touches if t_touches > 0 else 0.04
+            a_carries = pos_data['carries'].fillna(0).mean() if 'carries' in pos_data.columns else 10
+            a_targets = pos_data['targets'].fillna(0).mean() if 'targets' in pos_data.columns else 2
+            pos_opportunity[pos] = a_carries + a_targets
+        elif pos == 'QB' and 'carries' in pos_data.columns:
+            t_rushes = pos_data['carries'].fillna(0).sum()
+            t_rush_tds = pos_data['rushing_tds'].fillna(0).sum() if 'rushing_tds' in pos_data.columns else pos_data['total_tds'].sum()
+            pos_efficiency[pos] = t_rush_tds / t_rushes if t_rushes > 0 else 0.03
+            pos_opportunity[pos] = pos_data['carries'].fillna(0).mean()
 
-    # ── FIX #1: Opponent TDs ALLOWED (not scored) ──
-    # For each team, calculate how many TDs their OPPONENTS scored
-    # against them per game. This is the defensive TD allowance.
     team_col = 'recent_team' if 'recent_team' in skill_players.columns else ('team' if 'team' in skill_players.columns else None)
-    team_tds_allowed = {}
-    if team_col:
-        # TDs scored by each team per week
-        team_game_tds = skill_players.groupby([team_col, 'week'])['total_tds'].sum().reset_index()
-        team_game_tds.rename(columns={team_col: 'team', 'total_tds': 'tds_scored'}, inplace=True)
-
-        # Build a schedule-like mapping: for each (team, week), find
-        # the opponent. We can infer this from the data — each week,
-        # two teams play, so we match them up.
-        try:
-            schedules = get_nfl_schedules([int(season)])
-            # Build {(team_abbrev, week): opponent_abbrev} from schedule
-            team_week_opponent = {}
-            for _, row in schedules.iterrows():
-                wk = row.get('week')
-                home = row.get('home_team')
-                away = row.get('away_team')
-                if wk and home and away:
-                    team_week_opponent[(home, wk)] = away
-                    team_week_opponent[(away, wk)] = home
-
-            # For each team, find TDs scored against them (= opponent's TDs)
-            opp_tds_list = {}
-            for _, row in team_game_tds.iterrows():
-                team = row['team']
-                week = row['week']
-                opp = team_week_opponent.get((team, week))
-                if opp:
-                    opp_tds_list.setdefault(opp, []).append(row['tds_scored'])
-
-            # Average TDs allowed per game by each defense
-            for team, tds_list in opp_tds_list.items():
-                team_tds_allowed[team] = sum(tds_list) / len(tds_list) if tds_list else league_avg_td_rate
-        except Exception:
-            # If schedule fetch fails, fall back to league average
-            pass
-
-    league_avg_tds_allowed = sum(team_tds_allowed.values()) / len(team_tds_allowed) if team_tds_allowed else league_avg_td_rate * 5
-
+    # Opponent defense: DISABLED V1.4 — see docstring
     count = 0
     total = len(all_players)
 
@@ -8836,19 +8773,15 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
         count += 1
         if progress_callback and count % 5 == 0:
             progress_callback(count, total, f"TD model: {player_name}")
-
         td_odds = info.get('td_odds')
         if td_odds is None:
             continue
-
         player_rows = weekly[weekly['player_display_name'] == player_name].sort_values('week')
         if player_rows.empty:
             continue
-
         player_pos = player_rows.iloc[-1].get('position', '')
         if player_pos not in TD_ELIGIBLE_POSITIONS:
             continue
-
         player_rows = player_rows.copy()
         if 'rushing_tds' in player_rows.columns and 'receiving_tds' in player_rows.columns:
             player_rows['total_tds'] = player_rows['rushing_tds'].fillna(0) + player_rows['receiving_tds'].fillna(0)
@@ -8856,117 +8789,76 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
             player_rows['total_tds'] = player_rows['rushing_tds'].fillna(0)
         else:
             continue
-
         games_played = len(player_rows)
 
-        # ── TD history component (30% weight) ──
-        if games_played >= 5:
-            recent_rate = player_rows.tail(5)['total_tds'].mean()
-            season_rate = player_rows['total_tds'].mean()
-            td_history_rate = (recent_rate * 0.5) + (season_rate * 0.5)
-        else:
-            td_history_rate = player_rows['total_tds'].mean()
-
-        # ── Opportunity component (70% weight) ──
-        opportunity_td_rate = None
+        # STEP 1: OPPORTUNITY — expected volume per game
+        expected_volume = None
         if player_pos in ('WR', 'TE') and 'targets' in player_rows.columns:
-            player_targets = player_rows['targets'].fillna(0)
-            avg_targets = player_targets.mean() if len(player_targets) > 0 else 0
-            recent_targets = player_targets.tail(5).mean() if games_played >= 5 else avg_targets
-            blended_targets = (recent_targets * 0.6 + avg_targets * 0.4)
-            # TD per target for this player (regressed toward league avg)
-            player_total_targets = player_targets.sum()
-            player_total_tds = player_rows['total_tds'].sum()
-            league_td_per_target = league_opp_by_pos.get(player_pos, {}).get('td_per_target', 0.05)
-            if player_total_targets > 0:
-                player_td_per_target = player_total_tds / player_total_targets
-                # Regress toward league average (more targets = less regression)
-                reg_weight = min(player_total_targets / 80, 1.0)  # ~80 targets for full weight
-                td_per_target = (player_td_per_target * reg_weight) + (league_td_per_target * (1 - reg_weight))
+            targets = player_rows['targets'].fillna(0)
+            if games_played >= 5:
+                expected_volume = targets.tail(5).mean() * 0.6 + targets.mean() * 0.4
             else:
-                td_per_target = league_td_per_target
-            opportunity_td_rate = blended_targets * td_per_target
-
+                expected_volume = targets.mean()
+            league_vol = pos_opportunity.get(player_pos, 5.0)
+            vol_reg = min(games_played / 8, 1.0)
+            expected_volume = (expected_volume * vol_reg) + (league_vol * (1 - vol_reg))
         elif player_pos == 'RB':
-            carries_col = 'carries' if 'carries' in player_rows.columns else None
-            targets_col = 'targets' if 'targets' in player_rows.columns else None
-            avg_carries = player_rows[carries_col].fillna(0).mean() if carries_col else 10
-            avg_targets = player_rows[targets_col].fillna(0).mean() if targets_col else 2
-            recent_carries = player_rows[carries_col].fillna(0).tail(5).mean() if carries_col and games_played >= 5 else avg_carries
-            recent_targets = player_rows[targets_col].fillna(0).tail(5).mean() if targets_col and games_played >= 5 else avg_targets
-            blended_touches = (recent_carries * 0.6 + avg_carries * 0.4) + (recent_targets * 0.6 + avg_targets * 0.4)
-            total_touches = (player_rows[carries_col].fillna(0).sum() if carries_col else 0) + (player_rows[targets_col].fillna(0).sum() if targets_col else 0)
-            player_total_tds = player_rows['total_tds'].sum()
-            league_td_per_touch = league_opp_by_pos.get('RB', {}).get('td_per_touch', 0.04)
-            if total_touches > 0:
-                player_td_per_touch = player_total_tds / total_touches
-                reg_weight = min(total_touches / 150, 1.0)
-                td_per_touch = (player_td_per_touch * reg_weight) + (league_td_per_touch * (1 - reg_weight))
+            c = player_rows['carries'].fillna(0) if 'carries' in player_rows.columns else None
+            t = player_rows['targets'].fillna(0) if 'targets' in player_rows.columns else None
+            cv = (c.tail(5).mean() * 0.6 + c.mean() * 0.4) if c is not None and games_played >= 5 else (c.mean() if c is not None else 10)
+            tv = (t.tail(5).mean() * 0.6 + t.mean() * 0.4) if t is not None and games_played >= 5 else (t.mean() if t is not None else 2)
+            expected_volume = cv + tv
+            league_vol = pos_opportunity.get('RB', 15.0)
+            vol_reg = min(games_played / 8, 1.0)
+            expected_volume = (expected_volume * vol_reg) + (league_vol * (1 - vol_reg))
+        elif player_pos == 'QB' and 'carries' in player_rows.columns:
+            rushes = player_rows['carries'].fillna(0)
+            if games_played >= 5:
+                expected_volume = rushes.tail(5).mean() * 0.6 + rushes.mean() * 0.4
             else:
-                td_per_touch = league_td_per_touch
-            opportunity_td_rate = blended_touches * td_per_touch
+                expected_volume = rushes.mean()
+            league_vol = pos_opportunity.get('QB', 4.0)
+            vol_reg = min(games_played / 8, 1.0)
+            expected_volume = (expected_volume * vol_reg) + (league_vol * (1 - vol_reg))
+        if expected_volume is None or expected_volume <= 0:
+            continue
 
+        # STEP 2: EFFICIENCY — TD per opportunity, heavily regressed
+        league_eff = pos_efficiency.get(player_pos, 0.04)
+        if player_pos in ('WR', 'TE') and 'targets' in player_rows.columns:
+            p_opps = player_rows['targets'].fillna(0).sum()
+            p_tds = player_rows['total_tds'].sum()
+        elif player_pos == 'RB':
+            p_opps = (player_rows['carries'].fillna(0).sum() if 'carries' in player_rows.columns else 0) + (player_rows['targets'].fillna(0).sum() if 'targets' in player_rows.columns else 0)
+            p_tds = player_rows['total_tds'].sum()
         elif player_pos == 'QB':
-            # QBs score rushing TDs — use carries as opportunity
-            carries_col = 'carries' if 'carries' in player_rows.columns else None
-            if carries_col:
-                avg_rush = player_rows[carries_col].fillna(0).mean()
-                rush_tds = player_rows['rushing_tds'].fillna(0) if 'rushing_tds' in player_rows.columns else player_rows['total_tds']
-                total_rush = player_rows[carries_col].fillna(0).sum()
-                total_rush_tds = rush_tds.sum()
-                td_per_rush = total_rush_tds / total_rush if total_rush > 0 else 0.03
-                # Regress
-                reg_weight = min(total_rush / 60, 1.0)
-                td_per_rush = (td_per_rush * reg_weight) + (0.03 * (1 - reg_weight))
-                opportunity_td_rate = avg_rush * td_per_rush
-
-        # ── Blend TD history + opportunity ──
-        if opportunity_td_rate is not None and opportunity_td_rate > 0:
-            raw_td_rate = (td_history_rate * 0.30) + (opportunity_td_rate * 0.70)
+            p_opps = player_rows['carries'].fillna(0).sum() if 'carries' in player_rows.columns else 0
+            p_tds = player_rows['rushing_tds'].fillna(0).sum() if 'rushing_tds' in player_rows.columns else player_rows['total_tds'].sum()
         else:
-            # No opportunity data — fall back to pure TD history
-            raw_td_rate = td_history_rate
+            continue
+        raw_eff = p_tds / p_opps if p_opps > 0 else league_eff
+        reg_opps = {'WR': 100, 'TE': 80, 'RB': 150, 'QB': 60}.get(player_pos, 100)
+        eff_w = min(p_opps / reg_opps, 1.0)
+        td_per_opp = (raw_eff * eff_w) + (league_eff * (1 - eff_w))
 
-        # ── Position-specific Bayesian regression ──
-        pos_league_avg = league_td_rate_by_pos.get(player_pos, league_avg_td_rate)
-        regression_games = 10
-        regressed_td_rate = (raw_td_rate * games_played + pos_league_avg * regression_games) / (games_played + regression_games)
+        # STEP 3: EXPECTED TDs = volume x efficiency
+        expected_tds = expected_volume * td_per_opp
 
-        # ── Opponent defensive adjustment (FIXED: TDs allowed, not scored) ──
-        home_name = info.get('home', '')
-        away_name = info.get('away', '')
-        home_abbrev = name_to_abbrev.get(home_name)
-        away_abbrev = name_to_abbrev.get(away_name)
-        player_team = player_rows.iloc[-1].get(team_col, '') if team_col else ''
-        opp_abbrev = away_abbrev if player_team == home_abbrev else (home_abbrev if player_team == away_abbrev else None)
-
-        opp_factor = 1.0
-        if opp_abbrev and team_tds_allowed and league_avg_tds_allowed > 0:
-            opp_allowed = team_tds_allowed.get(opp_abbrev, league_avg_tds_allowed)
-            # If opponent allows MORE TDs than average → boost projection
-            # If opponent allows FEWER TDs than average → reduce projection
-            # Dampened to 30% strength
-            opp_factor = 1 + ((opp_allowed / league_avg_tds_allowed) - 1) * 0.30
-
-        expected_tds = regressed_td_rate * opp_factor
-
-        # ── Poisson probability ──
+        # STEP 4: POISSON PROBABILITY
         model_prob = 1 - exp(-expected_tds) if expected_tds > 0 else 0.0
         model_prob = max(0.03, min(0.85, model_prob))
 
-        # ── EV calculation ──
+        # STEP 5: EV CALCULATION
         implied_prob = american_odds_to_implied_prob(td_odds)
         if implied_prob is None or implied_prob <= 0:
             continue
-
         if td_odds > 0:
             decimal_odds = 1 + (td_odds / 100)
         else:
             decimal_odds = 1 + (100 / abs(td_odds))
-
         ev_pct = round(((model_prob * decimal_odds) - 1) * 100, 2)
 
-        # ── Confidence + tiering ──
+        # STEP 6: CONFIDENCE + TIERING
         low_confidence = games_played < 5
         if ev_pct >= 15:
             mm_tier = "🟢 Best Bet"
@@ -8978,22 +8870,21 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
             mm_tier = "🔴 Pass"
         if low_confidence and mm_tier in ("🟢 Best Bet", "🔵 Worth a Look"):
             mm_tier = "🟡 Lean"
-
         fair_odds = prob_to_american_odds(model_prob)
         edge_cents = calculate_odds_edge_cents(td_odds, fair_odds) if fair_odds else None
-
         info.update({
-            'Projection': round(expected_tds, 2), 'Model Prob': round(model_prob, 4),
+            'Projection': round(expected_tds, 3), 'Model Prob': round(model_prob, 4),
             'Implied Prob': round(implied_prob, 4), 'EV%': ev_pct, 'MM Tier': mm_tier,
             'Odds': td_odds, 'Fair Odds': fair_odds, 'Edge Cents': edge_cents,
             'Low Confidence': low_confidence, 'Direction': 'td',
             'Book': info.get('td_book'), 'player_position': player_pos,
-            'games_played': games_played, 'raw_td_rate': round(raw_td_rate, 3),
-            'regressed_td_rate': round(regressed_td_rate, 3),
+            'games_played': games_played,
+            'expected_volume': round(expected_volume, 2),
+            'td_per_opp': round(td_per_opp, 4),
         })
         results[player_name] = {
             'player': player_name, 'matchup': f"{info['away']} @ {info['home']}",
-            'projected_tds': round(expected_tds, 2), 'model_prob': round(model_prob, 4),
+            'projected_tds': round(expected_tds, 3), 'model_prob': round(model_prob, 4),
             'implied_prob': round(implied_prob, 4), 'ev_pct': ev_pct, 'mm_tier': mm_tier,
             'odds': td_odds, 'book': info.get('td_book'), 'commence_time': info.get('commence_time'),
         }
