@@ -6140,7 +6140,7 @@ def _fetch_nfl_events_and_props_combined():
                 props_resp = requests.get(
                     f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds",
                     params={'apiKey': ODDS_API_KEY, 'regions': 'us',
-                             'markets': 'player_pass_attempts,player_pass_completions,player_receptions,player_anytime_td_scorer',
+                             'markets': 'player_pass_attempts,player_pass_completions,player_receptions,player_anytime_td',
                              'oddsFormat': 'american'},
                     timeout=15
                 )
@@ -8657,7 +8657,7 @@ def load_nfl_td_props_data():
             for bookmaker in props_data.get('bookmakers', []):
                 book_title = bookmaker.get('title', bookmaker.get('key', ''))
                 for market in bookmaker.get('markets', []):
-                    if market.get('key') != 'player_anytime_td_scorer':
+                    if market.get('key') != 'player_anytime_td':
                         continue
                     for outcome in market.get('outcomes', []):
                         if outcome.get('name') != 'Yes':
@@ -8677,7 +8677,7 @@ def load_nfl_td_props_data():
                                 'Fair Odds': None, 'Edge Cents': None, 'Low Confidence': None,
                                 'odds_api_event_id': event_id,
                                 'odds_api_sport': 'americanfootball_nfl',
-                                'odds_api_market': 'player_anytime_td_scorer',
+                                'odds_api_market': 'player_anytime_td',
                             }
                         all_players[player]['_td_book_odds'][book_title] = {'book': book_title, 'odds': odds}
                         current_best = all_players[player]['td_odds']
