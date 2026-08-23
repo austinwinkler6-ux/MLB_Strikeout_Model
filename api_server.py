@@ -690,7 +690,7 @@ def _get_odds_api_sport_and_market(sport):
         "NFL": ("americanfootball_nfl", "player_pass_attempts"),
         "NFL_COMPLETIONS": ("americanfootball_nfl", "player_pass_completions"),
         "NFL_RECEPTIONS": ("americanfootball_nfl", "player_receptions"),
-        "NFL_TD": ("americanfootball_nfl", "player_anytime_td_scorer"),
+        "NFL_TD": ("americanfootball_nfl", "player_anytime_td"),
     }
     return mapping.get(sport, (None, None))
 
