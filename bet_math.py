@@ -736,7 +736,7 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
         # real NFL projection result dicts (confirmed by inspecting
         # run_nfl_pass_attempts_projection, run_nfl_pass_completions_
         # projection, and run_nfl_receptions_projection directly).
-        if sport in ('nfl_pass_attempts', 'nfl_pass_completions', 'nfl_receptions'):
+        if sport in ('nfl_pass_attempts', 'nfl_pass_completions', 'nfl_receptions', 'nfl_td'):
             game_context = result.get('game_context') or {}
 
             # -- Game script (spread) --
@@ -874,7 +874,77 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                     elif share_cv <= 0.30:
                         lines.append(f"✅ Target share volatility is **low** (CV: {share_cv}) — consistent, stable role in the offense")
 
-            # -- Prior-season bridge (shared across all 3 NFL models) --
+            # ---- NFL TD-SPECIFIC FACTORS ----
+        # Anytime TD is structurally different from over/under props —
+        # it's a probability bet, not a count projection. The "why"
+        # explains the model's opportunity × efficiency logic.
+        if sport == 'nfl_td':
+            player_pos = info.get('player_position', '')
+            expected_vol = info.get('expected_volume')
+            td_per_opp = info.get('td_per_opp')
+            model_prob_pct = round((info.get('Model Prob') or 0) * 100, 1)
+            implied_prob_pct = round((info.get('Implied Prob') or 0) * 100, 1)
+            games = info.get('games_played')
+
+            # Model vs market probability
+            if model_prob_pct and implied_prob_pct:
+                prob_edge = round(model_prob_pct - implied_prob_pct, 1)
+                icon = "✅" if prob_edge > 3 else ("⚠️" if prob_edge > 0 else "❌")
+                lines.append(f"{icon} Model: **{model_prob_pct}%** TD probability vs book implied **{implied_prob_pct}%** ({'+' if prob_edge > 0 else ''}{prob_edge}% edge)")
+
+            # Opportunity volume
+            if expected_vol is not None and player_pos:
+                if player_pos in ('WR', 'TE'):
+                    vol_label = "targets"
+                elif player_pos == 'RB':
+                    vol_label = "touches"
+                elif player_pos == 'QB':
+                    vol_label = "rush attempts"
+                else:
+                    vol_label = "opportunities"
+
+                if expected_vol >= 8 and player_pos in ('WR', 'TE'):
+                    lines.append(f"✅ Expected **{expected_vol:.1f} {vol_label}/game** — high-volume role")
+                elif expected_vol >= 15 and player_pos == 'RB':
+                    lines.append(f"✅ Expected **{expected_vol:.1f} {vol_label}/game** — workhorse role")
+                elif expected_vol >= 5 and player_pos == 'QB':
+                    lines.append(f"✅ Expected **{expected_vol:.1f} {vol_label}/game** — mobile QB, consistent rushing")
+                else:
+                    lines.append(f"📊 Expected **{expected_vol:.1f} {vol_label}/game**")
+
+            # TD efficiency
+            if td_per_opp is not None and player_pos:
+                td_eff_pct = round(td_per_opp * 100, 1)
+                if player_pos in ('WR', 'TE'):
+                    if td_per_opp >= 0.08:
+                        lines.append(f"✅ TD rate: **{td_eff_pct}%** per target — elite red-zone threat")
+                    elif td_per_opp >= 0.05:
+                        lines.append(f"📊 TD rate: **{td_eff_pct}%** per target — solid scoring efficiency")
+                    else:
+                        lines.append(f"⚠️ TD rate: **{td_eff_pct}%** per target — lower scoring efficiency")
+                elif player_pos == 'RB':
+                    if td_per_opp >= 0.06:
+                        lines.append(f"✅ TD rate: **{td_eff_pct}%** per touch — strong goal-line presence")
+                    elif td_per_opp >= 0.03:
+                        lines.append(f"📊 TD rate: **{td_eff_pct}%** per touch — average scoring rate")
+                    else:
+                        lines.append(f"⚠️ TD rate: **{td_eff_pct}%** per touch — limited scoring role")
+                elif player_pos == 'QB':
+                    if td_per_opp >= 0.05:
+                        lines.append(f"✅ TD rate: **{td_eff_pct}%** per rush — frequent rushing scorer")
+                    else:
+                        lines.append(f"📊 TD rate: **{td_eff_pct}%** per rush")
+
+            # Sample size warning
+            if games is not None and games < 8:
+                lines.append(f"⚠️ Based on **{games} games** of data — smaller sample, more regression applied")
+
+            # Position context
+            if player_pos:
+                pos_labels = {'RB': 'Running Back', 'WR': 'Wide Receiver', 'TE': 'Tight End', 'QB': 'Quarterback'}
+                lines.append(f"📊 Position: **{pos_labels.get(player_pos, player_pos)}** — {'volume-based scorer' if player_pos == 'RB' else 'target-dependent scorer' if player_pos in ('WR', 'TE') else 'rushing TD opportunity'}")
+
+        # -- Prior-season bridge (shared across all 3 NFL models) --
             prior_weight = result.get('prior_season_weight')
             if prior_weight is not None and prior_weight > 0:
                 prior_pct = round(prior_weight * 100)
