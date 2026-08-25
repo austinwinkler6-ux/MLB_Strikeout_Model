@@ -730,6 +730,15 @@ def generate_why(info, result, direction, sport='mlb_strikeouts'):
                     lines.append(f"{icon} Opponent assists-allowed adjustment **{opp_ast_adj:+}**")
 
         # ---- NFL-SPECIFIC FACTORS ----
+        # Early-season data warning — shared across all NFL models.
+        # When the model is relying heavily on prior-season data
+        # (first few weeks, or before the season starts), flag it.
+        if sport in ('nfl_pass_attempts', 'nfl_pass_completions', 'nfl_receptions', 'nfl_td'):
+            games_available = info.get('games_played') or (result.get('starts_this_season') if result else None) or (result.get('games_this_season') if result else None)
+            prior_weight = result.get('prior_season_weight') if result else None
+            if (games_available is not None and games_available < 4) or (prior_weight is not None and prior_weight > 0.3):
+                lines.append("⚠️ **Early-season warning** — this projection relies heavily on last season's data. Roster changes, scheme adjustments, and new coaching can shift production. Consider smaller stakes until current-season trends emerge.")
+
         # Real, new addition (August 2026, per direct user request —
         # "why this bet" for NFL). Mirrors the depth of the MLB/NBA
         # branches above, using only fields that actually exist in the
