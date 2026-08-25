@@ -6989,7 +6989,7 @@ def compute_prior_season_bridge(qb_name, season, team, as_of_week, current_start
     Defaults match Attempts' exact original values, so nothing changes
     unless a caller deliberately overrides them."""
     bridge_schedules = {
-        'attempts': {0: 1.00, 1: 0.80, 2: 0.60, 3: 0.40, 4: 0.20},
+        'attempts': {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.45, 5: 0.30, 6: 0.15},
         'slow_fade': {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.40},
         'medium_fade': {0: 1.00, 1: 0.85, 2: 0.70, 3: 0.50, 4: 0.30},
     }
@@ -7043,7 +7043,7 @@ def compute_receptions_prior_season_bridge(player_name, season, team, as_of_week
 
     Returns (prior_rows, prior_weight, team_changed, prior_filter_used)."""
     bridge_schedules = {
-        'attempts': {0: 1.00, 1: 0.80, 2: 0.60, 3: 0.40, 4: 0.20},
+        'attempts': {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.45, 5: 0.30, 6: 0.15},
         'slow_fade': {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.40},
         'medium_fade': {0: 1.00, 1: 0.85, 2: 0.70, 3: 0.50, 4: 0.30},
     }
@@ -7151,7 +7151,7 @@ def run_nfl_pass_attempts_projection(qb_name, team, opponent, season, as_of_week
         if starter_filter_used == "attempts_threshold_fallback":
             warnings.append("Starter-ID join returned too few matches — fell back to the attempts>=15 threshold. Worth checking the 'Verify Starter-ID Join' debug button for an ID-space mismatch.")
 
-        prior_weight_table = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4, 4: 0.2}
+        prior_weight_table = {0: 1.0, 1: 0.9, 2: 0.75, 3: 0.6, 4: 0.45, 5: 0.3, 6: 0.15}
         prior_weight = prior_weight_table.get(starts_this_season, 0.0)
         team_changed = False
         prior_qb_rows = pd.DataFrame()
