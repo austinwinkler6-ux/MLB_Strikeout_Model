@@ -8882,7 +8882,10 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
         # Only show picks with real, proven edge. Everything else
         # is suppressed to Pass (hidden from users).
 
-        low_confidence = games_played < 5
+        # No low-confidence suppression — the tight EV range (3-8%)
+        # and longshot filter (>+500) already protect against bad picks.
+        # Backtested profitably from Week 3 onward, which uses minimal
+        # current-season data anyway.
         is_longshot = td_odds > 500
         is_qb = player_pos == 'QB'
 
@@ -8904,16 +8907,13 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
             # Everything else: negative historical ROI, don't show
             mm_tier = "🔴 Pass"
 
-        # Low confidence suppression
-        if low_confidence and mm_tier in ("🟢 Best Bet", "🔵 Worth a Look"):
-            mm_tier = "🟡 Lean"
         fair_odds = prob_to_american_odds(model_prob)
         edge_cents = calculate_odds_edge_cents(td_odds, fair_odds) if fair_odds else None
         info.update({
             'Projection': round(expected_tds, 3), 'Model Prob': round(model_prob, 4),
             'Implied Prob': round(implied_prob, 4), 'EV%': ev_pct, 'MM Tier': mm_tier,
             'Odds': td_odds, 'Fair Odds': fair_odds, 'Edge Cents': edge_cents,
-            'Low Confidence': low_confidence, 'Direction': 'td',
+            'Low Confidence': False, 'Direction': 'td',
             'Book': info.get('td_book'), 'player_position': player_pos,
             'games_played': games_played,
             'expected_volume': round(expected_volume, 2),
