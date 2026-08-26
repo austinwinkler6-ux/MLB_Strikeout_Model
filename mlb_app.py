@@ -8870,45 +8870,38 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
 
         # STEP 6: CONFIDENCE + TIERING (rebuilt August 2026)
         #
-        # Real historical odds backtest (14,188 predictions, 3 seasons)
-        # revealed the original tiers were backwards:
+        # Real historical odds backtest (14,188 predictions, 3 seasons,
+        # REAL sportsbook prices) — then re-tiered against EV buckets:
         #
-        #   Old "Best Bet" (15%+ EV): -15.1% ROI — model overestimates
-        #       on longshots where books are sharper
-        #   3-8% EV bucket: +6.6% ROI — the ONLY profitable range
-        #   QB position: +22.7% ROI vs all others negative
+        #   3-5% EV:  +33.2% ROI (154 bets) ← Best Bet
+        #   5-8% EV:  +1.3% ROI  (233 bets) ← Worth a Look
+        #   8%+ EV:   negative ROI — model overestimates, don't show
+        #   Longshots (+500+): massively negative — don't show
+        #   QB position: +15.8% ROI across actionable tiers
         #
-        # Fix: moderate edges are best, huge edges are traps.
-        # Longshots (odds > +500) are filtered to Pass — the model
-        # can't reliably price players at 10% implied probability.
+        # Only show picks with real, proven edge. Everything else
+        # is suppressed to Pass (hidden from users).
 
         low_confidence = games_played < 5
-        is_longshot = td_odds > 500  # +500 or higher = model unreliable
+        is_longshot = td_odds > 500
         is_qb = player_pos == 'QB'
 
         if is_longshot:
-            # Longshots: model systematically overestimates, book is sharper
             mm_tier = "🔴 Pass"
-        elif 3 <= ev_pct <= 10:
-            # Sweet spot: moderate disagreement with the book
-            # This is the ONLY historically profitable EV range
+        elif 3 <= ev_pct < 5:
+            # The sweet spot: +33.2% historical ROI
+            mm_tier = "🟢 Best Bet"
+        elif 5 <= ev_pct < 8:
+            # Slight but real edge: +1.3% historical ROI
             if is_qb:
-                mm_tier = "🟢 Best Bet"  # QBs are +22.7% ROI
-            elif ev_pct >= 5:
-                mm_tier = "🟢 Best Bet"
+                mm_tier = "🟢 Best Bet"  # QBs +15.8% ROI, promote them
             else:
                 mm_tier = "🔵 Worth a Look"
-        elif 10 < ev_pct <= 20 and not is_longshot:
-            # Moderate-high edge: historically breakeven-ish
-            # Only promote to Worth a Look, not Best Bet
-            mm_tier = "🔵 Worth a Look" if is_qb else "🟡 Lean"
-        elif ev_pct > 20:
-            # Huge edge = model is probably wrong, not the book
-            mm_tier = "🟡 Lean"
-        elif 0 < ev_pct < 3:
-            # Razor-thin edge: not enough to overcome vig
-            mm_tier = "🔴 Pass"
+        elif 3 <= ev_pct < 10 and is_qb:
+            # QBs have proven edge across a wider EV range
+            mm_tier = "🔵 Worth a Look"
         else:
+            # Everything else: negative historical ROI, don't show
             mm_tier = "🔴 Pass"
 
         # Low confidence suppression
