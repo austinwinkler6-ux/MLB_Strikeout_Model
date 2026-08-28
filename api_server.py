@@ -118,9 +118,6 @@ SPORT_KEYS = {
     "mlb": "mlb_strikeouts",
     "nba-points": "nba_points",
     "nba-assists": "nba_assists",
-    "nfl-attempts": "nfl_pass_attempts",
-    "nfl-completions": "nfl_pass_completions",
-    "nfl-receptions": "nfl_receptions",
     "nfl-td": "nfl_td",
 }
 
