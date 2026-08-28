@@ -2234,9 +2234,6 @@ def build_todays_card_entries():
     # player-prop pattern as MLB/NBA above. Session-state keys confirmed
     # from run_nfl_display()'s real call sites for each model.
     nfl_models = [
-        ('all_qbs', 'nfl_attempts_results', '🏈 NFL Att', 'nfl_pass_attempts'),
-        ('all_qbs_completions', 'nfl_completions_results', '🏈 NFL Comp', 'nfl_pass_completions'),
-        ('all_receivers', 'nfl_receptions_results', '🏈 NFL Rec', 'nfl_receptions'),
         ('all_td_scorers', 'nfl_td_results', '🏈 NFL TD', 'nfl_td'),
     ]
     for all_players_key, results_key, sport_label, sport_key in nfl_models:
@@ -5407,12 +5404,6 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
         # triggered here too.
         nfl_season = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
         nfl_models = [
-            ('all_qbs', 'nfl_attempts', load_nfl_props_data, run_all_nfl_projections,
-             "Loading NFL attempts props", "Running NFL attempts projections"),
-            ('all_qbs_completions', 'nfl_completions', load_nfl_completions_props_data, run_all_nfl_completions_projections,
-             "Loading NFL completions props", "Running NFL completions projections"),
-            ('all_receivers', 'nfl_receptions', load_nfl_receptions_props_data, run_all_nfl_receptions_projections,
-             "Loading NFL receptions props", "Running NFL receptions projections"),
             ('all_td_scorers', 'nfl_td', load_nfl_td_props_data, run_all_nfl_td_projections,
              "Loading NFL TD props", "Running NFL TD projections"),
         ]
@@ -8717,6 +8708,12 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
     """
     from math import exp
     results = {}
+    # Load BOTH current and prior season — blend them for early weeks
+    # using the same 7-week bridge that won the bridge experiment.
+    # This is the key early-season fix: in Week 3, the model has only
+    # 2 games of current data. Without prior-season blending, it's
+    # working with almost nothing. With blending, it anchors to a
+    # full season of prior data and gradually transitions.
     try:
         weekly = get_nfl_player_stats([int(season)])
     except Exception:
@@ -8725,16 +8722,34 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
         except Exception:
             return results
 
+    try:
+        prior_weekly = get_nfl_player_stats([int(season) - 1])
+    except Exception:
+        prior_weekly = pd.DataFrame()
+
     name_to_abbrev = {v: k for k, v in nfl_abbrev_to_name.items()}
     skill_players = weekly[weekly['position'].isin(TD_ELIGIBLE_POSITIONS)].copy()
     if skill_players.empty:
         return results
 
-    if 'rushing_tds' in skill_players.columns and 'receiving_tds' in skill_players.columns:
-        skill_players['total_tds'] = skill_players['rushing_tds'].fillna(0) + skill_players['receiving_tds'].fillna(0)
-    elif 'rushing_tds' in skill_players.columns:
-        skill_players['total_tds'] = skill_players['rushing_tds'].fillna(0)
-    else:
+    prior_skill = prior_weekly[prior_weekly['position'].isin(TD_ELIGIBLE_POSITIONS)].copy() if not prior_weekly.empty else pd.DataFrame()
+
+    # Add total_tds to both datasets
+    for df in [skill_players, prior_skill]:
+        if df.empty:
+            continue
+        if 'rushing_tds' in df.columns and 'receiving_tds' in df.columns:
+            df['total_tds'] = df['rushing_tds'].fillna(0) + df['receiving_tds'].fillna(0)
+        elif 'rushing_tds' in df.columns:
+            df['total_tds'] = df['rushing_tds'].fillna(0)
+        if 'carries' not in df.columns:
+            df['carries'] = 0
+        if 'targets' not in df.columns:
+            df['targets'] = 0
+        df['carries'] = df['carries'].fillna(0)
+        df['targets'] = df['targets'].fillna(0)
+
+    if 'total_tds' not in skill_players.columns:
         return results
 
     # Position-specific league baselines for efficiency and volume
@@ -8791,40 +8806,89 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
             continue
         games_played = len(player_rows)
 
+        # ── Prior-season bridge (7-week, same as other NFL models) ──
+        # Blend prior-season opportunity/efficiency with current season.
+        # Early weeks lean on prior data; by Week 7+ it's all current.
+        _td_bridge = {0: 1.00, 1: 0.90, 2: 0.75, 3: 0.60, 4: 0.45, 5: 0.30, 6: 0.15}
+        prior_weight = _td_bridge.get(games_played, 0.0)
+        current_weight = 1.0 - prior_weight
+
+        # Get prior-season data for this player
+        prior_rows = pd.DataFrame()
+        if prior_weight > 0 and not prior_skill.empty:
+            prior_rows = prior_skill[prior_skill['player_display_name'] == player_name].sort_values('week')
+            # Detect team change — halve prior weight if different team
+            if not prior_rows.empty:
+                team_col = 'recent_team' if 'recent_team' in player_rows.columns else ('team' if 'team' in player_rows.columns else None)
+                if team_col and team_col in prior_rows.columns:
+                    prior_team = prior_rows.iloc[-1].get(team_col, '')
+                    current_team = player_rows.iloc[-1].get(team_col, '') if games_played > 0 else ''
+                    if prior_team and current_team and prior_team != current_team:
+                        prior_weight *= 0.5
+                        current_weight = 1.0 - prior_weight
+
         # STEP 1: OPPORTUNITY — expected volume per game
+        # Blend current + prior season using the 7-week bridge
         expected_volume = None
+        
+        # Calculate prior-season volume if available
+        prior_volume = None
+        if not prior_rows.empty and prior_weight > 0:
+            if player_pos in ('WR', 'TE') and 'targets' in prior_rows.columns:
+                prior_volume = prior_rows['targets'].fillna(0).mean()
+            elif player_pos == 'RB':
+                pc = prior_rows['carries'].fillna(0).mean() if 'carries' in prior_rows.columns else 10
+                pt = prior_rows['targets'].fillna(0).mean() if 'targets' in prior_rows.columns else 2
+                prior_volume = pc + pt
+            elif player_pos == 'QB' and 'carries' in prior_rows.columns:
+                prior_volume = prior_rows['carries'].fillna(0).mean()
+
+        # Calculate current-season volume
+        current_volume = None
         if player_pos in ('WR', 'TE') and 'targets' in player_rows.columns:
             targets = player_rows['targets'].fillna(0)
             if games_played >= 5:
-                expected_volume = targets.tail(5).mean() * 0.6 + targets.mean() * 0.4
-            else:
-                expected_volume = targets.mean()
-            league_vol = pos_opportunity.get(player_pos, 5.0)
-            vol_reg = min(games_played / 8, 1.0)
-            expected_volume = (expected_volume * vol_reg) + (league_vol * (1 - vol_reg))
+                current_volume = targets.tail(5).mean() * 0.6 + targets.mean() * 0.4
+            elif games_played > 0:
+                current_volume = targets.mean()
         elif player_pos == 'RB':
             c = player_rows['carries'].fillna(0) if 'carries' in player_rows.columns else None
             t = player_rows['targets'].fillna(0) if 'targets' in player_rows.columns else None
-            cv = (c.tail(5).mean() * 0.6 + c.mean() * 0.4) if c is not None and games_played >= 5 else (c.mean() if c is not None else 10)
-            tv = (t.tail(5).mean() * 0.6 + t.mean() * 0.4) if t is not None and games_played >= 5 else (t.mean() if t is not None else 2)
-            expected_volume = cv + tv
-            league_vol = pos_opportunity.get('RB', 15.0)
-            vol_reg = min(games_played / 8, 1.0)
-            expected_volume = (expected_volume * vol_reg) + (league_vol * (1 - vol_reg))
+            if games_played > 0:
+                cv = (c.tail(5).mean() * 0.6 + c.mean() * 0.4) if c is not None and games_played >= 5 else (c.mean() if c is not None else 10)
+                tv = (t.tail(5).mean() * 0.6 + t.mean() * 0.4) if t is not None and games_played >= 5 else (t.mean() if t is not None else 2)
+                current_volume = cv + tv
         elif player_pos == 'QB' and 'carries' in player_rows.columns:
             rushes = player_rows['carries'].fillna(0)
-            if games_played >= 5:
-                expected_volume = rushes.tail(5).mean() * 0.6 + rushes.mean() * 0.4
-            else:
-                expected_volume = rushes.mean()
-            league_vol = pos_opportunity.get('QB', 4.0)
-            vol_reg = min(games_played / 8, 1.0)
+            if games_played > 0:
+                if games_played >= 5:
+                    current_volume = rushes.tail(5).mean() * 0.6 + rushes.mean() * 0.4
+                else:
+                    current_volume = rushes.mean()
+
+        # Blend current + prior using bridge weights
+        if current_volume is not None and prior_volume is not None:
+            expected_volume = (current_volume * current_weight) + (prior_volume * prior_weight)
+        elif current_volume is not None:
+            expected_volume = current_volume
+        elif prior_volume is not None:
+            expected_volume = prior_volume
+        
+        # Regress toward position average for very small samples
+        if expected_volume is not None:
+            league_vol = pos_opportunity.get(player_pos, 5.0)
+            total_games = games_played + (len(prior_rows) if not prior_rows.empty else 0)
+            vol_reg = min(total_games / 8, 1.0)
             expected_volume = (expected_volume * vol_reg) + (league_vol * (1 - vol_reg))
+
         if expected_volume is None or expected_volume <= 0:
             continue
 
         # STEP 2: EFFICIENCY — TD per opportunity, heavily regressed
+        # Blend current + prior season efficiency using bridge weights
         league_eff = pos_efficiency.get(player_pos, 0.04)
+        
+        # Current-season efficiency
         if player_pos in ('WR', 'TE') and 'targets' in player_rows.columns:
             p_opps = player_rows['targets'].fillna(0).sum()
             p_tds = player_rows['total_tds'].sum()
@@ -8836,9 +8900,28 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
             p_tds = player_rows['rushing_tds'].fillna(0).sum() if 'rushing_tds' in player_rows.columns else player_rows['total_tds'].sum()
         else:
             continue
-        raw_eff = p_tds / p_opps if p_opps > 0 else league_eff
+
+        # Prior-season efficiency
+        prior_opps = 0
+        prior_tds = 0
+        if not prior_rows.empty and prior_weight > 0:
+            if player_pos in ('WR', 'TE') and 'targets' in prior_rows.columns:
+                prior_opps = prior_rows['targets'].fillna(0).sum()
+                prior_tds = prior_rows['total_tds'].sum()
+            elif player_pos == 'RB':
+                prior_opps = (prior_rows['carries'].fillna(0).sum() if 'carries' in prior_rows.columns else 0) + (prior_rows['targets'].fillna(0).sum() if 'targets' in prior_rows.columns else 0)
+                prior_tds = prior_rows['total_tds'].sum()
+            elif player_pos == 'QB':
+                prior_opps = prior_rows['carries'].fillna(0).sum() if 'carries' in prior_rows.columns else 0
+                prior_tds = prior_rows['rushing_tds'].fillna(0).sum() if 'rushing_tds' in prior_rows.columns else prior_rows['total_tds'].sum()
+
+        # Blend opportunities and TDs using bridge weights
+        blended_opps = (p_opps * current_weight) + (prior_opps * prior_weight)
+        blended_tds = (p_tds * current_weight) + (prior_tds * prior_weight)
+
+        raw_eff = blended_tds / blended_opps if blended_opps > 0 else league_eff
         reg_opps = {'WR': 100, 'TE': 80, 'RB': 150, 'QB': 60}.get(player_pos, 100)
-        eff_w = min(p_opps / reg_opps, 1.0)
+        eff_w = min(blended_opps / reg_opps, 1.0)
         td_per_opp = (raw_eff * eff_w) + (league_eff * (1 - eff_w))
 
         # STEP 3: EXPECTED TDs = volume x efficiency
