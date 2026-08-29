@@ -695,6 +695,88 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         log_failure_reason('MALFORMED_RESPONSE', f"analyze_prop({sport}, proj={projection}, line={line}): {e}")
         return None
 
+
+def find_best_book_line(book_odds_list, projection, std_dev, cv, sport, workload_tier=None, confidence_tier=None):
+    """Analyze every book's line/odds for a player and return the best EV play.
+
+    August 2026 — LINE SHOPPING: instead of defaulting to FanDuel or
+    DraftKings, runs analyze_prop against EVERY book's line/odds separately
+    and picks the one with the highest EV%. If BetMGM has a player at 22.5
+    and FanDuel has them at 24.5, and the model projects 27, this will
+    pick BetMGM because the edge is bigger.
+
+    book_odds_list: list of dicts from the existing book_odds field,
+                    each with keys: book, line, over, under
+    Returns dict with best_book, best_line, best_direction, best_odds,
+    best_ev_result, and all_book_results — or None if no valid analysis.
+    """
+    if not book_odds_list:
+        return None
+
+    all_results = []
+
+    for book_entry in book_odds_list:
+        book_name = book_entry.get('book', '')
+        line = book_entry.get('line')
+        over_odds = book_entry.get('over')
+        under_odds = book_entry.get('under')
+
+        if line is None or over_odds is None or under_odds is None:
+            continue
+
+        try:
+            if float(line).is_integer():
+                continue
+        except (ValueError, TypeError):
+            continue
+
+        edge = projection - line
+        if edge > 0:
+            direction = 'over'
+        elif edge < 0:
+            direction = 'under'
+        else:
+            continue
+
+        ev_result = analyze_prop(
+            projection=projection, line=line,
+            std_dev=std_dev, cv=cv,
+            over_odds=over_odds, under_odds=under_odds,
+            direction=direction, sport=sport,
+            workload_tier=workload_tier, confidence_tier=confidence_tier
+        )
+
+        if ev_result is None:
+            continue
+
+        all_results.append({
+            'book': book_name,
+            'line': line,
+            'direction': direction,
+            'odds': over_odds if direction == 'over' else under_odds,
+            'over_odds': over_odds,
+            'under_odds': under_odds,
+            'ev_result': ev_result,
+        })
+
+    if not all_results:
+        return None
+
+    all_results.sort(key=lambda x: x['ev_result']['ev_pct'], reverse=True)
+
+    best = all_results[0]
+    return {
+        'best_book': best['book'],
+        'best_line': best['line'],
+        'best_direction': best['direction'],
+        'best_odds': best['odds'],
+        'best_over_odds': best['over_odds'],
+        'best_under_odds': best['under_odds'],
+        'best_ev_result': best['ev_result'],
+        'all_book_results': all_results,
+    }
+
+
 # ---- SUPABASE CONNECTION ----
 @st.cache_resource
 def get_supabase():
@@ -4959,7 +5041,11 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
     """Runs the projection + EV pipeline for every pitcher in all_pitchers (mutated in place),
     saves each as a prediction, and returns the pitcher_results dict.
     progress_callback(i, total, name), if given, is called before each pitcher runs —
-    lets callers render their own progress bar (MLB page) or run silently (Today's Card)."""
+    lets callers render their own progress bar (MLB page) or run silently (Today's Card).
+
+    August 2026 — LINE SHOPPING: analyzes every book's line/odds separately
+    and picks the one with the highest EV%. Falls back to FanDuel/DraftKings
+    if book_odds is empty (shouldn't happen, but safe fallback)."""
     pitcher_results = {}
     total = len(all_pitchers)
     for i, (pitcher, info) in enumerate(all_pitchers.items()):
@@ -4975,22 +5061,48 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
 
         if result:
             proj = result['projection']
-            best_line = info['FanDuel Line'] or info['DraftKings Line']
 
-            if best_line:
-                edge = round(proj - best_line, 1)
-                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
-                direction = 'over' if edge > 0 else 'under'
+            # ── LINE SHOPPING: analyze every book's line ──
+            book_odds_list = info.get('book_odds', [])
+            best_play = find_best_book_line(
+                book_odds_list, proj,
+                std_dev=result['last10_k_std'], cv=result['cv'],
+                sport='mlb_strikeouts',
+                workload_tier=result.get('workload_tier'),
+                confidence_tier=result.get('confidence_tier')
+            )
+
+            # Fallback to old FD/DK logic if line shopping found nothing
+            if best_play:
+                best_line = best_play['best_line']
+                direction = best_play['best_direction']
+                over_odds = best_play['best_over_odds']
+                under_odds = best_play['best_under_odds']
+                ev_result = best_play['best_ev_result']
+                best_book = best_play['best_book']
+                all_book_results = best_play['all_book_results']
+            else:
+                best_line = info['FanDuel Line'] or info['DraftKings Line']
+                if not best_line:
+                    continue
+                edge_val = round(proj - best_line, 1)
+                direction = 'over' if edge_val > 0 else 'under'
                 over_odds = info['FanDuel Over'] or info['DraftKings Over']
                 under_odds = info['FanDuel Under'] or info['DraftKings Under']
-
                 ev_result = analyze_prop(
                     projection=proj, line=best_line,
                     std_dev=result['last10_k_std'], cv=result['cv'],
                     over_odds=over_odds or -110, under_odds=under_odds or -110,
                     direction=direction, sport='mlb_strikeouts',
-                    workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
+                    workload_tier=result.get('workload_tier'),
+                    confidence_tier=result.get('confidence_tier')
                 )
+                best_book = None
+                all_book_results = []
+
+            if best_line and ev_result:
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
 
                 all_pitchers[pitcher].update({
                     'Projection': proj, 'Edge': edge, 'Play': play,
@@ -5011,17 +5123,19 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'Opposite Odds': ev_result['opposite_odds'] if ev_result else None,
                     'Edge Cents': ev_result['edge_cents'] if ev_result else None,
                     'Low Confidence': ev_result['low_confidence'] if ev_result else None,
+                    # LINE SHOPPING fields
+                    'Best Book': best_book,
+                    'Best Line': best_line,
+                    'Alt Book Lines': [
+                        {'book': r['book'], 'line': r['line'], 'direction': r['direction'],
+                         'odds': r['odds'], 'ev_pct': r['ev_result']['ev_pct'],
+                         'tier': r['ev_result']['tier']}
+                        for r in all_book_results
+                    ] if all_book_results else [],
                 })
                 pitcher_results[pitcher] = result
 
-                # Real addition (August 2026, per direct user request)
-                # — computes the exact same real EV/tier analysis for
-                # EVERY real alternate line too, reusing the SAME real
-                # projection/std_dev/cv (properties of the real
-                # pitcher, not the line) — only the real line and its
-                # own real odds change per call. Lets a real user
-                # actually judge whether an alternate line is worth
-                # taking, not just see a raw, uncontextualized number.
+                # Alternate lines analysis (unchanged — still analyzes FD/DK alt lines)
                 for book_key, lines in info['Alt Lines'].items():
                     for point, odds_pair in lines.items():
                         alt_over = odds_pair.get('over')
@@ -5061,6 +5175,7 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'model_prob': ev_result['model_prob'] if ev_result else None,
                     'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
                     'model_edge': ev_result['model_edge'] if ev_result else None,
+                    'best_book': best_book,
                 })
     return pitcher_results
 
@@ -5163,7 +5278,11 @@ def load_nba_props_data(prop_market):
 def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_callback=None):
     """Runs the projection + EV pipeline for every player in all_players (mutated in place),
     saves each as a prediction, and returns the results dict.
-    progress_callback(i, total, name), if given, is called before each player runs."""
+    progress_callback(i, total, name), if given, is called before each player runs.
+
+    August 2026 — LINE SHOPPING: analyzes every book's line/odds separately
+    and picks the one with the highest EV%. Falls back to FanDuel/DraftKings
+    if book_odds is empty."""
     results = {}
     total = len(all_players)
     for i, (player, info) in enumerate(all_players.items()):
@@ -5199,20 +5318,49 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
 
         if result:
             proj = result['projection']
-            best_line = info['FanDuel Line'] or info['DraftKings Line']
-            if best_line:
-                edge = round(proj - best_line, 1)
-                play = "⬆️ OVER" if edge > 0 else "⬇️ UNDER"
-                direction = 'over' if edge > 0 else 'under'
+            std_dev = result.get('last10_pts_std', result.get('last10_ast_std', 0))
+
+            # ── LINE SHOPPING: analyze every book's line ──
+            book_odds_list = info.get('book_odds', [])
+            best_play = find_best_book_line(
+                book_odds_list, proj,
+                std_dev=std_dev, cv=result['cv'],
+                sport=sport_key,
+                workload_tier=result.get('workload_tier'),
+                confidence_tier=result.get('confidence_tier')
+            )
+
+            # Fallback to old FD/DK logic
+            if best_play:
+                best_line = best_play['best_line']
+                direction = best_play['best_direction']
+                over_odds = best_play['best_over_odds']
+                under_odds = best_play['best_under_odds']
+                ev_result = best_play['best_ev_result']
+                best_book = best_play['best_book']
+                all_book_results = best_play['all_book_results']
+            else:
+                best_line = info['FanDuel Line'] or info['DraftKings Line']
+                if not best_line:
+                    continue
+                edge_val = round(proj - best_line, 1)
+                direction = 'over' if edge_val > 0 else 'under'
                 over_odds = info['FanDuel Over'] or info['DraftKings Over']
                 under_odds = info['FanDuel Under'] or info['DraftKings Under']
-                std_dev = result.get('last10_pts_std', result.get('last10_ast_std', 0))
                 ev_result = analyze_prop(
                     projection=proj, line=best_line, std_dev=std_dev, cv=result['cv'],
                     over_odds=over_odds or -110, under_odds=under_odds or -110,
                     direction=direction, sport=sport_key,
-                    workload_tier=result.get('workload_tier'), confidence_tier=result.get('confidence_tier')
+                    workload_tier=result.get('workload_tier'),
+                    confidence_tier=result.get('confidence_tier')
                 )
+                best_book = None
+                all_book_results = []
+
+            if best_line and ev_result:
+                edge = round(proj - best_line, 1)
+                play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+
                 all_players[player].update({
                     'Projection': proj, 'Edge': edge, 'Play': play,
                     'Tier': result['confidence_tier'],
@@ -5231,6 +5379,15 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                     'Odds': over_odds if direction == 'over' else under_odds,
                     'Model Prob': ev_result['model_prob'] if ev_result else None,
                     'No Vig Prob': ev_result['no_vig_prob'] if ev_result else None,
+                    # LINE SHOPPING fields
+                    'Best Book': best_book,
+                    'Best Line': best_line,
+                    'Alt Book Lines': [
+                        {'book': r['book'], 'line': r['line'], 'direction': r['direction'],
+                         'odds': r['odds'], 'ev_pct': r['ev_result']['ev_pct'],
+                         'tier': r['ev_result']['tier']}
+                        for r in all_book_results
+                    ] if all_book_results else [],
                 })
                 results[player] = result
                 bet_sport_label = nba_bet_sport_label(sport_key)
@@ -5252,6 +5409,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                     'model_prob': ev_result['model_prob'] if ev_result else None,
                     'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
                     'model_edge': ev_result['model_edge'] if ev_result else None,
+                    'best_book': best_book,
                 })
     return results
 
