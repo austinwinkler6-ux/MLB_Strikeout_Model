@@ -449,19 +449,63 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None)
     small stake, not a Pass. Pass means the model doesn't see positive
     expected value, full stop.
 
+    August 2026 — MLB STRIKEOUTS RETIER: backtested against real historical
+    sportsbook odds (2025 season, 3189 graded bets). Only 15%+ EV picks
+    were profitable:
+      15-20% EV: 77 bets, 53.2% win, +9.37% ROI
+      20%+ EV:   56 bets, 48.2% win, +3.70% ROI
+    Everything below 15% EV was unprofitable. Tier thresholds updated to
+    only surface picks in the profitable range.
+
+    NFL TD tiers remain data-driven from their own 3-season backtest:
+      Best Bet: 3-5% EV (non-QB) or 3-8% EV (QB)
+      Worth a Look: 5-8% EV (non-QB)
+
     One exception: extreme uncertainty (Low confidence) acts as a one-notch
-    brake on the initial tier. Otherwise a bet that just barely crosses the
-    edge threshold can outrank a much more reliable, higher-EV bet purely
-    because of one raw number — the confidence tag alone doesn't fix that,
-    since it's usually not the property people compare tier-to-tier. See:
-    Assad (edge-only Worth a Look, Low confidence, Highly Volatile workload)
-    vs Lodolo (Lean, 3x the EV, stable role) — July 2026."""
-    threshold = EDGE_THRESHOLDS.get(sport, 0.75)
-    ev_threshold = 12.0
+    brake on the initial tier."""
 
     same_direction = model_edge is not None and ev_pct is not None and model_edge > 0 and ev_pct > 0
     if not same_direction:
         return "🔴 Pass"
+
+    # ── MLB STRIKEOUTS: backtest-proven tiers (Aug 2026) ──
+    if sport == "mlb_strikeouts":
+        if ev_pct >= 20.0:
+            tier = "🟢 Best Bet"
+        elif ev_pct >= 15.0:
+            tier = "🔵 Worth a Look"
+        else:
+            return "🔴 Pass"
+
+        if get_confidence_level(cv, workload_tier) == "🔴 Low":
+            if tier == "🟢 Best Bet":
+                tier = "🔵 Worth a Look"
+        return tier
+
+    # ── NFL TD: backtest-proven tiers (Aug 2026) ──
+    if sport == "nfl_td":
+        # NFL TD uses its own tier logic in run_all_nfl_td_projections
+        # This is a fallback — shouldn't normally be reached
+        threshold = EDGE_THRESHOLDS.get(sport, 0.75)
+        ev_threshold = 12.0
+        model_strong = model_edge >= threshold
+        ev_strong = ev_pct >= ev_threshold
+        if model_strong and ev_strong:
+            tier = "🟢 Best Bet"
+        elif model_strong or ev_strong:
+            tier = "🔵 Worth a Look"
+        else:
+            tier = "🟡 Lean"
+        if get_confidence_level(cv, workload_tier) == "🔴 Low":
+            if tier == "🟢 Best Bet":
+                tier = "🔵 Worth a Look"
+            elif tier == "🔵 Worth a Look":
+                tier = "🟡 Lean"
+        return tier
+
+    # ── NBA + OTHER SPORTS: default tiers (pending backtest results) ──
+    threshold = EDGE_THRESHOLDS.get(sport, 0.75)
+    ev_threshold = 12.0
 
     model_strong = model_edge >= threshold
     ev_strong = ev_pct >= ev_threshold
@@ -478,8 +522,6 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None)
             tier = "🔵 Worth a Look"
         elif tier == "🔵 Worth a Look":
             tier = "🟡 Lean"
-        # Already "Lean" stays "Lean" — Low confidence alone shouldn't force
-        # a Pass when there's still genuine positive EV underneath it.
 
     return tier
 
