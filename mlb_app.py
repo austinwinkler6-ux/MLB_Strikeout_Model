@@ -2282,10 +2282,12 @@ def build_todays_card_entries():
         if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '⚾ MLB', 'sport_key': 'mlb_strikeouts', 'name': name,
-                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'line': info.get('Best Line') or info.get('FanDuel Line') or info.get('DraftKings Line'),
                 'play': info.get('Play'), 'edge': info.get('Edge'),
                 'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
                 'info': info, 'result': mlb_results.get(name),
+                'best_book': info.get('Best Book'),
+                'alt_book_lines': info.get('Alt Book Lines', []),
             })
 
     nba_pts = st.session_state.get('all_nba_players', {})
@@ -2294,10 +2296,12 @@ def build_todays_card_entries():
         if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '🏀 NBA Pts', 'sport_key': 'nba_points', 'name': name,
-                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'line': info.get('Best Line') or info.get('FanDuel Line') or info.get('DraftKings Line'),
                 'play': info.get('Play'), 'edge': info.get('Edge'),
                 'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
                 'info': info, 'result': nba_pts_results.get(name),
+                'best_book': info.get('Best Book'),
+                'alt_book_lines': info.get('Alt Book Lines', []),
             })
 
     nba_ast = st.session_state.get('all_nba_assist_players', {})
@@ -2306,10 +2310,12 @@ def build_todays_card_entries():
         if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
             card_entries.append({
                 'sport_label': '🏀 NBA Ast', 'sport_key': 'nba_assists', 'name': name,
-                'line': info.get('FanDuel Line') or info.get('DraftKings Line'),
+                'line': info.get('Best Line') or info.get('FanDuel Line') or info.get('DraftKings Line'),
                 'play': info.get('Play'), 'edge': info.get('Edge'),
                 'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
                 'info': info, 'result': nba_ast_results.get(name),
+                'best_book': info.get('Best Book'),
+                'alt_book_lines': info.get('Alt Book Lines', []),
             })
 
     # Real addition (July 2026) — all three NFL prop models, same
