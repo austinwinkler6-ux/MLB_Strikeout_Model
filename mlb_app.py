@@ -5223,7 +5223,12 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                     'model_prob': ev_result['model_prob'] if ev_result else None,
                     'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
                     'model_edge': ev_result['model_edge'] if ev_result else None,
-                    'best_book': best_book,
+                    # NOTE: 'best_book' removed (Aug 2026) — the Supabase
+                    # 'predictions' table doesn't have this column, which
+                    # was throwing a PGRST204 error on every single save
+                    # and flooding the page with st.error() banners. Best
+                    # Book info already flows through card_entries/info
+                    # dict fine without needing to persist here too.
                 })
     return pitcher_results
 
@@ -5457,7 +5462,7 @@ def run_all_nba_projections(all_players, run_fn, sport_key, season, progress_cal
                     'model_prob': ev_result['model_prob'] if ev_result else None,
                     'no_vig_prob': ev_result['no_vig_prob'] if ev_result else None,
                     'model_edge': ev_result['model_edge'] if ev_result else None,
-                    'best_book': best_book,
+                    # NOTE: 'best_book' removed (Aug 2026) — see MLB comment above.
                 })
     return results
 
