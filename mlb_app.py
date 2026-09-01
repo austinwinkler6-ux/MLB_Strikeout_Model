@@ -2379,25 +2379,21 @@ def build_todays_card_entries():
                     'info': info, 'result': nfl_results.get(name),
                 })
 
-    # Real addition (July 2026) — LoL, mapped from its real, matchup-
-    # based shape (cito_api/lol_elo pipeline output) into the same
-    # card-entry shape used everywhere else. 'name' becomes the real
-    # matchup ("Team A vs Team B"), 'play' becomes the model's real
-    # recommended side, and 'edge' uses the real edge_pct (model vs
-    # market probability gap in percentage points) since there's no
-    # over/under line concept for a moneyline matchup.
-    lol_pipeline_output = st.session_state.get('lol_pipeline_output') or {}
-    lol_results = lol_pipeline_output.get('results') or []
-    for r in lol_results:
-        if r.get('ev_pct') is not None and r.get('mm_tier') and r.get('mm_tier') != "🔴 Pass":
-            card_entries.append({
-                'sport_label': '🎮 LoL', 'sport_key': 'lol_moneyline',
-                'name': f"{r.get('team1_name')} vs {r.get('team2_name')}",
-                'line': r.get('recommended_odds'),
-                'play': r.get('recommended_team_name'), 'edge': r.get('edge_pct'),
-                'ev_pct': r.get('ev_pct'), 'tier': r.get('mm_tier'),
-                'info': r, 'result': r,
-            })
+    # LoL REMOVED from Today's Card feed (Aug 2026) — backtested against
+    # real historical Polymarket prices (649 graded bets, walk-forward,
+    # leak-free): -27.44% ROI overall, and no profitable filter/tier
+    # combination survived a larger sample (favorite/underdog cuts, EV%
+    # buckets, best-of format, H2H sample size, and combinations of
+    # these were all tested — see lol_backtest.py). Unlike MLB
+    # strikeouts, there's no clean EV threshold to retier into here;
+    # the model itself isn't beating the market, not just showing the
+    # wrong picks. Same treatment as the NFL pass attempts/completions/
+    # receptions models above — pipeline and backend code kept intact
+    # (cito_api.py, lol_elo.py, polymarket_api.py, run_lol_matchup_
+    # projections all still work) in case a future rebuild (real roster
+    # tracking, player-level data, or fixing the series_win_probability
+    # amplification the backtest surfaced) brings it back profitable.
+    # Just not surfaced to users until then.
 
     return card_entries
 
@@ -5673,8 +5669,16 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
         else:
             completed.extend(["Loading LoL matchups", "Running LoL projections"])
 
-    blocks = {'mlb': _run_mlb, 'nba': _run_nba, 'nfl': _run_nfl, 'lol': _run_lol}
-    order = ['mlb', 'nba', 'nfl', 'lol']
+    blocks = {'mlb': _run_mlb, 'nba': _run_nba, 'nfl': _run_nfl}
+    order = ['mlb', 'nba', 'nfl']
+    # LoL REMOVED from auto-run (Aug 2026) — same treatment as NFL's
+    # pass attempts/completions/receptions above: not just hidden from
+    # display, fully excluded from the pipeline itself, so it stops
+    # spending real Cito API calls on every cron cycle for a model
+    # that's no longer shown to anyone. _run_lol() is left defined
+    # above (unused) rather than deleted, matching the same
+    # keep-the-code-just-stop-calling-it precedent, in case a future
+    # rebuild brings LoL back.
     if priority_sport in order:
         order.remove(priority_sport)
         order.insert(0, priority_sport)
