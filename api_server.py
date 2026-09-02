@@ -158,6 +158,20 @@ def _get_player_prop_picks(sport_key):
             why_lines = generate_why(info, result, direction, sport_key)
         except Exception:
             why_lines = []
+        # Real fix (Sep 2026): 'Best Book'/'Alt Book Lines' have been
+        # computed on info by find_best_book_line since the line-
+        # shopping patch, but this transform never read or forwarded
+        # them — the frontend badge had nothing to show even though
+        # the backend was already picking the best book correctly.
+        best_book = info.get("Best Book")
+        # market_odds previously hardcoded FanDuel regardless of which
+        # book was actually best — now prefers the real best-book odds,
+        # falling back to FanDuel/DraftKings only if line shopping
+        # didn't find anything (matches mlb_app.py's own fallback).
+        best_book_odds = info.get("Odds") if best_book else None
+        market_odds = best_book_odds if best_book_odds is not None else (
+            info.get("FanDuel Over") if is_over else info.get("FanDuel Under")
+        )
         picks.append({
             "player": e.get("name"),
             "sport": e.get("sport_label"),
@@ -167,7 +181,7 @@ def _get_player_prop_picks(sport_key):
             "projection": info.get("Projection"),
             "model_probability": info.get("Model Prob"),
             "no_vig_probability": info.get("No Vig Prob"),
-            "market_odds": info.get("FanDuel Over") if is_over else info.get("FanDuel Under"),
+            "market_odds": market_odds,
             "edge": e.get("edge"),
             "ev_pct": e.get("ev_pct"),
             "mm_tier": e.get("tier"),
@@ -175,6 +189,8 @@ def _get_player_prop_picks(sport_key):
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
             "start_time": info.get("commence_time"),
             "book_odds": info.get("book_odds", []),
+            "best_book": best_book,
+            "alt_book_lines": info.get("Alt Book Lines", []),
             "odds_api_event_id": info.get("odds_api_event_id"),
             "odds_api_sport": info.get("odds_api_sport"),
             "odds_api_market": info.get("odds_api_market"),
