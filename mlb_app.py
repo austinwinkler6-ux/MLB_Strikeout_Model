@@ -2332,33 +2332,22 @@ def build_todays_card_entries():
                 'alt_book_lines': info.get('Alt Book Lines', []),
             })
 
-    nba_pts = st.session_state.get('all_nba_players', {})
-    nba_pts_results = st.session_state.get('nba_pts_results', {})
-    for name, info in nba_pts.items():
-        if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
-            card_entries.append({
-                'sport_label': '🏀 NBA Pts', 'sport_key': 'nba_points', 'name': name,
-                'line': info.get('Best Line') or info.get('FanDuel Line') or info.get('DraftKings Line'),
-                'play': info.get('Play'), 'edge': info.get('Edge'),
-                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
-                'info': info, 'result': nba_pts_results.get(name),
-                'best_book': info.get('Best Book'),
-                'alt_book_lines': info.get('Alt Book Lines', []),
-            })
-
-    nba_ast = st.session_state.get('all_nba_assist_players', {})
-    nba_ast_results = st.session_state.get('nba_ast_results', {})
-    for name, info in nba_ast.items():
-        if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
-            card_entries.append({
-                'sport_label': '🏀 NBA Ast', 'sport_key': 'nba_assists', 'name': name,
-                'line': info.get('Best Line') or info.get('FanDuel Line') or info.get('DraftKings Line'),
-                'play': info.get('Play'), 'edge': info.get('Edge'),
-                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
-                'info': info, 'result': nba_ast_results.get(name),
-                'best_book': info.get('Best Book'),
-                'alt_book_lines': info.get('Alt Book Lines', []),
-            })
+    # NBA Points and NBA Assists REMOVED from Today's Card feed (Sep
+    # 2026) — both backtested twice against real historical odds with
+    # consistent, repeated negative results:
+    #   NBA Points: 18,218 bets (-5.93% ROI), rerun with a real pace-
+    #     calculation fix confirmed the same result (9,785 bets,
+    #     -6.41% ROI) — every EV bucket negative both times.
+    #   NBA Assists: 17,004 bets (-7.74% ROI), every EV bucket
+    #     negative; a smaller real-production-model retest (94 bets)
+    #     also came back negative (-9.6% ROI).
+    # Same treatment as NFL pass attempts/completions/receptions and
+    # LoL above — backend code kept intact (run_all_nba_projections
+    # and both projection functions still work) in case a future
+    # rebuild (real opponent defensive rating, which is currently a
+    # disabled neutral fallback — see run_nba_points_projection's own
+    # comment — or real game-total integration) brings these back
+    # profitable. Just not surfaced to users until then.
 
     # Real addition (July 2026) — all three NFL prop models, same
     # player-prop pattern as MLB/NBA above. Session-state keys confirmed
@@ -5669,8 +5658,16 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
         else:
             completed.extend(["Loading LoL matchups", "Running LoL projections"])
 
-    blocks = {'mlb': _run_mlb, 'nba': _run_nba, 'nfl': _run_nfl}
-    order = ['mlb', 'nba', 'nfl']
+    blocks = {'mlb': _run_mlb, 'nfl': _run_nfl}
+    order = ['mlb', 'nfl']
+    # NBA REMOVED from auto-run (Sep 2026) — both NBA Points and NBA
+    # Assists (the only two NBA models on this platform) confirmed
+    # unprofitable across two independent backtests each. Not just
+    # hidden from display — fully excluded from the pipeline itself,
+    # so it stops spending real API calls on every cron cycle for
+    # models nobody sees. _run_nba() is left defined above (unused)
+    # rather than deleted, matching the same precedent as NFL O/U and
+    # LoL, in case a future rebuild brings NBA back.
     # LoL REMOVED from auto-run (Aug 2026) — same treatment as NFL's
     # pass attempts/completions/receptions above: not just hidden from
     # display, fully excluded from the pipeline itself, so it stops
