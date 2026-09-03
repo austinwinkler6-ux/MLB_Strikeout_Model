@@ -348,6 +348,12 @@ def get_min_std_dev(cv, projection, sport='mlb_strikeouts'):
             return max(2.0, projection * 0.30)
         else:
             return max(1.6, projection * 0.25)
+    elif sport == 'mlb_batter_hits':
+        # Real, direct match to the backtest's own fallback formula
+        # (project_batter_hits' std_dev computation) — a real minimum
+        # floor under whatever std_dev this batter's own recent hits
+        # variance produces, not a fresh guess.
+        return max(0.8, projection * 0.5)
     elif sport == 'nba_points':
         return max(5.0, projection * 0.22)
     elif sport == 'nba_assists':
@@ -473,6 +479,35 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None)
         if ev_pct >= 20.0:
             tier = "🟢 Best Bet"
         elif ev_pct >= 15.0:
+            tier = "🔵 Worth a Look"
+        else:
+            return "🔴 Pass"
+
+        if get_confidence_level(cv, workload_tier) == "🔴 Low":
+            if tier == "🟢 Best Bet":
+                tier = "🔵 Worth a Look"
+        return tier
+
+    # ── MLB BATTER HITS: backtest-proven tiers (Sep 2026) ──
+    # Real, unusual finding — split-half validated on a full season
+    # (12,658 bets, first half +4.65% ROI / second half +5.50% ROI,
+    # never diverging): the profitable zone here is MODERATE EV, not
+    # high EV, INVERTED from every other sport on this platform.
+    #   5-8% EV: +9.71% ROI (600 bets), 8-12% EV: +7.71% ROI (398 bets)
+    #   0-3% EV: +2.58% ROI, 3-5% EV: +4.22% ROI — also positive, weaker
+    #   12%+ EV: consistently NEGATIVE and gets worse the higher it
+    #     goes (-15.05%, -11.51%, -26.19%) — the model's most confident
+    #     batter-hits picks are its least reliable, same "high self-
+    #     reported confidence = model is more likely wrong" pattern
+    #     seen elsewhere this project, just uniquely actionable here
+    #     since the LOW/MODERATE end is real, validated, positive edge
+    #     rather than also being a loser.
+    if sport == "mlb_batter_hits":
+        if ev_pct > 12.0:
+            return "🔴 Pass"
+        elif ev_pct >= 5.0:
+            tier = "🟢 Best Bet"
+        elif ev_pct > 0:
             tier = "🔵 Worth a Look"
         else:
             return "🔴 Pass"
@@ -2332,6 +2367,26 @@ def build_todays_card_entries():
                 'alt_book_lines': info.get('Alt Book Lines', []),
             })
 
+    # MLB Batter Hits (Sep 2026) — backtested and split-half validated
+    # (12,658 bets, +4.65%/+5.50% ROI). Tier thresholds here reflect
+    # the validated INVERTED profitable zone (0-12% EV), handled
+    # entirely inside get_tier's mlb_batter_hits branch — MM Tier
+    # already correctly excludes the confirmed-unprofitable 12%+ zone,
+    # so the same "!= Pass" filter used everywhere else is correct here.
+    mlb_batters = st.session_state.get('all_mlb_batters', {})
+    batter_hits_results = st.session_state.get('batter_hits_results', {})
+    for name, info in mlb_batters.items():
+        if info.get('Projection') is not None and info.get('MM Tier') and info.get('MM Tier') != "🔴 Pass":
+            card_entries.append({
+                'sport_label': '⚾ MLB Hits', 'sport_key': 'mlb_batter_hits', 'name': name,
+                'line': info.get('Best Line'),
+                'play': info.get('Play'), 'edge': info.get('Edge'),
+                'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
+                'info': info, 'result': batter_hits_results.get(name),
+                'best_book': info.get('Best Book'),
+                'alt_book_lines': info.get('Alt Book Lines', []),
+            })
+
     # NBA Points and NBA Assists REMOVED from Today's Card feed (Sep
     # 2026) — both backtested twice against real historical odds with
     # consistent, repeated negative results:
@@ -2861,6 +2916,27 @@ def _grade_one_user_bet(bet):
         won = (total_tds > line) if direction == 'over' else (total_tds < line)
         return total_tds, ('Win' if won else 'Loss')
 
+    elif sport == 'MLB_BATTER_HITS':
+        # Simpler than the other MLB grading branch above — no game_pk
+        # resolution needed at all. The batter's own season gameLog
+        # (get_batter_game_log_live, already fetched for live
+        # projections) has one real entry per date with real hits for
+        # that specific game — just look up the bet's own date
+        # directly.
+        try:
+            pick_year = int(date_str[:4])
+        except (ValueError, TypeError):
+            return None, None
+        games = get_batter_game_log_live(player_name, pick_year)
+        match = next((g for g in games if g['date'] == date_str), None)
+        if match is None:
+            return None, None
+        actual = match['hits']
+        if actual == line:
+            return actual, 'Push'
+        won = (actual > line) if direction == 'over' else (actual < line)
+        return actual, ('Win' if won else 'Loss')
+
     else:
         # LoL and anything else — not auto-gradable. LoL bets store a
         # "TeamA vs TeamB" matchup string in `pitcher` (no resolvable
@@ -3005,6 +3081,270 @@ def get_batter_k_pcts():
     return df[['full_name', 'k_pct', 'player_id']]
 
 @st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800)
+def get_todays_confirmed_lineups(game_date_str):
+    """Real, confirmed starting lineups for today's games, via MLB
+    Stats API's lineups hydration. Returns {player_name_lower: {
+    'team': ..., 'opponent': ..., 'home_team': ..., 'is_home': ...}}.
+    Lineups typically post 2-4 hours before first pitch — this can
+    legitimately be empty/partial earlier in the day, which callers
+    should treat as 'not yet available', not an error."""
+    result = {}
+    try:
+        data = get_json(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=lineups,probablePitcher")
+        for game in data.get('dates', [{}])[0].get('games', []):
+            home_team = game['teams']['home']['team']['name']
+            away_team = game['teams']['away']['team']['name']
+            lineups = game.get('lineups', {})
+            for side, team_name, opp_name, is_home in [
+                ('homePlayers', home_team, away_team, True),
+                ('awayPlayers', away_team, home_team, False),
+            ]:
+                for player in lineups.get(side, []):
+                    name = player.get('fullName', '')
+                    if name:
+                        result[name.lower()] = {
+                            'team': team_name, 'opponent': opp_name,
+                            'home_team': home_team, 'away_team': away_team, 'is_home': is_home,
+                        }
+    except Exception:
+        pass
+    return result
+
+
+def get_batter_current_team(player_id):
+    """Real fallback for when today's lineup isn't posted yet —
+    reads the player's own currentTeam from their MLB Stats API
+    profile (standard biographical field, not day-specific), so a
+    projection can still run before lineups drop."""
+    try:
+        data = get_json(f"https://statsapi.mlb.com/api/v1/people/{player_id}")
+        person = data.get('people', [{}])[0]
+        return person.get('currentTeam', {}).get('name')
+    except Exception:
+        return None
+
+
+def resolve_batter_matchup(player_name, game_date_str):
+    """Real matchup resolution for a live batter-hits pick: confirmed
+    lineup first (most accurate — confirms they're actually playing
+    today), falls back to the player's current team + today's
+    schedule if lineups aren't posted yet. Returns (team, opponent,
+    home_team, away_team, is_home, opposing_pitcher) or all-None if
+    genuinely unresolvable."""
+    lineups = get_todays_confirmed_lineups(game_date_str)
+    entry = lineups.get(player_name.lower())
+
+    if entry is None:
+        player_id = get_mlb_player_id_cached(player_name)
+        if not player_id:
+            return None, None, None, None, None, None
+        current_team = get_batter_current_team(player_id)
+        if not current_team:
+            return None, None, None, None, None, None
+        try:
+            starters = get_starters_for_date(game_date_str)
+        except Exception:
+            starters = []
+        game_row = next((s for s in starters if s.get('team') == current_team), None)
+        if not game_row:
+            return None, None, None, None, None, None
+        is_home = game_row['home_team'] == current_team
+        entry = {
+            'team': current_team, 'opponent': game_row['opponent'],
+            'home_team': game_row['home_team'],
+            'away_team': game_row['opponent'] if is_home else current_team,
+            'is_home': is_home,
+        }
+
+    try:
+        starters = get_starters_for_date(game_date_str)
+    except Exception:
+        starters = []
+    opposing_pitcher = next((s['pitcher'] for s in starters if s.get('team') == entry['opponent']), None)
+
+    return entry['team'], entry['opponent'], entry['home_team'], entry.get('away_team'), entry['is_home'], opposing_pitcher
+
+
+def get_mlb_player_id_cached(player_name):
+    """Cached player-ID lookup for batters — separate cache from the
+    pitcher lookup elsewhere in this file, since they're resolved at
+    different call sites and there's no shared cache between them."""
+    return _resolve_batter_id_direct(player_name)
+
+
+_batter_id_cache_live = {}
+
+def _resolve_batter_id_direct(player_name):
+    if player_name in _batter_id_cache_live:
+        return _batter_id_cache_live[player_name]
+    try:
+        search = get_json(f"https://statsapi.mlb.com/api/v1/people/search?names={player_name}&sportId=1")
+        people = search.get('people', [])
+        pid = people[0]['id'] if people else None
+    except Exception:
+        pid = None
+    _batter_id_cache_live[player_name] = pid
+    return pid
+
+
+_batter_gamelog_cache_live = {}
+
+def get_batter_game_log_live(player_name, season):
+    """Real, direct port of the backtest's get_batter_game_log —
+    same MLB Stats API pattern already proven live for pitchers
+    (statsapi.mlb.com/people/{id}/stats?stats=gameLog&group=X),
+    swapped to group=hitting."""
+    cache_key = f"{player_name}_{season}"
+    if cache_key in _batter_gamelog_cache_live:
+        return _batter_gamelog_cache_live[cache_key]
+    player_id = get_mlb_player_id_cached(player_name)
+    if not player_id:
+        _batter_gamelog_cache_live[cache_key] = []
+        return []
+    try:
+        resp = get_json(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=gameLog&group=hitting&season={season}&sportId=1")
+        splits = resp['stats'][0]['splits'] if resp.get('stats') else []
+    except Exception:
+        splits = []
+    games = []
+    for game in splits:
+        g = game.get('stat', {})
+        try:
+            games.append({
+                'date': game['date'],
+                'hits': int(g.get('hits', 0)), 'at_bats': int(g.get('atBats', 0)),
+                'plate_appearances': int(g.get('plateAppearances', 0)),
+            })
+        except (ValueError, TypeError, KeyError):
+            continue
+    _batter_gamelog_cache_live[cache_key] = games
+    return games
+
+
+_pitcher_gamelog_cache_live = {}
+
+def get_pitcher_hits_allowed_log_live(pitcher_name, season):
+    """Real, direct port of the backtest's get_pitcher_hits_allowed_log."""
+    cache_key = f"{pitcher_name}_{season}"
+    if cache_key in _pitcher_gamelog_cache_live:
+        return _pitcher_gamelog_cache_live[cache_key]
+    player_id = get_mlb_player_id_cached(pitcher_name)
+    if not player_id:
+        _pitcher_gamelog_cache_live[cache_key] = []
+        return []
+    try:
+        resp = get_json(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=gameLog&group=pitching&season={season}&sportId=1")
+        splits = resp['stats'][0]['splits'] if resp.get('stats') else []
+    except Exception:
+        splits = []
+    games = []
+    for game in splits:
+        g = game.get('stat', {})
+        try:
+            games.append({
+                'date': game['date'], 'hits_allowed': int(g.get('hits', 0)),
+                'batters_faced': int(g.get('battersFaced', 0)),
+            })
+        except (ValueError, TypeError, KeyError):
+            continue
+    _pitcher_gamelog_cache_live[cache_key] = games
+    return games
+
+
+_league_hits_allowed_baseline_cache = {}
+
+def get_league_avg_hits_allowed_rate_live(season, date_bucket):
+    """Real, direct port of the backtest's league-baseline approximation
+    — uses whatever pitcher logs have already been fetched this run to
+    avoid a separate expensive full-league call, falling back to a
+    real, standard MLB constant if not enough data has been seen yet."""
+    fallback = 0.245
+    cache_key = (season, date_bucket)
+    if cache_key in _league_hits_allowed_baseline_cache:
+        return _league_hits_allowed_baseline_cache[cache_key]
+    all_recent_rates = []
+    for pitcher_games in _pitcher_gamelog_cache_live.values():
+        prior = [g for g in pitcher_games if g['date'] < date_bucket]
+        if len(prior) < 3:
+            continue
+        recent = sorted(prior, key=lambda g: g['date'], reverse=True)[:10]
+        bf = sum(g['batters_faced'] for g in recent)
+        ha = sum(g['hits_allowed'] for g in recent)
+        if bf > 0:
+            all_recent_rates.append(ha / bf)
+    result = round(sum(all_recent_rates) / len(all_recent_rates), 4) if len(all_recent_rates) >= 15 else fallback
+    _league_hits_allowed_baseline_cache[cache_key] = result
+    return result
+
+
+def run_batter_hits_projection(player_name, opposing_pitcher, home_team, away_team, season, before_date=None):
+    """LIVE batter hits projection — direct port of the backtest's
+    project_batter_hits (validated: 12,658 bets, split-half consistent,
+    +4.65%/+5.50% ROI in the 0-12% EV zone). projected_hits =
+    expected_AB * projected_hit_rate, where projected_hit_rate blends
+    this batter's own real rate with the opposing starter's real
+    hits-allowed rate (vs league average) and the real park factor —
+    same shape as the strikeouts model's own opp_factor * park_factor
+    combination.
+
+    before_date: for live use, pass today's date (or leave None to use
+    mm_today_str()) — games strictly before this date are used, so a
+    game already in progress today never leaks into its own projection."""
+    try:
+        cutoff = before_date or mm_today_str()
+
+        games = get_batter_game_log_live(player_name, season)
+        prior = [g for g in games if g['date'] < cutoff]
+        if len(prior) < 5:
+            return None
+        prior_sorted = sorted(prior, key=lambda g: g['date'], reverse=True)
+        recent = prior_sorted[:15]
+        total_ab = sum(g['at_bats'] for g in recent)
+        total_hits = sum(g['hits'] for g in recent)
+        if total_ab <= 0:
+            return None
+        expected_ab = round(total_ab / len(recent), 2)
+        own_hit_rate = round(total_hits / total_ab, 4)
+        batter_n = len(recent)
+
+        if opposing_pitcher:
+            p_games = get_pitcher_hits_allowed_log_live(opposing_pitcher, season)
+            p_prior = [g for g in p_games if g['date'] < cutoff]
+            if len(p_prior) >= 3:
+                p_recent = sorted(p_prior, key=lambda g: g['date'], reverse=True)[:10]
+                total_bf = sum(g['batters_faced'] for g in p_recent)
+                total_ha = sum(g['hits_allowed'] for g in p_recent)
+                pitcher_ha_rate = round(total_ha / total_bf, 4) if total_bf > 0 else None
+            else:
+                pitcher_ha_rate = None
+        else:
+            pitcher_ha_rate = None
+
+        league_avg = get_league_avg_hits_allowed_rate_live(season, cutoff)
+        opp_factor = (pitcher_ha_rate / league_avg) if (pitcher_ha_rate is not None and league_avg > 0) else 1.0
+
+        park_factor = park_factors.get(home_team, 1.0)
+        combined_factor = max(0.80, min(1.20, opp_factor * park_factor))
+        projected_hit_rate = round(own_hit_rate * combined_factor, 4)
+        projected_hits = round(expected_ab * projected_hit_rate, 2)
+
+        hits_series = pd.Series([g['hits'] for g in recent])
+        std_dev = round(hits_series.std(), 2) if len(hits_series) > 1 and pd.notna(hits_series.std()) and hits_series.std() > 0 else max(0.8, projected_hits * 0.5)
+
+        cv = round(std_dev / max(projected_hits, 1.0), 3)
+
+        return {
+            'projection': projected_hits, 'std_dev': std_dev, 'cv': cv,
+            'expected_ab': expected_ab, 'own_hit_rate': own_hit_rate,
+            'opp_factor': round(opp_factor, 3), 'park_factor': park_factor,
+            'batter_games_sample': batter_n,
+        }
+    except Exception as e:
+        log_failure_reason('MALFORMED_RESPONSE', f"run_batter_hits_projection({player_name}): {e}")
+        return None
+
+
 def get_pitcher_game_info(pitcher_name, game_date=None):
     try:
         check_date = game_date or mm_today_str()
@@ -5413,6 +5753,148 @@ def run_all_mlb_projections(all_pitchers, season, progress_callback=None):
                 })
     return pitcher_results
 
+
+def load_mlb_batter_hits_props_data():
+    """Real, direct port of load_mlb_props_data()'s structure —
+    fetches today's LIVE batter_hits props from the Odds API, same
+    skip-already-started-games logic, same book_odds capture for line
+    shopping. Returns an all_batters dict (empty on failure)."""
+    try:
+        events_data = get_json("https://api.the-odds-api.com/v4/sports/baseball_mlb/events",
+            params={'apiKey': ODDS_API_KEY, 'dateFormat': 'iso'})
+        all_batters = {}
+        now_utc = datetime.now(ZoneInfo("UTC"))
+
+        for event in events_data:
+            commence_time_str = event.get('commence_time')
+            if commence_time_str:
+                try:
+                    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
+                    if commence_time <= now_utc:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            home = event['home_team']
+            away = event['away_team']
+            event_id = event['id']
+            props_data = get_json(
+                f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
+                params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'batter_hits', 'oddsFormat': 'american'}
+            )
+
+            for bookmaker in props_data.get('bookmakers', []):
+                book_title = bookmaker.get('title', bookmaker.get('key', ''))
+                for market in bookmaker.get('markets', []):
+                    if market['key'] != 'batter_hits':
+                        continue
+                    for outcome in market['outcomes']:
+                        batter = outcome['description']
+                        if batter not in all_batters:
+                            all_batters[batter] = {
+                                'home': home, 'away': away, 'commence_time': commence_time_str,
+                                'Projection': None, 'Edge': None, 'Play': None,
+                                'EV%': None, 'MM Tier': None,
+                                'Model Prob': None, 'No Vig Prob': None,
+                                'Model Edge': None, 'Odds': None, 'Direction': None,
+                                '_book_odds_raw': {},
+                                'odds_api_event_id': event_id,
+                                'odds_api_sport': 'baseball_mlb',
+                                'odds_api_market': 'batter_hits',
+                            }
+                        bor = all_batters[batter].setdefault('_book_odds_raw', {})
+                        if book_title not in bor:
+                            bor[book_title] = {'book': book_title, 'line': outcome.get('point'), 'over': None, 'under': None}
+                        if outcome['name'] == 'Over':
+                            bor[book_title]['over'] = outcome['price']
+                        else:
+                            bor[book_title]['under'] = outcome['price']
+                        bor[book_title]['line'] = outcome.get('point')
+
+        for batter in all_batters.values():
+            raw = batter.pop('_book_odds_raw', {})
+            batter['book_odds'] = sorted(raw.values(), key=lambda b: b.get('book', ''))
+        return all_batters
+    except Exception:
+        return {}
+
+
+def run_all_mlb_batter_hits_projections(all_batters, season, progress_callback=None):
+    """Live pipeline for MLB Batter Hits — real matchup resolution
+    (confirmed lineup or current-team fallback) + real leak-free
+    projection + real line shopping across every book, same overall
+    shape as run_all_mlb_projections for strikeouts. Tier thresholds
+    (mlb_batter_hits branch in get_tier) reflect the validated,
+    INVERTED profitable zone: 0-12% EV, not high EV."""
+    batter_results = {}
+    total = len(all_batters)
+    today_str = mm_today_str()
+    for i, (batter, info) in enumerate(all_batters.items()):
+        if progress_callback:
+            progress_callback(i, total, batter)
+
+        team, opponent, home_team, away_team, is_home, opposing_pitcher = resolve_batter_matchup(batter, today_str)
+        if not team or not opposing_pitcher:
+            continue  # can't resolve today's real matchup yet (lineup not posted, no probable pitcher) — try again next cycle
+
+        result = run_batter_hits_projection(batter, opposing_pitcher, home_team or info['home'], away_team or info['away'], season, before_date=today_str)
+        if result is None:
+            continue
+        proj = result['projection']
+
+        book_odds_list = info.get('book_odds', [])
+        best_play = find_best_book_line(
+            book_odds_list, proj, std_dev=result['std_dev'], cv=result['cv'],
+            sport='mlb_batter_hits', workload_tier=None, confidence_tier=None
+        )
+        if not best_play:
+            continue
+
+        best_line = best_play['best_line']
+        direction = best_play['best_direction']
+        over_odds = best_play['best_over_odds']
+        under_odds = best_play['best_under_odds']
+        ev_result = best_play['best_ev_result']
+        best_book = best_play['best_book']
+        all_book_results = best_play['all_book_results']
+
+        edge = round(proj - best_line, 2)
+        play = "⬆️ OVER" if direction == 'over' else "⬇️ UNDER"
+
+        all_batters[batter].update({
+            'Projection': proj, 'Edge': edge, 'Play': play,
+            'EV%': ev_result['ev_pct'] if ev_result else None,
+            'MM Tier': ev_result['tier'] if ev_result else None,
+            'Model Prob': ev_result['model_prob'] if ev_result else None,
+            'Odds': over_odds if direction == 'over' else under_odds,
+            'Direction': direction,
+            'Best Book': best_book, 'Best Line': best_line,
+            'Alt Book Lines': [
+                {'book': r['book'], 'line': r['line'], 'direction': r['direction'],
+                 'odds': r['odds'], 'ev_pct': r['ev_result']['ev_pct'], 'tier': r['ev_result']['tier']}
+                for r in all_book_results
+            ] if all_book_results else [],
+            'Opposing Pitcher': opposing_pitcher, 'Team': team, 'Opponent': opponent,
+        })
+        batter_results[batter] = result
+
+        save_prediction({
+            'date': today_str, 'pitcher': batter, 'opponent': opponent, 'home_team': home_team or info['home'],
+            'projection': proj, 'base': None, 'book_line': best_line,
+            'edge': edge, 'opp_factor': result['opp_factor'],
+            'park_factor': result['park_factor'], 'umpire_factor': None,
+            'velo_factor': None, 'total_factor': None,
+            'pitch_count_factor': None, 'lineup_factor': None,
+            'cv': result['cv'], 'confidence_tier': None,
+            'actual': None, 'sport': 'MLB_BATTER_HITS',
+            'ev_pct': ev_result['ev_pct'] if ev_result else None,
+            'mm_tier': ev_result['tier'] if ev_result else None,
+            'model_prob': ev_result['model_prob'] if ev_result else None,
+            'no_vig_prob': None, 'model_edge': edge,
+        })
+    return batter_results
+
+
 # Real fix (August 2026) — same real reasoning as load_mlb_props_data()
 # above: was completely uncached, now matches the same, already-proven
 # 5-minute TTL. st.cache_data automatically keys this separately per
@@ -5756,6 +6238,25 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
             st.session_state['_last_mlb_phase_timing'] = {'mlb_load': _mlb_load_time, 'mlb_run': _mlb_run_time}
         else:
             completed.extend(["Loading MLB props", "Running MLB projections"])
+
+        # MLB Batter Hits (Sep 2026) — backtested and split-half
+        # validated (12,658 bets, +4.65%/+5.50% ROI in the profitable
+        # 0-12% EV zone). Runs alongside strikeouts in the same MLB
+        # block since it shares the same season/date context.
+        if 'all_mlb_batters' not in st.session_state:
+            render("Loading MLB batter hits props")
+            batter_props = load_mlb_batter_hits_props_data()
+            completed.append("Loading MLB batter hits props")
+            if batter_props:
+                render("Running MLB batter hits projections")
+                batter_results = run_all_mlb_batter_hits_projections(batter_props, '2026')
+                completed.append("Running MLB batter hits projections")
+                st.session_state['all_mlb_batters'] = batter_props
+                st.session_state['batter_hits_results'] = batter_results
+            else:
+                completed.append("Running MLB batter hits projections")
+        else:
+            completed.extend(["Loading MLB batter hits props", "Running MLB batter hits projections"])
 
     def _run_nba():
         if 'all_nba_players' not in st.session_state:
