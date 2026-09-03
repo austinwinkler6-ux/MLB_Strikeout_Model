@@ -2718,6 +2718,202 @@ def _grade_one_pick(row):
         return None, None
 
 
+def _resolve_mlb_game_pk(pitcher_name, date_str):
+    """Real, derived game_pk lookup for a user-logged MLB bet — the
+    `bets` table (unlike `graded_picks`) doesn't store game_pk at log
+    time, since a user can log a bet from any pick card without the
+    site needing to persist that internal ID for them. Reconstructed
+    here from pitcher name + date using the same real starters lookup
+    (get_starters_for_date) already proven elsewhere on this platform."""
+    try:
+        starters = get_starters_for_date(date_str)
+    except Exception:
+        return None
+    for s in starters:
+        if s.get('pitcher', '').lower() == pitcher_name.lower():
+            return s.get('game_pk')
+    return None
+
+
+def _grade_one_user_bet(bet):
+    """Returns (actual_stat, result) for one real, pending USER-LOGGED
+    bet (from the `bets` table), or (None, None) if the real actual
+    result genuinely isn't available yet.
+
+    Sep 2026 — critical difference from _grade_one_pick: grades
+    against the bet's own REAL bet_line (the actual number the user
+    took, which the 'Log' form lets them edit if they shopped a
+    different book than the one recommended) — not any original
+    recommended line. Also uses the bet's own real stored odds/
+    bet_amount for real profit computation, not recomputed or assumed
+    values. This is exactly why bet_line was added — grading against
+    the wrong line would silently mis-grade any bet where the user
+    took a different number than the site's original recommendation."""
+    sport = bet.get('sport')
+    player_name = bet.get('pitcher')
+    date_str = bet.get('date')
+    line = bet.get('bet_line')
+    direction = (bet.get('over_under') or '').lower()
+
+    if not sport or not player_name or not date_str or line is None or direction not in ('over', 'under'):
+        return None, None
+
+    if sport == 'MLB':
+        game_pk = _resolve_mlb_game_pk(player_name, date_str)
+        if not game_pk:
+            return None, None
+        actual = get_actual_strikeouts(game_pk, player_name)
+        if actual is None:
+            return None, None
+        if actual == line:
+            return actual, 'Push'
+        won = (actual > line) if direction == 'over' else (actual < line)
+        return actual, ('Win' if won else 'Loss')
+
+    elif sport in ('NBA', 'NBA_AST'):
+        try:
+            box_df = get_bdl_games_for_date(date_str)
+        except Exception:
+            return None, None
+        if box_df is None or box_df.empty:
+            return None, None
+        stat_col = 'ast' if sport == 'NBA_AST' else 'pts'
+        for _, r in box_df.iterrows():
+            p = r.get('player') or {}
+            full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+            if full_name.lower() == str(player_name).lower():
+                val = r.get(stat_col)
+                if val is not None:
+                    if val == line:
+                        return val, 'Push'
+                    won = (val > line) if direction == 'over' else (val < line)
+                    return val, ('Win' if won else 'Loss')
+                break
+        return None, None
+
+    elif sport in ('NFL', 'NFL_COMPLETIONS', 'NFL_RECEPTIONS'):
+        try:
+            pick_year = int(date_str[:4])
+            pick_month = int(date_str[5:7])
+            nfl_season = pick_year if pick_month >= 3 else pick_year - 1
+        except (ValueError, TypeError):
+            return None, None
+        week = _nfl_date_to_week(date_str, nfl_season)
+        if week is None:
+            return None, None
+        stat_col_map = {'NFL': 'attempts', 'NFL_COMPLETIONS': 'completions', 'NFL_RECEPTIONS': 'receptions'}
+        stat_col = stat_col_map.get(sport)
+        try:
+            weekly = get_nfl_player_stats([nfl_season])
+        except Exception:
+            return None, None
+        if 'season_type' in weekly.columns:
+            weekly = weekly[weekly['season_type'] == 'REG']
+        if sport == 'NFL_RECEPTIONS':
+            player_rows = weekly[
+                (weekly['player_display_name'] == player_name) & (weekly['week'] == week) &
+                (weekly['position'].isin(RECEPTION_POSITIONS))
+            ]
+        else:
+            player_rows = weekly[
+                (weekly['player_display_name'] == player_name) & (weekly['week'] == week) &
+                (weekly['position'] == 'QB')
+            ]
+        if player_rows.empty:
+            return None, None
+        actual = player_rows.iloc[0].get(stat_col)
+        if actual is None or (isinstance(actual, float) and pd.isna(actual)):
+            return None, None
+        actual = int(actual)
+        if actual == line:
+            return actual, 'Push'
+        won = (actual > line) if direction == 'over' else (actual < line)
+        return actual, ('Win' if won else 'Loss')
+
+    elif sport == 'NFL_TD':
+        try:
+            pick_year = int(date_str[:4])
+            pick_month = int(date_str[5:7])
+            nfl_season = pick_year if pick_month >= 3 else pick_year - 1
+        except (ValueError, TypeError):
+            return None, None
+        week = _nfl_date_to_week(date_str, nfl_season)
+        if week is None:
+            return None, None
+        try:
+            weekly = get_nfl_player_stats([nfl_season])
+        except Exception:
+            return None, None
+        if 'season_type' in weekly.columns:
+            weekly = weekly[weekly['season_type'] == 'REG']
+        player_rows = weekly[(weekly['player_display_name'] == player_name) & (weekly['week'] == week)]
+        if player_rows.empty:
+            return None, None
+        row = player_rows.iloc[0]
+        if 'rushing_tds' in weekly.columns and 'receiving_tds' in weekly.columns:
+            total_tds = (row.get('rushing_tds') or 0) + (row.get('receiving_tds') or 0)
+        elif 'rushing_tds' in weekly.columns:
+            total_tds = row.get('rushing_tds') or 0
+        else:
+            return None, None
+        if total_tds == line:
+            return total_tds, 'Push'
+        won = (total_tds > line) if direction == 'over' else (total_tds < line)
+        return total_tds, ('Win' if won else 'Loss')
+
+    else:
+        # LoL and anything else — not auto-gradable. LoL bets store a
+        # "TeamA vs TeamB" matchup string in `pitcher` (no resolvable
+        # team slug) and have no real numeric line (it's a moneyline
+        # market, not an over/under), so this is a genuine, honest
+        # gap rather than a guess. Left pending.
+        return None, None
+
+
+def grade_pending_bets():
+    """Real, automatic grading pass over every real pending USER-
+    LOGGED bet from a real PAST date. Mirrors grade_pending_picks()
+    but targets the `bets` table (a user's own logged bets, shown on
+    the Bet Tracker page) instead of `graded_picks` (the model's own
+    recommendation-history tracking) — and removes the need for a
+    user to ever self-report Win/Loss, so results can't be misreported
+    (accidentally or otherwise). Safe to call on every auto-run: bets
+    that genuinely can't be graded yet (game not finished, stats not
+    posted) are silently left pending and retried next cycle."""
+    if not supabase:
+        return
+    today_str = mm_today_str()
+    try:
+        res = supabase.table("bets").select("*") \
+            .eq("result", "Pending").lt("date", today_str) \
+            .limit(200).execute()
+        pending = res.data or []
+    except Exception:
+        return
+
+    for bet in pending:
+        try:
+            actual, result = _grade_one_user_bet(bet)
+            if result is None:
+                continue
+            bet_amount = bet.get('bet_amount')
+            odds = bet.get('odds')
+            if result == 'Push':
+                profit = 0.0
+            elif bet_amount is not None and odds is not None:
+                if result == 'Win':
+                    profit = round((odds / 100 * bet_amount) if odds > 0 else (100 / abs(odds) * bet_amount), 2)
+                else:
+                    profit = round(-bet_amount, 2)
+            else:
+                profit = None
+            supabase.table("bets").update({
+                "actual": actual, "result": result, "profit": profit,
+            }).eq("id", bet["id"]).execute()
+        except Exception:
+            continue  # one bad row should never stop the rest from grading
+
+
 def grade_pending_picks():
     """Real, best-effort grading pass over every real pending pick from
     a real PAST date (never today's — those games likely haven't
@@ -5728,6 +5924,7 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
         try:
             record_picks_for_grading(_all_card_entries)
             grade_pending_picks()
+            grade_pending_bets()
         except Exception:
             pass
     except Exception as _e:
