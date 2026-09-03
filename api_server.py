@@ -116,6 +116,7 @@ _ALL_PICKS_CACHE_SENTINEL = "__API_BRIDGE_ALL_PICKS__"
 # build_todays_card_entries()'s own real sport_key values exactly.
 SPORT_KEYS = {
     "mlb": "mlb_strikeouts",
+    "mlb-batter-hits": "mlb_batter_hits",
     "nba-points": "nba_points",
     "nba-assists": "nba_assists",
     "nfl-td": "nfl_td",
