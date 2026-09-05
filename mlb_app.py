@@ -2948,7 +2948,7 @@ def _grade_one_user_bet(bet):
             pick_year = int(date_str[:4])
         except (ValueError, TypeError):
             return None, None
-        games = get_batter_game_log_live(player_name, pick_year)
+        games = get_batter_game_log_live(player_name, pick_year, required_date=date_str)
         match = next((g for g in games if g['date'] == date_str), None)
         if match is None:
             return None, None
@@ -3211,18 +3211,41 @@ def _resolve_batter_id_direct(player_name):
 
 _batter_gamelog_cache_live = {}
 
-def get_batter_game_log_live(player_name, season):
+def get_batter_game_log_live(player_name, season, required_date=None):
     """Real, direct port of the backtest's get_batter_game_log —
     same MLB Stats API pattern already proven live for pitchers
     (statsapi.mlb.com/people/{id}/stats?stats=gameLog&group=X),
-    swapped to group=hitting."""
+    swapped to group=hitting.
+
+    Real fix (Sep 2026, per direct user report — a bet stayed
+    Pending for 1-2 hours after its game finished, well past a full
+    hourly cron cycle): this cache previously had NO expiration at
+    all. If a player's game log got fetched once earlier in the day
+    (e.g. for live pick generation, before their game happened), that
+    stale, pre-game data would sit in this in-memory dict FOREVER
+    (the app process runs continuously, it doesn't restart between
+    cron cycles) — so grading would keep hitting the same stale
+    cache and never see the now-completed game, leaving the bet
+    Pending indefinitely. required_date, when passed (grading always
+    passes it), checks whether that specific date is actually present
+    in the cached data; if not, forces one fresh re-fetch rather than
+    trusting a cache that's proven to be missing exactly the game we
+    need. Live projection calls (which don't pass required_date) keep
+    the original fast-cache behavior, since they don't have this same
+    staleness risk — they're always projecting a FUTURE game, never
+    checking for a specific just-completed one."""
     cache_key = f"{player_name}_{season}"
-    if cache_key in _batter_gamelog_cache_live:
-        return _batter_gamelog_cache_live[cache_key]
+    cached = _batter_gamelog_cache_live.get(cache_key)
+    needs_refresh = cached is None or (
+        required_date is not None and not any(g['date'] == required_date for g in cached)
+    )
+    if not needs_refresh:
+        return cached
+
     player_id = get_mlb_player_id_cached(player_name)
     if not player_id:
-        _batter_gamelog_cache_live[cache_key] = []
-        return []
+        _batter_gamelog_cache_live[cache_key] = cached or []
+        return cached or []
     try:
         resp = get_json(f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=gameLog&group=hitting&season={season}&sportId=1")
         splits = resp['stats'][0]['splits'] if resp.get('stats') else []
