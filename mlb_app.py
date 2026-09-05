@@ -5924,6 +5924,7 @@ def run_all_mlb_batter_hits_projections(all_batters, season, progress_callback=N
                 for r in all_book_results
             ] if all_book_results else [],
             'Opposing Pitcher': opposing_pitcher, 'Team': team, 'Opponent': opponent,
+            'Sport Key': 'mlb_batter_hits',
         })
         batter_results[batter] = result
 
