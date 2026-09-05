@@ -203,6 +203,20 @@ def calculate_mm_stake(info, result, bankroll, risk_style):
     range_mult = RISK_STYLE_RANGE_MULTIPLIER.get(risk_style, 1.0)
     tier_min, tier_max = tier_range[0] * range_mult, tier_range[1] * range_mult
 
+    # Real, direct per-user request (Sep 2026) — MLB Batter Hits shows
+    # a much higher volume of picks per day than any other sport on
+    # this platform (dozens vs. a handful), so each individual bet
+    # should carry less weight to keep total daily exposure
+    # reasonable — same portfolio-sizing logic as holding more
+    # simultaneous positions meaning each one should be smaller, not
+    # a statement about this model being less trustworthy than others.
+    # 0.6 is a real, adjustable starting point (a moderate cut, not
+    # a drastic one) — change this one constant if it needs tuning.
+    BATTER_HITS_VOLUME_STAKE_MULTIPLIER = 0.6
+    if info.get('Sport Key') == 'mlb_batter_hits':
+        tier_min *= BATTER_HITS_VOLUME_STAKE_MULTIPLIER
+        tier_max *= BATTER_HITS_VOLUME_STAKE_MULTIPLIER
+
     model_prob = info.get('Model Prob')
     odds = info.get('Odds')
     if model_prob is None or odds is None:
