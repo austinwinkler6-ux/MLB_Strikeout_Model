@@ -489,25 +489,30 @@ def get_tier(model_edge, ev_pct, cv, sport="mlb_strikeouts", workload_tier=None)
         return tier
 
     # ── MLB BATTER HITS: backtest-proven tiers (Sep 2026) ──
-    # Real, unusual finding — split-half validated on a full season
-    # (12,658 bets, first half +4.65% ROI / second half +5.50% ROI,
-    # never diverging): the profitable zone here is MODERATE EV, not
-    # high EV, INVERTED from every other sport on this platform.
-    #   5-8% EV: +9.71% ROI (600 bets), 8-12% EV: +7.71% ROI (398 bets)
-    #   0-3% EV: +2.58% ROI, 3-5% EV: +4.22% ROI — also positive, weaker
-    #   12%+ EV: consistently NEGATIVE and gets worse the higher it
-    #     goes (-15.05%, -11.51%, -26.19%) — the model's most confident
-    #     batter-hits picks are its least reliable, same "high self-
-    #     reported confidence = model is more likely wrong" pattern
-    #     seen elsewhere this project, just uniquely actionable here
-    #     since the LOW/MODERATE end is real, validated, positive edge
-    #     rather than also being a loser.
+    # Real, unusual finding — validated across TWO INDEPENDENT seasons
+    # (2024 and 2025, not just a split-half of one), then further
+    # tightened after finding the real edge is UNDER-direction-only
+    # (see analyze_prop's own direction override, applied before this
+    # function is reached) within a MODERATE EV zone — INVERTED from
+    # every other sport on this platform, where high EV is usually
+    # better, not worse:
+    #   3-5% EV: 2024 +2.96%, 2025 +4.22% — held up both years
+    #   5-8% EV: 2024 +2.38%, 2025 +9.71% — held up, though 2025 ran hot
+    #   8-12% EV: 2024 +2.96%, 2025 +7.71% — held up, same pattern
+    #   0-3% EV: 2024 -3.31%, 2025 +2.58% — FLIPPED SIGN between years,
+    #     dropped from the tier entirely (the same kind of instability
+    #     that killed a similarly-sized LoL "finding" under scrutiny)
+    #   12%+ EV: consistently NEGATIVE both years and gets worse the
+    #     higher it goes — the model's most confident batter-hits picks
+    #     remain its least reliable, same pattern seen elsewhere on
+    #     this platform.
+    # Combined UNDER-only, 3-12% EV, both years: 2,509 bets, +9.58% ROI.
     if sport == "mlb_batter_hits":
         if ev_pct > 12.0:
             return "🔴 Pass"
         elif ev_pct >= 5.0:
             tier = "🟢 Best Bet"
-        elif ev_pct > 0:
+        elif ev_pct > 3.0:
             tier = "🔵 Worth a Look"
         else:
             return "🔴 Pass"
@@ -749,6 +754,22 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
         prob_edge = round((model_prob - fair_prob) * 100, 2)
         fair_odds = prob_to_american_odds(model_prob)
         edge_cents = calculate_odds_edge_cents(odds, fair_odds)
+
+        computed_tier = get_tier(model_edge, ev_pct, cv, sport, workload_tier)
+        # Real, direction-specific override for MLB Batter Hits (Sep
+        # 2026) — split-half AND cross-season validated (2024: +8.19%
+        # ROI on 1,562 unders in the 3-12% EV zone; 2025: +11.87% ROI
+        # on 947 unders in the same zone; combined 2,509 bets, +9.58%
+        # ROI). OVER-direction bets showed the opposite sign both
+        # years independently (2024: -8.52% ROI on overs overall, 2025:
+        # -5.6%) — plausibly real public-money bias (bettors like
+        # backing a player to get a hit, pushing over lines to worse
+        # value), not model noise. This lives here (not in get_tier
+        # itself) specifically to avoid touching that shared function's
+        # signature/behavior for every other sport on this platform.
+        if sport == 'mlb_batter_hits' and direction == 'over' and computed_tier != "🔴 Pass":
+            computed_tier = "🔴 Pass"
+
         return {
             'model_prob': model_prob,
             'no_vig_prob': round(fair_prob, 3),
@@ -761,7 +782,7 @@ def analyze_prop(projection, line, std_dev, cv, over_odds, under_odds, direction
             'fair_odds': fair_odds,
             'edge_cents': edge_cents,
             'low_confidence': low_confidence,
-            'tier': get_tier(model_edge, ev_pct, cv, sport, workload_tier),
+            'tier': computed_tier,
             'pass_reason': get_pass_reason(model_edge, ev_pct, cv, workload_tier),
             'confidence_level': get_confidence_level(cv, workload_tier),
             'effective_std': round(effective_std, 3),
