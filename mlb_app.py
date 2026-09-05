@@ -3473,6 +3473,11 @@ def get_actual_strikeouts(game_pk, pitcher_name):
 # display-only change doesn't need a bump, but anything that changes
 # what number gets computed does.
 MLB_PROJECTION_MODEL_VERSION = "2026-07-26-v3-workload-fixes"
+# Bump this string on any real change to the batter hits projection,
+# line-shopping, or tier logic — forces the batch-level auto-run
+# cache (see _batter_hits_cache_tag) to recompute rather than keep
+# serving picks from before the change.
+MLB_BATTER_HITS_MODEL_VERSION = "2026-09-05-v2-unders-only"
 
 def run_projection(pitcher_name, opponent_team, home_team, season, weather_adj=1.0, before_date=None,
                    use_umpire=True, use_park=True, use_lineup=True, use_pitch_count=True, use_total=True):
@@ -6283,11 +6288,29 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
         else:
             completed.extend(["Loading MLB props", "Running MLB projections"])
 
-        # MLB Batter Hits (Sep 2026) — backtested and split-half
-        # validated (12,658 bets, +4.65%/+5.50% ROI in the profitable
-        # 0-12% EV zone). Runs alongside strikeouts in the same MLB
-        # block since it shares the same season/date context.
-        if 'all_mlb_batters' not in st.session_state:
+        # MLB Batter Hits (Sep 2026) — backtested and cross-season
+        # validated. Runs alongside strikeouts in the same MLB block
+        # since it shares the same season/date context.
+        #
+        # Real fix (Sep 2026, per direct user report — a deployed
+        # tier/EV fix showed zero effect on live picks 12 hours after
+        # deploy): the original gate here was a naive
+        # "if 'all_mlb_batters' not in st.session_state" check, with
+        # no awareness of the calendar date or the underlying model
+        # logic version. Once set, it would never recompute again for
+        # the rest of that session's lifetime — so a code deploy that
+        # changed the tier/EV logic had no visible effect until
+        # session_state happened to clear on its own, which could be
+        # many hours. Now tagged with BOTH today's date and a real
+        # model-version marker (MLB_BATTER_HITS_MODEL_VERSION, bumped
+        # whenever the projection/tier logic changes) — mirrors the
+        # same real fix already proven for individual strikeout
+        # picks via MLB_PROJECTION_MODEL_VERSION in
+        # cached_run_projection, just applied at the batch level
+        # here, which is where this specific bug actually lived.
+        _batter_cache_tag = st.session_state.get('_batter_hits_cache_tag')
+        _current_tag = f"{mm_today_str()}_{MLB_BATTER_HITS_MODEL_VERSION}"
+        if 'all_mlb_batters' not in st.session_state or _batter_cache_tag != _current_tag:
             render("Loading MLB batter hits props")
             batter_props = load_mlb_batter_hits_props_data()
             completed.append("Loading MLB batter hits props")
@@ -6297,6 +6320,7 @@ def run_todays_card_auto_run(minimal_ui=False, priority_sport=None):
                 completed.append("Running MLB batter hits projections")
                 st.session_state['all_mlb_batters'] = batter_props
                 st.session_state['batter_hits_results'] = batter_results
+                st.session_state['_batter_hits_cache_tag'] = _current_tag
             else:
                 completed.append("Running MLB batter hits projections")
         else:
