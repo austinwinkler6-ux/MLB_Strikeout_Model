@@ -188,6 +188,8 @@ def _get_player_prop_picks(sport_key):
             "mm_tier": e.get("tier"),
             "confidence_level": info.get("Confidence Level"),
             "matchup": f"{info.get('away')} @ {info.get('home')}" if info.get("away") else None,
+            "home_team": info.get("home"),
+            "away_team": info.get("away"),
             "start_time": info.get("commence_time"),
             "book_odds": info.get("book_odds", []),
             "best_book": best_book,
@@ -863,50 +865,102 @@ async def lol_picks(x_api_key: str = Header(default=None)):
     return {"picks": picks, "count": len(picks), "last_updated": meta}
 
 
+def _find_current_event_id(sport, home_team, away_team):
+    """Real fallback lookup — fetches CURRENT live events for this
+    sport and matches by team name, used when a pick's originally-
+    stored event_id has aged out of Odds API's live event registry
+    (a real, expected lifecycle thing, not a bug — event IDs don't
+    stay resolvable forever as time passes and games start)."""
+    if not home_team or not away_team:
+        return None
+    try:
+        resp = requests.get(
+            f"https://api.the-odds-api.com/v4/sports/{sport}/events",
+            params={"apiKey": ODDS_API_KEY, "dateFormat": "iso"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        events = resp.json()
+        for ev in events:
+            ev_home = (ev.get("home_team") or "").lower()
+            ev_away = (ev.get("away_team") or "").lower()
+            if ev_home == home_team.lower() and ev_away == away_team.lower():
+                return ev.get("id")
+        return None
+    except Exception:
+        return None
+
+
+def _fetch_live_odds_for_event(sport, event_id, market, player):
+    """Real, single-attempt fetch — split out from the route handler
+    so it can be called twice (original event_id, then a fresh one
+    from _find_current_event_id) without duplicating this logic."""
+    resp = requests.get(
+        f"https://api.the-odds-api.com/v4/sports/{sport}/events/{event_id}/odds",
+        params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": market, "oddsFormat": "american"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    book_odds_raw = {}
+    for bookmaker in data.get("bookmakers", []):
+        book_title = bookmaker.get("title", bookmaker.get("key", ""))
+        for mkt in bookmaker.get("markets", []):
+            if mkt.get("key") == market:
+                for outcome in mkt.get("outcomes", []):
+                    if player and outcome.get("description", "").lower() != player.lower():
+                        continue
+                    if book_title not in book_odds_raw:
+                        book_odds_raw[book_title] = {"book": book_title, "line": outcome.get("point"), "over": None, "under": None}
+                    if outcome.get("name") == "Over":
+                        book_odds_raw[book_title]["over"] = outcome.get("price")
+                    else:
+                        book_odds_raw[book_title]["under"] = outcome.get("price")
+                    book_odds_raw[book_title]["line"] = outcome.get("point")
+    return sorted(book_odds_raw.values(), key=lambda b: b.get("book", ""))
+
+
 @app.get("/api/live-odds")
 async def live_odds(
     event_id: str,
     sport: str,
     market: str,
     player: str = None,
+    home_team: str = None,
+    away_team: str = None,
     x_api_key: str = Header(default=None),
 ):
     """Fetches fresh, real-time odds from The Odds API for a single
     event + market + player — called on-demand by the frontend when a
     user opens the odds comparison dropdown, so they always see current
     prices instead of stale cached data. One API credit per call, only
-    burned when a user actually clicks."""
+    burned when a user actually clicks.
+
+    Real fix (Sep 2026, per direct user report — a pick's live-odds
+    refetch consistently 404ing) — the event_id captured when a pick
+    was originally generated can age out of Odds API's live event
+    registry over time (a real, expected part of that ID's lifecycle,
+    not a bug). Previously, that just meant a permanent fallback to
+    whatever was cached at generation time, even hours later. Now, if
+    the stored event_id fails AND home_team/away_team were provided,
+    this looks up a FRESH, currently-valid event_id by matching team
+    names and retries once before giving up."""
     _require_api_key(x_api_key)
     if not ODDS_API_KEY:
         return {"error": "ODDS_API_KEY not configured", "book_odds": []}
     try:
-        resp = requests.get(
-            f"https://api.the-odds-api.com/v4/sports/{sport}/events/{event_id}/odds",
-            params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": market, "oddsFormat": "american"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        book_odds_raw = {}
-        for bookmaker in data.get("bookmakers", []):
-            book_title = bookmaker.get("title", bookmaker.get("key", ""))
-            for mkt in bookmaker.get("markets", []):
-                if mkt.get("key") == market:
-                    for outcome in mkt.get("outcomes", []):
-                        # Filter by player name if provided
-                        if player and outcome.get("description", "").lower() != player.lower():
-                            continue
-                        if book_title not in book_odds_raw:
-                            book_odds_raw[book_title] = {"book": book_title, "line": outcome.get("point"), "over": None, "under": None}
-                        if outcome.get("name") == "Over":
-                            book_odds_raw[book_title]["over"] = outcome.get("price")
-                        else:
-                            book_odds_raw[book_title]["under"] = outcome.get("price")
-                        book_odds_raw[book_title]["line"] = outcome.get("point")
-        book_odds = sorted(book_odds_raw.values(), key=lambda b: b.get("book", ""))
+        book_odds = _fetch_live_odds_for_event(sport, event_id, market, player)
         return {"book_odds": book_odds, "fetched_at": datetime.now(timezone.utc).isoformat()}
-    except Exception as e:
-        return {"error": str(e), "book_odds": []}
+    except Exception as first_error:
+        fresh_event_id = _find_current_event_id(sport, home_team, away_team)
+        if fresh_event_id and fresh_event_id != event_id:
+            try:
+                book_odds = _fetch_live_odds_for_event(sport, fresh_event_id, market, player)
+                return {"book_odds": book_odds, "fetched_at": datetime.now(timezone.utc).isoformat(),
+                        "note": "Original event ID was stale — refreshed automatically."}
+            except Exception as second_error:
+                return {"error": str(second_error), "book_odds": []}
+        return {"error": str(first_error), "book_odds": []}
 
 
 @app.get("/api/all-picks")
