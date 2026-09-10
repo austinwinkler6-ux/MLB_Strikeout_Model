@@ -2442,6 +2442,8 @@ def build_todays_card_entries():
                     'play': info.get('Play'), 'edge': info.get('Edge'),
                     'ev_pct': info.get('EV%'), 'tier': info.get('MM Tier'),
                     'info': info, 'result': nfl_results.get(name),
+                    'best_book': info.get('Best Book'),
+                    'alt_book_lines': info.get('Alt Book Lines', []),
                 })
 
     # LoL REMOVED from Today's Card feed (Aug 2026) — backtested against
@@ -9971,6 +9973,41 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
 
         fair_odds = prob_to_american_odds(model_prob)
         edge_cents = calculate_odds_edge_cents(td_odds, fair_odds) if fair_odds else None
+
+        # Real fix (Sep 2026) — NFL TD already shops for the best odds
+        # across every book (see load_nfl_td_props_data's td_book/
+        # td_odds selection above), it just never exposed that as
+        # 'Best Book'/'Alt Book Lines' the way MLB's line-shopping
+        # does. This computes the SAME real ev_pct/tier formula used
+        # for the main pick above, applied to every OTHER book's real
+        # odds too, so the comparison table shows genuine EV%/tier per
+        # book — not just raw prices with no context.
+        alt_book_lines = []
+        for book_entry in info.get('book_odds', []):
+            alt_odds = book_entry.get('over')  # NFL TD odds are stored in the 'over' slot (see load_nfl_td_props_data)
+            if alt_odds is None:
+                continue
+            alt_implied_prob = american_odds_to_implied_prob(alt_odds)
+            if alt_implied_prob is None or alt_implied_prob <= 0:
+                continue
+            alt_decimal_odds = 1 + (alt_odds / 100) if alt_odds > 0 else 1 + (100 / abs(alt_odds))
+            alt_ev_pct = round(((model_prob * alt_decimal_odds) - 1) * 100, 2)
+            alt_is_longshot = alt_odds > 500
+            if alt_is_longshot:
+                alt_tier = "🔴 Pass"
+            elif 3 <= alt_ev_pct < 5:
+                alt_tier = "🟢 Best Bet"
+            elif 5 <= alt_ev_pct < 8:
+                alt_tier = "🟢 Best Bet" if is_qb else "🔵 Worth a Look"
+            elif 3 <= alt_ev_pct < 10 and is_qb:
+                alt_tier = "🔵 Worth a Look"
+            else:
+                alt_tier = "🔴 Pass"
+            alt_book_lines.append({
+                'book': book_entry.get('book'), 'line': None, 'direction': 'yes',
+                'odds': alt_odds, 'ev_pct': alt_ev_pct, 'tier': alt_tier,
+            })
+
         info.update({
             'Projection': round(expected_tds, 3), 'Model Prob': round(model_prob, 4),
             'Implied Prob': round(implied_prob, 4), 'EV%': ev_pct, 'MM Tier': mm_tier,
@@ -9980,6 +10017,8 @@ def run_all_nfl_td_projections(all_players, season, progress_callback=None):
             'games_played': games_played,
             'expected_volume': round(expected_volume, 2),
             'td_per_opp': round(td_per_opp, 4),
+            'Best Book': info.get('td_book'),
+            'Alt Book Lines': alt_book_lines,
         })
         results[player_name] = {
             'player': player_name, 'matchup': f"{info['away']} @ {info['home']}",
