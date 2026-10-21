@@ -1,4 +1,8 @@
 """
+v4 (October 2026): adds the +EV board. New routes /api/ev-picks, /api/ev-status, /api/ev-performance (declared BEFORE the
+generic /api/{sport_slug}-picks route so they are not swallowed by it) and an optional background scanner thread
+(set EV_SCANNER_ENABLED=1; needs ev_scanner_v1.py, ev_engine_v3.py, ev_api_v1.py next to this file). Everything else is unchanged.
+
 api_server.py — real API bridge for Model Metrics, ALL sports (August 2026)
 
 WHY THIS IS DIFFERENT FROM BASE44'S ORIGINAL VERSION
@@ -56,6 +60,7 @@ RUN LOCALLY
 """
 
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -961,6 +966,133 @@ async def live_odds(
             except Exception as second_error:
                 return {"error": str(second_error), "book_odds": []}
         return {"error": str(first_error), "book_odds": []}
+
+
+def _has_access(user):
+    """True for the admin, active subscribers, and users inside their free trial. Mirrors /api/subscription-status
+    without the Stripe re-check (that endpoint keeps the row fresh whenever the site loads)."""
+    email = (getattr(user, "email", None) or "").lower()
+    if email and email == ADMIN_EMAIL.lower():
+        return True
+    try:
+        res = supabase.table("subscriptions").select("status,trial_end_date").eq("user_id", user.id).execute()
+        row = res.data[0] if res.data else None
+    except Exception:
+        return True                                  # fail open on a lookup error, same as /api/subscription-status
+    if row is None:
+        return True                                  # brand-new user: the status endpoint creates their trial
+    if (row.get("status") or "trialing") == "active":
+        return True
+    if (row.get("status") or "trialing") == "trialing":
+        try:
+            return datetime.fromisoformat(str(row.get("trial_end_date")).replace("Z", "+00:00")) > datetime.now(timezone.utc)
+        except Exception:
+            return True
+    return False
+
+
+# ─────────────────────────── +EV board (Oct 2026) ───────────────────────────
+# Picks here come from sharp-vs-soft price comparison, not from any projection model. The scanner writes the ev_picks
+# table (see ev_tables_v1.sql); these routes only read it.
+EV_SCANNER_ENABLED = os.environ.get("EV_SCANNER_ENABLED", "0") == "1"
+_EV_STOP = threading.Event()
+
+
+@app.on_event("startup")
+def _start_ev_scanner():
+    if not (EV_SCANNER_ENABLED and supabase and ODDS_API_KEY):
+        print("[ev-scanner] not started (set EV_SCANNER_ENABLED=1 with Supabase and ODDS_API_KEY configured)")
+        return
+    import ev_scanner_v1 as scanner
+    cfg = scanner.cfg_from_env()
+    thread = threading.Thread(
+        target=scanner.run_forever,
+        kwargs=dict(client=scanner.OddsClient(ODDS_API_KEY), store=scanner.SupabaseStore(supabase), cfg=cfg,
+                    stop=_EV_STOP, owner=f"api-{os.getpid()}", log=print),
+        daemon=True, name="ev-scanner")
+    thread.start()
+    print(f"[ev-scanner] started: sports={cfg['sports']} books={cfg['book_profile']} intensity={cfg['intensity']} "
+          f"daily budget={cfg['daily_budget']} credits")
+
+
+def _all_ev_rows():
+    rows, start = [], 0
+    while True:                      # PostgREST returns at most 1000 rows per request
+        res = supabase.table("ev_picks").select("*").order("commence").range(start, start + 999).execute()
+        rows += res.data or []
+        if len(res.data or []) < 1000:
+            return rows
+        start += 1000
+
+
+@app.get("/api/ev-picks")
+async def ev_picks(sport: str = None, market: str = None, book: str = None, min_ev: float = None,
+                   hide_low: bool = False, limit: int = 500, authorization: str = Header(default=None),
+                   x_api_key: str = Header(default=None)):
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "Supabase not configured", "picks": [], "count": 0}
+    user = _get_user_from_jwt(authorization)
+    if not _has_access(user):
+        return {"error": "subscription_required", "picks": [], "count": 0}
+    import ev_api_v1 as evapi
+    try:
+        rows = _all_ev_rows()
+    except Exception as e:
+        return {"error": str(e), "picks": [], "count": 0}
+    now = datetime.now(timezone.utc)
+    live = evapi.shape_picks(rows, now=now, limit=100000)
+    picks = evapi.shape_picks(rows, now=now, sport=sport, market=market, book=book, min_ev=min_ev,
+                              hide_low=hide_low, limit=max(1, min(limit, 2000)))
+    last_seen = max([r["last_seen"] for r in rows if r.get("last_seen")], default=None)
+    return {"picks": _sanitize_nan(picks), "count": len(picks), "total_live": len(live), "facets": evapi.facets(live),
+            "last_updated": last_seen}
+
+
+@app.get("/api/ev-status")
+async def ev_status(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Admin only: scanner health, credits, and which markets the sharps actually price."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "Supabase not configured"}
+    user = _get_user_from_jwt(authorization)
+    if (getattr(user, "email", "") or "").lower() != ADMIN_EMAIL.lower():
+        raise HTTPException(status_code=403, detail="Admin only")
+    try:
+        recent = supabase.table("ev_scan_log").select("*").order("ts", desc=True).limit(40).execute().data or []
+        from zoneinfo import ZoneInfo
+        et_midnight = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = supabase.table("ev_scan_log").select("credits").gte("ts", et_midnight.isoformat()).execute().data or []
+        stats = supabase.table("ev_market_stats").select("*").execute().data or []
+    except Exception as e:
+        return {"error": str(e)}
+    return {"scanner_enabled": EV_SCANNER_ENABLED, "credits_remaining": recent[0]["remaining"] if recent else None,
+            "credits_used_today": sum((x["credits"] or 0) for x in today), "recent_scans": recent[:15],
+            "market_coverage": [{"market": m["market"], "sport": m.get("sport"), "scans": m["scans"], "props": m["props"],
+                                 "with_fair_price": m["fair"]} for m in sorted(stats, key=lambda m: -m["fair"])]}
+
+
+@app.get("/api/ev-performance")
+async def ev_performance(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """Closing-line value of every flagged pick whose game has started: the honest test of whether the flags are real."""
+    _require_api_key(x_api_key)
+    if not supabase:
+        return {"error": "Supabase not configured"}
+    user = _get_user_from_jwt(authorization)
+    if not _has_access(user):
+        return {"error": "subscription_required"}
+    import ev_api_v1 as evapi
+    try:
+        rows, start = [], 0
+        while True:
+            res = supabase.table("ev_pick_log").select("*").order("commence").range(start, start + 999).execute()
+            rows += res.data or []
+            if len(res.data or []) < 1000:
+                break
+            start += 1000
+    except Exception as e:
+        return {"error": str(e)}
+    return evapi.performance_summary(rows)
 
 
 @app.get("/api/all-picks")
