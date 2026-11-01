@@ -141,8 +141,10 @@ def fair_map(quotes, weights=SHARP_WEIGHTS, min_sharps=1, max_spread=0.05, max_h
 def find_ev(quotes, min_ev=0.02, max_odds=1200, min_prob=0.03, max_prob=0.97, min_sharps=1, max_spread=0.05,
             weights=SHARP_WEIGHTS, single_source_min_ev=0.04, max_hold=0.15):
     """Returns (rows, skipped, all_ev, market_stats).
-    rows: one dict per +EV (book, side) quote, each carrying `shop` = every other soft book's price on the same side
-          so the page can show line shopping. market_stats: {market: {'props': n, 'fair': n}} for pruning dead markets."""
+    rows: one dict per +EV (book, side) quote, each carrying `shop` = EVERY book that posts this prop (sharp books that
+          went into the fair price, and all soft books): its price on the pick's side (`odds`), its price on the
+          opposite side (`opp`), `sharp` (True for sharp books) and `ev_pct` (soft books only), best price first, so
+          the page can show a full price comparison. market_stats: {market: {'props': n, 'fair': n}} for pruning dead markets."""
     rows, skipped = [], collections.Counter()
     all_ev = collections.defaultdict(list)       # every soft quote's EV, for sanity checking
     market_stats = collections.defaultdict(lambda: {"props": 0, "fair": 0})
@@ -167,6 +169,14 @@ def find_ev(quotes, min_ev=0.02, max_odds=1200, min_prob=0.03, max_prob=0.97, mi
                 all_ev[b].append(ev)
                 shop.append({"book": b, "odds": int(q[side]), "ev_pct": round(ev * 100, 2)})
             shop.sort(key=lambda x: x["ev_pct"], reverse=True)
+            other = "B" if side == "A" else "A"
+            board = [{"book": e["book"], "odds": e["odds"], "ev_pct": e["ev_pct"], "sharp": False,
+                      "opp": int(books[e["book"]][other]) if other in books[e["book"]] else None} for e in shop]
+            for b in info["sharps"]:                    # sharp books that fed the fair price (junk quotes were already dropped)
+                if side in books[b]:
+                    board.append({"book": b, "odds": int(books[b][side]), "ev_pct": None, "sharp": True,
+                                  "opp": int(books[b][other]) if other in books[b] else None})
+            board.sort(key=lambda x: dec(x["odds"]), reverse=True)
             m = slot["meta"]
             single = len(info["sharps"]) == 1 and "pinnacle" not in info["sharps"]
             need = max(min_ev, single_source_min_ev if single else min_ev)
@@ -183,7 +193,7 @@ def find_ev(quotes, min_ev=0.02, max_odds=1200, min_prob=0.03, max_prob=0.97, mi
                     "sharps": {k: round(v, 4) for k, v in info["sharps"].items()},
                     "sharp_spread_pts": round(info["spread"] * 100, 1),
                     "kelly_quarter_pct": round(max(0.0, (p * dec(entry["odds"]) - 1) / (dec(entry["odds"]) - 1)) * 25, 2),
-                    "shop": [x for x in shop if x["book"] != entry["book"]],
+                    "shop": board,
                 })
     rows.sort(key=lambda r: r["ev_pct"], reverse=True)
     return rows, skipped, all_ev, dict(market_stats)
