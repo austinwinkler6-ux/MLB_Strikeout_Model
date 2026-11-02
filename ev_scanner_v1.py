@@ -53,11 +53,15 @@ SPORTS = {
 
 # Sharps are priced by Pinnacle, BetOnline and the exchanges. (LowVig, Kalshi and Betopenly posted no props in the
 # coverage probe, Circa and Bookmaker are not in The Odds API.) 5 sharps + 5 soft = 10 books = ONE credit per market.
-SHARP_BOOKS = ["pinnacle", "betonlineag", "novig", "prophetx", "polymarket"]
+# Override without editing code:  EV_SHARP_BOOKS="pinnacle,betonlineag"  (a shorter list is cheaper, see books_for below).
+SHARP_BOOKS = [b.strip() for b in os.environ.get("EV_SHARP_BOOKS", "pinnacle,betonlineag,novig,prophetx,polymarket").split(",") if b.strip()]
 SOFT_BOOKS = {
     "lean": ["betmgm", "williamhill_us", "courtside", "draftkings", "fanduel"],
     "wide": ["betmgm", "williamhill_us", "courtside", "draftkings", "fanduel", "fanatics", "hardrockbet", "espnbet",
              "betrivers", "bovada", "ballybet", "betparx", "fliff"],
+    # "mine": the books Austin picked (Caesars, Fanatics, FanDuel, DraftKings, Fliff, BetMGM, Courtside, Rebet, theScore Bet).
+    # theScore Bet is the same feed as ESPN BET (key espnbet). Onyx Odds is not offered by The Odds API.
+    "mine": ["betmgm", "williamhill_us", "courtside", "draftkings", "fanduel", "fanatics", "fliff", "rebet", "espnbet"],
 }
 
 # (hours to start from, to, minutes between scans). Props are pre-game only: nothing is scanned after start.
@@ -84,7 +88,7 @@ def cfg_from_env():
 
 
 def books_for(profile):
-    return SHARP_BOOKS + SOFT_BOOKS[profile]
+    return list(dict.fromkeys(SHARP_BOOKS + SOFT_BOOKS[profile]))      # no book is requested twice
 
 
 def groups_for(profile):
