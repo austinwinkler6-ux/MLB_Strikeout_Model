@@ -1,5 +1,5 @@
 """
-ev_engine_v3.py -- "sharp vs soft" +EV finder. No projections, no model: the market sets the price.
+ev_engine_v5_fanduel.py (repo name: ev_engine_v3.py) -- "sharp vs soft" +EV finder. No projections, no model: the market sets the price.
 
   1. Collect every book's quote for each prop (same event, market, player, line).
   2. Take the SHARP books that post BOTH sides, remove their vig, and average them into one fair probability
@@ -17,13 +17,39 @@ Usage:
 """
 import argparse, collections, csv, json, re, unicodedata
 
-# How much each sharp book counts toward the fair price. Pinnacle sets the standard; LowVig copies Pinnacle's prices;
-# exchanges are priced by bettors (counted a bit lower because the API gives no information on available size).
+# How much each reference book counts toward the fair price.
+#   Pinnacle sets the standard. FanDuel is the most efficient US book on props, so it counts heavily too. LowVig copies
+#   Pinnacle. Exchanges (Novig, ProphetX, Polymarket, Kalshi) are priced by bettors and the API gives no information on
+#   available size, so they count for less and can never outvote Pinnacle + FanDuel together.
 # Circa and Bookmaker are not available through The Odds API.
+# Override without editing code:  EV_SHARP_WEIGHTS="pinnacle=5,fanduel=3,novig=1"  (books you leave out keep the defaults;
+# set a book to 0 to remove it from the fair price).
 SHARP_WEIGHTS = {
-    "pinnacle": 4.0, "lowvig": 2.0, "novig": 2.0, "prophetx": 2.0,
-    "betonlineag": 1.5, "polymarket": 1.5, "kalshi": 1.5, "betopenly": 1.0,
+    "pinnacle": 5.0, "fanduel": 3.0, "lowvig": 2.0, "betonlineag": 1.5,
+    "novig": 1.0, "prophetx": 1.0, "polymarket": 0.75, "kalshi": 0.75, "betopenly": 0.5,
 }
+# Books that help set the fair price AND can be flagged as a bet. For their own bets, their own price is left out of the
+# fair price (otherwise a mispriced FanDuel line would pull the fair price toward itself and hide its own edge).
+DUAL_ROLE = {"fanduel"}
+# A two-way quote with about this much vig counts at full weight; wider quotes count for less.
+REF_HOLD = 0.08
+
+
+def _weights_from_env():
+    import os
+    raw = os.environ.get("EV_SHARP_WEIGHTS", "").strip()
+    w = dict(SHARP_WEIGHTS)
+    for part in raw.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            try:
+                w[k.strip()] = float(v)
+            except ValueError:
+                pass
+    return {k: v for k, v in w.items() if v > 0}
+
+
+SHARP_WEIGHTS = _weights_from_env()
 YES_SIDE, NO_SIDE = {"over", "yes"}, {"under", "no"}
 
 
@@ -100,22 +126,26 @@ def build_quotes(raw):
 
 
 # ───────────────────────── fair price ─────────────────────────
-def fair_probability(books, weights=SHARP_WEIGHTS, min_sharps=1, max_spread=0.05, max_hold=0.15):
+def fair_probability(books, weights=SHARP_WEIGHTS, min_sharps=1, max_spread=0.05, max_hold=0.15, exclude=None):
     """Weighted average of de-vigged two-sided sharp quotes. Returns (p_A, info) or (None, reason).
     A quote whose two sides add up to far more than 100% (hold above max_hold) is thin or a placeholder
     (for example an exchange showing a -25000 'No'), so it is dropped. The rest are weighted by how tight they are."""
     refs, junk = [], 0
     for b, w in weights.items():
+        if b == exclude:
+            continue
         q = books.get(b)
         if q and "A" in q and "B" in q:
             hold = implied(q["A"]) + implied(q["B"]) - 1
             if hold > max_hold:
                 junk += 1
                 continue
-            tight = min(1.0, 0.05 / max(hold, 0.01))
+            tight = min(1.0, REF_HOLD / max(hold, 0.01))
             refs.append((b, w * tight, devig_pair(q["A"], q["B"])))
     if not refs:
         return None, ("only wide/placeholder sharp quotes" if junk else "no two-sided sharp quote")
+    if not any(b not in DUAL_ROLE for b, _, _ in refs):          # a US book alone is not a "sharp" reference
+        return None, "no true sharp quote"
     has_pin = any(b == "pinnacle" for b, _, _ in refs)
     if len(refs) < min_sharps and not has_pin:
         return None, f"only {len(refs)} sharp source"
@@ -160,27 +190,38 @@ def find_ev(quotes, min_ev=0.02, max_odds=1200, min_prob=0.03, max_prob=0.97, mi
             skipped["fair prob out of range"] += 1
             continue
         market_stats[mk]["fair"] += 1
-        for side, p in (("A", pA), ("B", 1 - pA)):
-            shop = []
+        alt = {}                                                  # dual-role books: fair price WITHOUT their own quote
+        for b in books:
+            if b in DUAL_ROLE and b in weights:
+                alt[b] = fair_probability(books, weights, min_sharps, max_spread, max_hold, exclude=b)
+        m = slot["meta"]
+        for side in ("A", "B"):
+            other = "B" if side == "A" else "A"
+            entries = []
             for b, q in books.items():
-                if b in weights or side not in q:
+                if side not in q or (b in weights and b not in DUAL_ROLE):
                     continue
+                pb, ib = (pA, info) if b not in alt else alt[b]
+                if pb is None:
+                    continue
+                p = pb if side == "A" else 1 - pb
                 ev = p * dec(q[side]) - 1
                 all_ev[b].append(ev)
-                shop.append({"book": b, "odds": int(q[side]), "ev_pct": round(ev * 100, 2)})
-            shop.sort(key=lambda x: x["ev_pct"], reverse=True)
-            other = "B" if side == "A" else "A"
-            board = [{"book": e["book"], "odds": e["odds"], "ev_pct": e["ev_pct"], "sharp": False,
-                      "opp": int(books[e["book"]][other]) if other in books[e["book"]] else None} for e in shop]
-            for b in info["sharps"]:                    # sharp books that fed the fair price (junk quotes were already dropped)
-                if side in books[b]:
-                    board.append({"book": b, "odds": int(books[b][side]), "ev_pct": None, "sharp": True,
+                entries.append({"book": b, "odds": int(q[side]), "ev_pct": round(ev * 100, 2), "p": p, "info": ib,
+                                "sharp": False, "ref": b in DUAL_ROLE, "opp": int(q[other]) if other in q else None})
+            entries.sort(key=lambda x: x["ev_pct"], reverse=True)
+            board = [{k: e[k] for k in ("book", "odds", "ev_pct", "sharp", "ref", "opp")} for e in entries]
+            for b in info["sharps"]:                              # sharp books that fed the fair price (junk quotes were already dropped)
+                if b not in DUAL_ROLE and side in books[b]:
+                    board.append({"book": b, "odds": int(books[b][side]), "ev_pct": None, "sharp": True, "ref": False,
                                   "opp": int(books[b][other]) if other in books[b] else None})
             board.sort(key=lambda x: dec(x["odds"]), reverse=True)
-            m = slot["meta"]
-            single = len(info["sharps"]) == 1 and "pinnacle" not in info["sharps"]
-            need = max(min_ev, single_source_min_ev if single else min_ev)
-            for entry in shop:
+            for entry in entries:
+                p, ie = entry["p"], entry["info"]
+                if not (min_prob <= p <= max_prob):
+                    continue
+                single = len(ie["sharps"]) == 1 and "pinnacle" not in ie["sharps"]
+                need = max(min_ev, single_source_min_ev if single else min_ev)
                 if entry["ev_pct"] / 100 < need or entry["odds"] > max_odds:
                     continue
                 rows.append({
@@ -189,9 +230,9 @@ def find_ev(quotes, min_ev=0.02, max_odds=1200, min_prob=0.03, max_prob=0.97, mi
                     "Under" if (side == "B" and m["no_label"] == "Under") else ("Yes" if side == "A" else "No"),
                     "pick": f"{m['yes_label'] if side == 'A' else m['no_label']}" + (f" {m['point']}" if m["point"] is not None else ""),
                     "book": entry["book"], "odds": entry["odds"], "fair_prob": round(p, 4), "fair_odds": fair_odds_american(p),
-                    "ev_pct": entry["ev_pct"], "n_sharps": len(info["sharps"]), "single_source": single,
-                    "sharps": {k: round(v, 4) for k, v in info["sharps"].items()},
-                    "sharp_spread_pts": round(info["spread"] * 100, 1),
+                    "ev_pct": entry["ev_pct"], "n_sharps": len(ie["sharps"]), "single_source": single,
+                    "sharps": {k: round(v, 4) for k, v in ie["sharps"].items()},
+                    "sharp_spread_pts": round(ie["spread"] * 100, 1),
                     "kelly_quarter_pct": round(max(0.0, (p * dec(entry["odds"]) - 1) / (dec(entry["odds"]) - 1)) * 25, 2),
                     "shop": board,
                 })
