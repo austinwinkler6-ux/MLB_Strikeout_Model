@@ -1049,6 +1049,51 @@ async def ev_picks(sport: str = None, market: str = None, book: str = None, min_
             "last_updated": last_seen}
 
 
+from pydantic import BaseModel
+
+
+class EvRefreshBody(BaseModel):
+    id: str
+
+
+_EV_REFRESH_CLIENT = None
+
+
+@app.post("/api/ev-refresh")
+def ev_refresh(body: EvRefreshBody, authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
+    """'Refresh price' button: pulls live prices for ONE bet's market (about 1 credit), rebuilds the fair price and
+    returns what that bet looks like right now. Does not change the saved board. Shared 45-second results, a per-user
+    hourly limit and a daily credit cap live in ev_refresh_v1.py. Plain `def` so the blocking Odds API call runs in a
+    worker thread instead of freezing the server."""
+    global _EV_REFRESH_CLIENT
+    _require_api_key(x_api_key)
+    if not (supabase and ODDS_API_KEY):
+        return {"status": "unavailable", "message": "Live refresh isn't configured on the server."}
+    user = _get_user_from_jwt(authorization)
+    if not _has_access(user):
+        return {"error": "subscription_required"}
+    import ev_refresh_v1 as refresh
+    import ev_scanner_v1 as scanner
+    try:
+        res = supabase.table("ev_picks").select("*").eq("id", body.id).limit(1).execute().data or []
+    except Exception as e:
+        return {"status": "unavailable", "message": f"Couldn't load this bet: {e}"}
+    if not res:
+        return {"status": "gone", "message": "This bet has left the board (the price moved or the game started)."}
+    if _EV_REFRESH_CLIENT is None:
+        _EV_REFRESH_CLIENT = scanner.OddsClient(ODDS_API_KEY)
+    cfg = scanner.cfg_from_env()
+    cap = int(os.environ.get("EV_REFRESH_DAILY_CAP", str(refresh.DAILY_CREDIT_CAP)))
+    try:
+        return refresh.refresh_pick(_EV_REFRESH_CLIENT, cfg, res[0], user_id=str(getattr(user, "id", "anon")),
+                                    store=scanner.SupabaseStore(supabase), cap=cap)
+    except refresh.RefreshLimit as e:
+        return {"status": "limited", "message": str(e)}
+    except Exception as e:
+        print(f"[ev-refresh] error: {e}")
+        return {"status": "unavailable", "message": "Couldn't refresh right now. Try again in a moment."}
+
+
 @app.get("/api/ev-status")
 async def ev_status(authorization: str = Header(default=None), x_api_key: str = Header(default=None)):
     """Admin only: scanner health, credits, and which markets the sharps actually price."""
