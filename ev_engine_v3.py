@@ -19,15 +19,13 @@ import argparse, collections, csv, json, re, unicodedata
 
 # How much each reference book counts toward the fair price.
 #   Pinnacle sets the standard. FanDuel is the most efficient US book on props, so it counts heavily too. LowVig copies
-#   Pinnacle. Exchanges (Novig, ProphetX, Polymarket, Kalshi) are priced by bettors and the API gives no information on
-#   available size, so they count for less and can never outvote Pinnacle + FanDuel together.
+#   Pinnacle, BetOnline is a sharp-friendly sportsbook. Exchanges and prediction markets (Novig, ProphetX, Polymarket,
+#   Kalshi) are NOT used: their prices come from order books and are harder to read, so they are left out of the fair price.
 # Circa and Bookmaker are not available through The Odds API.
 # Override without editing code:  EV_SHARP_WEIGHTS="pinnacle=5,fanduel=3,novig=1"  (books you leave out keep the defaults;
-# set a book to 0 to remove it from the fair price).
-SHARP_WEIGHTS = {
-    "pinnacle": 5.0, "fanduel": 3.0, "lowvig": 2.0, "betonlineag": 1.5,
-    "novig": 1.0, "prophetx": 1.0, "polymarket": 0.75, "kalshi": 0.75, "betopenly": 0.5,
-}
+# naming a book you want back, like novig=1, adds it; set a book to 0 to remove it). Also add it to EV_SHARP_BOOKS so the
+# scanner requests it.
+SHARP_WEIGHTS = {"pinnacle": 5.0, "fanduel": 3.0, "lowvig": 2.0, "betonlineag": 1.5}
 # Books that help set the fair price AND can be flagged as a bet. For their own bets, their own price is left out of the
 # fair price (otherwise a mispriced FanDuel line would pull the fair price toward itself and hide its own edge).
 DUAL_ROLE = {"fanduel"}
