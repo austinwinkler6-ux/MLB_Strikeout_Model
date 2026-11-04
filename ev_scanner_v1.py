@@ -51,10 +51,10 @@ SPORTS = {
         "batter_hits_runs_rbis"]},
 }
 
-# Sharps are priced by Pinnacle, BetOnline and the exchanges. (LowVig, Kalshi and Betopenly posted no props in the
+# Sharps are priced by Pinnacle and BetOnline (FanDuel is also a reference, it sits in the soft list). Exchanges are not used. (LowVig, Kalshi and Betopenly posted no props in the
 # coverage probe, Circa and Bookmaker are not in The Odds API.) 5 sharps + 5 soft = 10 books = ONE credit per market.
 # Override without editing code:  EV_SHARP_BOOKS="pinnacle,betonlineag"  (a shorter list is cheaper, see books_for below).
-SHARP_BOOKS = [b.strip() for b in os.environ.get("EV_SHARP_BOOKS", "pinnacle,betonlineag,novig,prophetx,polymarket").split(",") if b.strip()]
+SHARP_BOOKS = [b.strip() for b in os.environ.get("EV_SHARP_BOOKS", "pinnacle,betonlineag").split(",") if b.strip()]
 SOFT_BOOKS = {
     "lean": ["betmgm", "williamhill_us", "courtside", "draftkings", "fanduel"],
     "wide": ["betmgm", "williamhill_us", "courtside", "draftkings", "fanduel", "fanatics", "hardrockbet", "espnbet",
